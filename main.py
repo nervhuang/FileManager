@@ -2,7 +2,7 @@ import sys
 import subprocess
 import os
 import shutil
-from PyQt5.QtWidgets import QApplication, QMainWindow, QTreeView, QFileSystemModel, QListView, QWidget, QHBoxLayout, QVBoxLayout, QToolBar, QAction, QMessageBox, QStyle, QToolButton
+from PyQt5.QtWidgets import QApplication, QMainWindow, QTreeView, QFileSystemModel, QListView, QWidget, QHBoxLayout, QVBoxLayout, QToolBar, QAction, QMessageBox, QStyle, QToolButton, QSplitter
 from PyQt5.QtCore import QDir, Qt, QSize
 from PyQt5.QtGui import QKeySequence, QIcon, QFont, QPixmap, QPainter, QColor, QPalette
 # Optional SVG renderer (may not be present in minimal PyQt installs)
@@ -87,23 +87,13 @@ class FileManager(QMainWindow):
         # 前兩個按鈕改為直接調整字型大小（放大 / 縮小）
         action_new = QAction("字型放大", self)
         action_new.setShortcut(QKeySequence("Ctrl+N"))
-        action_new.setToolTip("將左/右視圖字型放大 (Ctrl+N)")
+        action_new.setToolTip("放大字型 (Ctrl+N)")
         action_new.triggered.connect(self.on_font_increase)
 
         action_open = QAction("字型縮小", self)
         action_open.setShortcut(QKeySequence("Ctrl+O"))
-        action_open.setToolTip("將左/右視圖字型縮小 (Ctrl+O)")
+        action_open.setToolTip("縮小字型 (Ctrl+O)")
         action_open.triggered.connect(self.on_font_decrease)
-
-        action_delete = QAction("刪除", self)
-        action_delete.setShortcut(QKeySequence("Del"))
-        action_delete.setToolTip("刪除 (Del)")
-        action_delete.triggered.connect(self.on_delete)
-
-        action_props = QAction("屬性", self)
-        action_props.setShortcut(QKeySequence("Ctrl+I"))
-        action_props.setToolTip("屬性 (Ctrl+I)")
-        action_props.triggered.connect(self.on_props)
 
         # 嘗試從 resources/icons 載入自訂圖示；若不存在或無法載入 SVG，會 fallback 或動態繪製一個文字圖示
         icons_dir = os.path.join(os.path.dirname(__file__), "resources", "icons")
@@ -177,8 +167,6 @@ class FileManager(QMainWindow):
 
         action_new.setIcon(load_icon('A_large', QStyle.SP_FileIcon))
         action_open.setIcon(load_icon('A_small', QStyle.SP_DialogOpenButton))
-        action_delete.setIcon(load_icon('delete', QStyle.SP_TrashIcon))
-        action_props.setIcon(load_icon('props', QStyle.SP_MessageBoxInformation))
 
         # 使用 QToolButton 並將其明確命名（以便後續啟用/停用）
         self.btn_increase = QToolButton(self)
@@ -195,37 +183,22 @@ class FileManager(QMainWindow):
         self.btn_decrease.setAutoRaise(True)
         self.toolbar.addWidget(self.btn_decrease)
 
-        self.btn_delete = QToolButton(self)
-        self.btn_delete.setDefaultAction(action_delete)
-        self.btn_delete.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        self.btn_delete.setIconSize(self.toolbar.iconSize())
-        self.btn_delete.setAutoRaise(True)
-        self.toolbar.addWidget(self.btn_delete)
-
-        self.btn_props = QToolButton(self)
-        self.btn_props.setDefaultAction(action_props)
-        self.btn_props.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        self.btn_props.setIconSize(self.toolbar.iconSize())
-        self.btn_props.setAutoRaise(True)
-        self.toolbar.addWidget(self.btn_props)
-
         # 创建右侧的文件列表视图
-        self.listView = QListView(self)
+        self.listView = QTreeView(self)
+        self.listView.setSortingEnabled(True)
         right_vbox = QVBoxLayout()
         right_vbox.setContentsMargins(0, 0, 0, 0)
         right_vbox.addWidget(self.listView)
         right_container = QWidget()
         right_container.setLayout(right_vbox)
 
-        # 创建一个水平布局，包含左侧目录树和右侧容器（文件列表）
-        hbox = QHBoxLayout()
-        hbox.addWidget(self.treeView)
-        hbox.addWidget(right_container)
+        # 创建一个可调整大小的分割器
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(self.treeView)
+        splitter.addWidget(right_container)
+        splitter.setSizes([200, 600])
 
-        # 创建一个主窗口小部件并设置布局
-        centralWidget = QWidget()
-        centralWidget.setLayout(hbox)
-        self.setCentralWidget(centralWidget)
+        self.setCentralWidget(splitter)
 
         # 初始化狀態列並顯示目前字型大小
         self.statusBar().showMessage("")
@@ -233,18 +206,19 @@ class FileManager(QMainWindow):
         # 设置右侧文件列表的模型
         self.fileListModel = QFileSystemModel()
         self.listView.setModel(self.fileListModel)
+        self.listView.header().moveSection(3, 1)
+        self.listView.hideColumn(2)
         # 顯示初始字型資訊
         self.update_status_bar()
         # 根據選取啟用/停用刪除與屬性按鈕
         try:
-            self.listView.selectionModel().selectionChanged.connect(lambda sel, des: self.update_action_states())
+            self.listView.doubleClicked.connect(self.on_listView_doubleClicked)
         except Exception:
             pass
-        self.update_action_states()
 
 
         # 设置默认排序为日期排序
-        self.fileListModel.sort(3, Qt.DescendingOrder)
+        self.listView.sortByColumn(3, Qt.DescendingOrder)
 
         # 连接目录树的项选择事件到显示文件列表的函数
         self.treeView.selectionModel().selectionChanged.connect(self.on_treeView_selectionChanged)
@@ -264,20 +238,37 @@ class FileManager(QMainWindow):
             # 连接右侧文件列表的项选择事件到提取关键字的函数
             self.listView.selectionModel().selectionChanged.connect(self.on_listView_selectionChanged)
 
+    def on_listView_doubleClicked(self, index):
+        path = self.fileListModel.filePath(index)
+        if self.fileListModel.isDir(index):
+            self.listView.setRootIndex(index)
+            tree_index = self.model.index(path)
+            if tree_index.isValid():
+                self.treeView.setCurrentIndex(tree_index)
+                self.treeView.expand(tree_index)
+                self.treeView.scrollTo(tree_index)
+        else:
+            try:
+                os.startfile(path)
+            except Exception as e:
+                QMessageBox.warning(self, "錯誤", f"無法開啟檔案: {e}")
+
     def on_listView_selectionChanged(self, selected, deselected):
         global ref_s, ref_e, global_keywords
         # 当右侧文件列表中的项被选择时，提取关键字并执行搜索操作
         if selected.indexes():
-            file_name = self.fileListModel.fileName(selected.indexes()[0])
-            keywords = self.extract_keywords(file_name)
-            global_keywords = keywords
-            # 有超过一个以上的参数，所以需要插入|
-            if keywords:
-                # 参数指针初始化，开头设为0，结尾设为参数总数
-                ref_s = 0
-                ref_e = len(keywords)
-                search_command = '|'.join(keywords)
-                self.execute_search_command(search_command)
+            index = selected.indexes()[0]
+            if not self.fileListModel.isDir(index):
+                file_name = self.fileListModel.fileName(index)
+                keywords = self.extract_keywords(file_name)
+                global_keywords = keywords
+                # 有超过一个以上的参数，所以需要插入|
+                if keywords:
+                    # 参数指针初始化，开头设为0，结尾设为参数总数
+                    ref_s = 0
+                    ref_e = len(keywords)
+                    search_command = '|'.join(keywords)
+                    self.execute_search_command(search_command)
 
     def keyPressEvent(self, e):
         global ref_s, ref_e, global_keywords
@@ -355,7 +346,7 @@ class FileManager(QMainWindow):
             QMessageBox.warning(self, "錯誤", f"無法開啟檔案: {e}")
 
     def on_font_increase(self):
-        # 放大左右視圖字型，各增加 1pt（限制最大 72pt）
+        # 放大字型，各增加 1pt（限制最大 72pt）
         for widget in (self.treeView, self.listView):
             current_font = widget.font()
             current_size = current_font.pointSize() if current_font.pointSize() > 0 else 10
@@ -365,7 +356,7 @@ class FileManager(QMainWindow):
         self.update_status_bar()
 
     def on_font_decrease(self):
-        # 縮小左右視圖字型，各減少 1pt（限制最小 6pt）
+        # 縮小字型，各減少 1pt（限制最小 6pt）
         for widget in (self.treeView, self.listView):
             current_font = widget.font()
             current_size = current_font.pointSize() if current_font.pointSize() > 0 else 10
@@ -375,50 +366,12 @@ class FileManager(QMainWindow):
         self.update_status_bar()
 
     def update_status_bar(self):
-        # 更新狀態列以顯示左右視圖的目前字型大小
+        # 更新狀態列以顯示左側視圖的目前字型大小
         left_font = self.treeView.font()
-        right_font = self.listView.font()
         left_size = left_font.pointSize() if left_font.pointSize() > 0 else 10
-        right_size = right_font.pointSize() if right_font.pointSize() > 0 else 10
-        self.statusBar().showMessage(f"左側字型: {left_size}pt   |   右側字型: {right_size}pt")
+        self.statusBar().showMessage(f"字型: {left_size}pt")
 
-    def update_action_states(self):
-        # 依照 listView 是否有選取項目啟用 / 停用按鈕
-        has_selection = bool(self.listView.selectedIndexes())
-        try:
-            self.btn_delete.setEnabled(has_selection)
-            self.btn_props.setEnabled(has_selection)
-        except Exception:
-            pass
-    def on_delete(self):
-        indexes = self.listView.selectedIndexes()
-        if not indexes:
-            return
-        path = self.fileListModel.filePath(indexes[0])
-        try:
-            if os.path.isdir(path):
-                shutil.rmtree(path)
-            else:
-                os.remove(path)
-            dir_path = self.fileListModel.rootPath()
-            self.fileListModel.setRootPath(dir_path)
-            self.listView.setRootIndex(self.fileListModel.index(dir_path))
-        except Exception as e:
-            QMessageBox.warning(self, "錯誤", str(e))
 
-    def on_props(self):
-        indexes = self.listView.selectedIndexes()
-        if not indexes:
-            QMessageBox.information(self, "屬性", "未選取任何檔案")
-            return
-        path = self.fileListModel.filePath(indexes[0])
-        try:
-            stat = os.stat(path)
-            size = stat.st_size
-            mtime = stat.st_mtime
-            QMessageBox.information(self, "屬性", f"路徑: {path}\n大小: {size} bytes\n修改時間: {mtime}")
-        except Exception as e:
-            QMessageBox.warning(self, "錯誤", str(e))
 
 
 def main():
