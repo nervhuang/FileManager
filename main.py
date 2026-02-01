@@ -1,8 +1,17 @@
 import sys
 import subprocess
-import argparse
-from PyQt5.QtWidgets import QApplication, QMainWindow, QTreeView, QFileSystemModel, QListView, QWidget, QHBoxLayout
-from PyQt5.QtCore import QDir, Qt, QTimer
+import os
+import shutil
+from PyQt5.QtWidgets import QApplication, QMainWindow, QTreeView, QFileSystemModel, QListView, QWidget, QHBoxLayout, QVBoxLayout, QToolBar, QAction, QMessageBox, QStyle, QToolButton
+from PyQt5.QtCore import QDir, Qt, QSize
+from PyQt5.QtGui import QKeySequence, QIcon, QFont, QPixmap, QPainter, QColor, QPalette
+# Optional SVG renderer (may not be present in minimal PyQt installs)
+try:
+    from PyQt5.QtSvg import QSvgRenderer
+    HAVE_SVG_RENDERER = True
+except Exception:
+    QSvgRenderer = None
+    HAVE_SVG_RENDERER = False
 
 ref_s = 0
 ref_e = 1
@@ -52,27 +61,187 @@ class FileManager(QMainWindow):
         self.model.setFilter(QDir.Dirs | QDir.Drives | QDir.NoDotAndDotDot)
 
         self.treeView.setModel(self.model)
-        self.treeView.setRootIndex(self.model.index(root_path))
+        root_idx = self.model.index(root_path)
+        self.treeView.setRootIndex(root_idx)
+        # 尝试展开根节点并确保可以看到内容
+        try:
+            if root_idx.isValid():
+                self.treeView.expand(root_idx)
+                self.treeView.scrollTo(root_idx)
+        except Exception:
+            pass
+
         self.treeView.hideColumn(1)
         self.treeView.hideColumn(2)
         self.treeView.hideColumn(3)
 
+        # 使用 QToolBar（橫跨左右兩側）並加入快捷鍵與事件
+        self.toolbar = QToolBar("Main Toolbar", self)
+        self.addToolBar(self.toolbar)
+        # 設定圖示大小與 icon-only 顯示
+        self.toolbar.setIconSize(QSize(24, 24))
+        self.toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        # 簡單 hover 效果，並讓按鈕與主題顏色相容
+        self.toolbar.setStyleSheet('QToolButton { padding: 4px; } QToolButton:hover { background-color: rgba(0,0,0,0.05); }')
+
+        # 前兩個按鈕改為直接調整字型大小（放大 / 縮小）
+        action_new = QAction("字型放大", self)
+        action_new.setShortcut(QKeySequence("Ctrl+N"))
+        action_new.setToolTip("將左/右視圖字型放大 (Ctrl+N)")
+        action_new.triggered.connect(self.on_font_increase)
+
+        action_open = QAction("字型縮小", self)
+        action_open.setShortcut(QKeySequence("Ctrl+O"))
+        action_open.setToolTip("將左/右視圖字型縮小 (Ctrl+O)")
+        action_open.triggered.connect(self.on_font_decrease)
+
+        action_delete = QAction("刪除", self)
+        action_delete.setShortcut(QKeySequence("Del"))
+        action_delete.setToolTip("刪除 (Del)")
+        action_delete.triggered.connect(self.on_delete)
+
+        action_props = QAction("屬性", self)
+        action_props.setShortcut(QKeySequence("Ctrl+I"))
+        action_props.setToolTip("屬性 (Ctrl+I)")
+        action_props.triggered.connect(self.on_props)
+
+        # 嘗試從 resources/icons 載入自訂圖示；若不存在或無法載入 SVG，會 fallback 或動態繪製一個文字圖示
+        icons_dir = os.path.join(os.path.dirname(__file__), "resources", "icons")
+        def make_text_icon(ch, font_size=14, color="#222"):
+            size = self.toolbar.iconSize()
+            pix = QPixmap(size)
+            pix.fill(Qt.transparent)
+            p = QPainter(pix)
+            p.setPen(QColor(color))
+            f = QFont("Arial", font_size)
+            f.setBold(True)
+            p.setFont(f)
+            rect = pix.rect()
+            p.drawText(rect, Qt.AlignCenter, ch)
+            p.end()
+            return QIcon(pix)
+
+        def make_bg_text_icon(ch, font_size=14, fg="#222", bg="#fff"):
+            size = self.toolbar.iconSize()
+            pix = QPixmap(size)
+            pix.fill(QColor(bg))
+            p = QPainter(pix)
+            p.setPen(QColor(fg))
+            f = QFont("Arial", font_size)
+            f.setBold(True)
+            p.setFont(f)
+            rect = pix.rect()
+            p.drawText(rect, Qt.AlignCenter, ch)
+            p.end()
+            return QIcon(pix)
+
+        def load_icon(name, fallback_sp):
+            # For A icons prefer generated icons that match current theme (no SVG dependency)
+            palette = QApplication.palette()
+            fg_col = palette.color(QPalette.Text).name()
+            bg_col = palette.color(QPalette.Window).name()
+            if name == 'A_large':
+                return make_bg_text_icon('A', font_size=16, fg=fg_col, bg=bg_col)
+            if name == 'A_small':
+                return make_bg_text_icon('a', font_size=12, fg=fg_col, bg=bg_col)
+
+            path = os.path.join(icons_dir, f"{name}.svg")
+            style = QApplication.style()
+
+            # Try loading vendor SVG or fallback to system icon
+            try:
+                if os.path.exists(path):
+                    icon = QIcon(path)
+                    if not icon.isNull():
+                        pm = icon.pixmap(self.toolbar.iconSize())
+                        if pm and not pm.isNull():
+                            return icon
+                    pix = QPixmap(path)
+                    if not pix.isNull():
+                        pm = pix.scaled(self.toolbar.iconSize(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        return QIcon(pm)
+                    if HAVE_SVG_RENDERER and QSvgRenderer is not None:
+                        renderer = QSvgRenderer(path)
+                        size = self.toolbar.iconSize()
+                        pixmap = QPixmap(size)
+                        pixmap.fill(Qt.transparent)
+                        painter = QPainter(pixmap)
+                        renderer.render(painter)
+                        painter.end()
+                        if not pixmap.isNull():
+                            return QIcon(pixmap)
+            except Exception:
+                pass
+
+            return style.standardIcon(fallback_sp)
+
+        action_new.setIcon(load_icon('A_large', QStyle.SP_FileIcon))
+        action_open.setIcon(load_icon('A_small', QStyle.SP_DialogOpenButton))
+        action_delete.setIcon(load_icon('delete', QStyle.SP_TrashIcon))
+        action_props.setIcon(load_icon('props', QStyle.SP_MessageBoxInformation))
+
+        # 使用 QToolButton 並將其明確命名（以便後續啟用/停用）
+        self.btn_increase = QToolButton(self)
+        self.btn_increase.setDefaultAction(action_new)
+        self.btn_increase.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.btn_increase.setIconSize(self.toolbar.iconSize())
+        self.btn_increase.setAutoRaise(True)
+        self.toolbar.addWidget(self.btn_increase)
+
+        self.btn_decrease = QToolButton(self)
+        self.btn_decrease.setDefaultAction(action_open)
+        self.btn_decrease.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.btn_decrease.setIconSize(self.toolbar.iconSize())
+        self.btn_decrease.setAutoRaise(True)
+        self.toolbar.addWidget(self.btn_decrease)
+
+        self.btn_delete = QToolButton(self)
+        self.btn_delete.setDefaultAction(action_delete)
+        self.btn_delete.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.btn_delete.setIconSize(self.toolbar.iconSize())
+        self.btn_delete.setAutoRaise(True)
+        self.toolbar.addWidget(self.btn_delete)
+
+        self.btn_props = QToolButton(self)
+        self.btn_props.setDefaultAction(action_props)
+        self.btn_props.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.btn_props.setIconSize(self.toolbar.iconSize())
+        self.btn_props.setAutoRaise(True)
+        self.toolbar.addWidget(self.btn_props)
+
         # 创建右侧的文件列表视图
         self.listView = QListView(self)
+        right_vbox = QVBoxLayout()
+        right_vbox.setContentsMargins(0, 0, 0, 0)
+        right_vbox.addWidget(self.listView)
+        right_container = QWidget()
+        right_container.setLayout(right_vbox)
 
-        # 创建一个水平布局，包含左侧目录树和右侧文件列表
+        # 创建一个水平布局，包含左侧目录树和右侧容器（文件列表）
         hbox = QHBoxLayout()
         hbox.addWidget(self.treeView)
-        hbox.addWidget(self.listView)
+        hbox.addWidget(right_container)
 
         # 创建一个主窗口小部件并设置布局
         centralWidget = QWidget()
         centralWidget.setLayout(hbox)
         self.setCentralWidget(centralWidget)
 
+        # 初始化狀態列並顯示目前字型大小
+        self.statusBar().showMessage("")
+
         # 设置右侧文件列表的模型
         self.fileListModel = QFileSystemModel()
         self.listView.setModel(self.fileListModel)
+        # 顯示初始字型資訊
+        self.update_status_bar()
+        # 根據選取啟用/停用刪除與屬性按鈕
+        try:
+            self.listView.selectionModel().selectionChanged.connect(lambda sel, des: self.update_action_states())
+        except Exception:
+            pass
+        self.update_action_states()
+
 
         # 设置默认排序为日期排序
         self.fileListModel.sort(3, Qt.DescendingOrder)
@@ -157,20 +326,105 @@ class FileManager(QMainWindow):
         search_command = '"Everything.exe" -search "' + search_command + '"'
         subprocess.Popen(search_command, shell=True)
 
+    def on_new(self):
+        # 保留舊功能（建立新檔案），但不再由工具列第一個按鈕觸發
+        dir_path = self.fileListModel.rootPath()
+        base = "new_file"
+        i = 0
+        while True:
+            name = f"{base}{i}.txt"
+            path = os.path.join(dir_path, name)
+            if not os.path.exists(path):
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write('')
+                break
+            i += 1
+        # 刷新列表
+        self.fileListModel.setRootPath(dir_path)
+        self.listView.setRootIndex(self.fileListModel.index(dir_path))
+
+    def on_open(self):
+        # 保留舊功能（用系統開啟檔案），但不再由工具列第二個按鈕觸發
+        indexes = self.listView.selectedIndexes()
+        if not indexes:
+            return
+        path = self.fileListModel.filePath(indexes[0])
+        try:
+            os.startfile(path)
+        except Exception as e:
+            QMessageBox.warning(self, "錯誤", f"無法開啟檔案: {e}")
+
+    def on_font_increase(self):
+        # 放大左右視圖字型，各增加 1pt（限制最大 72pt）
+        for widget in (self.treeView, self.listView):
+            current_font = widget.font()
+            current_size = current_font.pointSize() if current_font.pointSize() > 0 else 10
+            new_size = min(current_size + 1, 72)
+            f = QFont(current_font.family(), new_size)
+            widget.setFont(f)
+        self.update_status_bar()
+
+    def on_font_decrease(self):
+        # 縮小左右視圖字型，各減少 1pt（限制最小 6pt）
+        for widget in (self.treeView, self.listView):
+            current_font = widget.font()
+            current_size = current_font.pointSize() if current_font.pointSize() > 0 else 10
+            new_size = max(current_size - 1, 6)
+            f = QFont(current_font.family(), new_size)
+            widget.setFont(f)
+        self.update_status_bar()
+
+    def update_status_bar(self):
+        # 更新狀態列以顯示左右視圖的目前字型大小
+        left_font = self.treeView.font()
+        right_font = self.listView.font()
+        left_size = left_font.pointSize() if left_font.pointSize() > 0 else 10
+        right_size = right_font.pointSize() if right_font.pointSize() > 0 else 10
+        self.statusBar().showMessage(f"左側字型: {left_size}pt   |   右側字型: {right_size}pt")
+
+    def update_action_states(self):
+        # 依照 listView 是否有選取項目啟用 / 停用按鈕
+        has_selection = bool(self.listView.selectedIndexes())
+        try:
+            self.btn_delete.setEnabled(has_selection)
+            self.btn_props.setEnabled(has_selection)
+        except Exception:
+            pass
+    def on_delete(self):
+        indexes = self.listView.selectedIndexes()
+        if not indexes:
+            return
+        path = self.fileListModel.filePath(indexes[0])
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+            dir_path = self.fileListModel.rootPath()
+            self.fileListModel.setRootPath(dir_path)
+            self.listView.setRootIndex(self.fileListModel.index(dir_path))
+        except Exception as e:
+            QMessageBox.warning(self, "錯誤", str(e))
+
+    def on_props(self):
+        indexes = self.listView.selectedIndexes()
+        if not indexes:
+            QMessageBox.information(self, "屬性", "未選取任何檔案")
+            return
+        path = self.fileListModel.filePath(indexes[0])
+        try:
+            stat = os.stat(path)
+            size = stat.st_size
+            mtime = stat.st_mtime
+            QMessageBox.information(self, "屬性", f"路徑: {path}\n大小: {size} bytes\n修改時間: {mtime}")
+        except Exception as e:
+            QMessageBox.warning(self, "錯誤", str(e))
+
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--test', nargs='?', const=3, type=int, help='Auto exit after seconds (default 3)')
-    args = parser.parse_args()
-
     app = QApplication(sys.argv)
     window = FileManager()
     window.show()
-
-    # If running in test mode, quit after given seconds to allow automated tests
-    if args.test:
-        QTimer.singleShot(args.test * 1000, app.quit)
-
     sys.exit(app.exec_())
 
 
