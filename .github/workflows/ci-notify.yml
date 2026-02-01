@@ -13,15 +13,52 @@ jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
+      - name: Download junit report artifact (if any)
+        uses: actions/download-artifact@v4
+        with:
+          name: junit-report
+          path: report || .
+
+      - name: Summarize junit failures
+        id: junit_summary
+        run: |
+          python - <<'PY'
+import os, xml.etree.ElementTree as ET
+out = {'failures':'0', 'failure_list':''}
+path = os.path.join('report', 'report.xml')
+if os.path.exists(path):
+    tree = ET.parse(path)
+    root = tree.getroot()
+    failures = []
+    for testcase in root.findall('.//testcase'):
+        for child in testcase:
+            if child.tag in ('failure','error'):
+                failures.append(f"{testcase.get('classname','')}.{testcase.get('name')}")
+    out['failures'] = str(len(failures))
+    out['failure_list'] = ' | '.join(failures)
+# write outputs
+with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+    f.write(f"failures={out['failures']}\n")
+    f.write(f"failure_list={out['failure_list']}\n")
+PY
+
       - name: Post comment on associated PRs if any
         uses: actions/github-script@v6
+        env:
+          FAILURES: ${{ steps.junit_summary.outputs.failures }}
+          FAILURE_LIST: ${{ steps.junit_summary.outputs.failure_list }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const run = context.payload.workflow_run;
             const conclusion = run.conclusion || 'unknown';
             const url = run.html_url;
-            const body = `Workflow **${run.name}** completed with conclusion: **${conclusion}**. See details: ${url}`;
+            let body = `Workflow **${run.name}** completed with conclusion: **${conclusion}**. See details: ${url}`;
+            const failures = parseInt(process.env.FAILURES || '0', 10);
+            const failure_list = process.env.FAILURE_LIST || '';
+            if (failures > 0) {
+              body += `\n\n**Failed tests (${failures}):**\n` + failure_list;
+            }
 
             // Find PRs associated with the run
             const prs = await github.rest.actions.listWorkflowRunPullRequests({
