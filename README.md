@@ -1,5 +1,7 @@
 # FileManager
 
+![CI](https://github.com/nervhuang/FileManager/actions/workflows/python-app.yml/badge.svg)
+
 ## Tests & CI ✅
 
 - Run smoke test locally: `python -m pytest tests/test_smoke.py` (it runs `main.py --test 1` which auto-exits).

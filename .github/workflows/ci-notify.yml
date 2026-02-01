@@ -1,0 +1,45 @@
+name: CI notify
+
+on:
+  workflow_run:
+    workflows: ["Python application"]
+    types: [completed]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post comment on associated PRs if any
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const run = context.payload.workflow_run;
+            const conclusion = run.conclusion || 'unknown';
+            const url = run.html_url;
+            const body = `Workflow **${run.name}** completed with conclusion: **${conclusion}**. See details: ${url}`;
+
+            // Find PRs associated with the run
+            const prs = await github.rest.actions.listWorkflowRunPullRequests({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: run.id
+            });
+
+            if (prs.data && prs.data.length) {
+              for (const pr of prs.data) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  body
+                });
+              }
+            } else {
+              // If no PRs, create an issue to notify (optional)
+              console.log('No associated PRs; skipping comment.');
+            }
