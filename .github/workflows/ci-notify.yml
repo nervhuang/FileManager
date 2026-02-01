@@ -43,3 +43,13 @@ jobs:
               // If no PRs, create an issue to notify (optional)
               console.log('No associated PRs; skipping comment.');
             }
+
+      - name: Send Slack notification (optional)
+        if: ${{ secrets.SLACK_WEBHOOK_URL }}
+        env:
+          RUN_NAME: ${{ github.event.workflow_run.name }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          message="Workflow *${RUN_NAME}* completed with *${CONCLUSION}*. See details: ${URL}"
+          curl -s -X POST -H 'Content-type: application/json' --data "{\"text\": \"${message}\"}" "${{ secrets.SLACK_WEBHOOK_URL }}"
