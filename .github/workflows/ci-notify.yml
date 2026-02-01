@@ -24,22 +24,37 @@ jobs:
         run: |
           python - <<'PY'
 import os, xml.etree.ElementTree as ET
-out = {'failures':'0', 'failure_list':''}
+out = {'failures':'0', 'failure_list':'', 'failure_messages':''}
 path = os.path.join('report', 'report.xml')
 if os.path.exists(path):
     tree = ET.parse(path)
     root = tree.getroot()
     failures = []
+    messages = []
     for testcase in root.findall('.//testcase'):
         for child in testcase:
             if child.tag in ('failure','error'):
-                failures.append(f"{testcase.get('classname','')}.{testcase.get('name')}")
+                name = f"{testcase.get('classname','')}.{testcase.get('name')}"
+                failures.append(name)
+                msg = ''
+                # Prefer failure text, fall back to message attribute
+                if child.text:
+                    msg = child.text.strip()
+                elif child.get('message'):
+                    msg = child.get('message').strip()
+                # Collapse newlines and limit length
+                msg = ' '.join(msg.split())
+                if len(msg) > 800:
+                    msg = msg[:800] + '... [truncated]'
+                messages.append(f"{name}: {msg}")
     out['failures'] = str(len(failures))
     out['failure_list'] = ' | '.join(failures)
+    out['failure_messages'] = ' || '.join(messages)
 # write outputs
 with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
     f.write(f"failures={out['failures']}\n")
     f.write(f"failure_list={out['failure_list']}\n")
+    f.write(f"failure_messages={out['failure_messages']}\n")
 PY
 
       - name: Post comment on associated PRs if any
@@ -47,6 +62,7 @@ PY
         env:
           FAILURES: ${{ steps.junit_summary.outputs.failures }}
           FAILURE_LIST: ${{ steps.junit_summary.outputs.failure_list }}
+          FAILURE_MESSAGES: ${{ steps.junit_summary.outputs.failure_messages }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -56,8 +72,12 @@ PY
             let body = `Workflow **${run.name}** completed with conclusion: **${conclusion}**. See details: ${url}`;
             const failures = parseInt(process.env.FAILURES || '0', 10);
             const failure_list = process.env.FAILURE_LIST || '';
+            const failure_messages = process.env.FAILURE_MESSAGES || '';
             if (failures > 0) {
               body += `\n\n**Failed tests (${failures}):**\n` + failure_list;
+              if (failure_messages) {
+                body += `\n\n**Failure details:**\n` + failure_messages;
+              }
             }
 
             // Find PRs associated with the run
@@ -87,6 +107,16 @@ PY
           RUN_NAME: ${{ github.event.workflow_run.name }}
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           URL: ${{ github.event.workflow_run.html_url }}
+          FAILURE_MESSAGES: ${{ steps.junit_summary.outputs.failure_messages }}
         run: |
-          message="Workflow *${RUN_NAME}* completed with *${CONCLUSION}*. See details: ${URL}"
-          curl -s -X POST -H 'Content-type: application/json' --data "{\"text\": \"${message}\"}" "${{ secrets.SLACK_WEBHOOK_URL }}"
+          summary="Workflow *${RUN_NAME}* completed with *${CONCLUSION}*. See details: ${URL}"
+          details=${FAILURE_MESSAGES}
+          # Truncate details for Slack
+          if [ -n "${details}" ]; then
+            # Replace '||' separators with new lines for readability
+            details_formatted=$(echo "${details}" | sed 's/ || /\n/g' | cut -c -1000)
+            payload="{\"text\": "{\"blocks\": [{\"type\": \"section\", \"text\": {\"type\": \"mrkdwn\", \"text\": \"${summary}\"}} , {\"type\": \"section\", \"text\": {\"type\": \"mrkdwn\", \"text\": \"*Failure details*:\n${details_formatted}\"}}]}"}
+          else
+            payload="{\"text\": \"${summary}\"}"
+          fi
+          curl -s -X POST -H 'Content-type: application/json' --data "${payload}" "${{ secrets.SLACK_WEBHOOK_URL }}"
