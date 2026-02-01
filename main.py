@@ -1,7 +1,8 @@
 import sys
 import subprocess
+import argparse
 from PyQt5.QtWidgets import QApplication, QMainWindow, QTreeView, QFileSystemModel, QListView, QWidget, QHBoxLayout
-from PyQt5.QtCore import QDir, Qt
+from PyQt5.QtCore import QDir, Qt, QTimer
 
 ref_s = 0
 ref_e = 1
@@ -158,9 +159,18 @@ class FileManager(QMainWindow):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--test', nargs='?', const=3, type=int, help='Auto exit after seconds (default 3)')
+    args = parser.parse_args()
+
     app = QApplication(sys.argv)
     window = FileManager()
     window.show()
+
+    # If running in test mode, quit after given seconds to allow automated tests
+    if args.test:
+        QTimer.singleShot(args.test * 1000, app.quit)
+
     sys.exit(app.exec_())
 
 
