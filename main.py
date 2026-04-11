@@ -6,9 +6,11 @@ import ctypes
 import ctypes.wintypes as wt
 import struct
 import time
-from PyQt5.QtWidgets import QApplication, QMainWindow, QTreeView, QFileSystemModel, QListView, QWidget, QHBoxLayout, QVBoxLayout, QToolBar, QAction, QMessageBox, QStyle, QToolButton, QSplitter, QLineEdit, QSizePolicy
-from PyQt5.QtCore import QDir, Qt, QSize
+import configparser
+from PyQt5.QtWidgets import QApplication, QMainWindow, QTreeView, QFileSystemModel, QListView, QWidget, QHBoxLayout, QVBoxLayout, QToolBar, QAction, QMessageBox, QStyle, QToolButton, QSplitter, QLineEdit, QSizePolicy, QFileIconProvider
+from PyQt5.QtCore import QDir, Qt, QSize, QSortFilterProxyModel, QFileInfo
 from PyQt5.QtGui import QKeySequence, QIcon, QFont, QPixmap, QPainter, QColor, QPalette, QStandardItemModel, QStandardItem
+from datetime import datetime
 # Optional SVG renderer (may not be present in minimal PyQt installs)
 try:
     from PyQt5.QtSvg import QSvgRenderer
@@ -208,6 +210,18 @@ class CustomTreeView(QTreeView):
             self.expanding_in_progress = True
             super().setExpanded(index, expanded)
             self.expanding_in_progress = False
+
+
+class SearchSortProxyModel(QSortFilterProxyModel):
+    """Proxy model for proper numeric sorting on date and size columns."""
+    def lessThan(self, left, right):
+        col = left.column()
+        if col in (2, 3):  # Date or Size columns
+            left_val = left.data(Qt.UserRole)
+            right_val = right.data(Qt.UserRole)
+            if left_val is not None and right_val is not None:
+                return left_val < right_val
+        return super().lessThan(left, right)
 
 
 class FileManager(QMainWindow):
@@ -420,8 +434,10 @@ class FileManager(QMainWindow):
         self.fileListModel = QFileSystemModel()
         self.listView.setModel(self.fileListModel)
         self.search_model = QStandardItemModel(self.listView2)
-        self.search_model.setHorizontalHeaderLabels(["Everything results"])
-        self.listView2.setModel(self.search_model)
+        self.search_model.setHorizontalHeaderLabels(["檔名", "目錄", "日期", "大小"])
+        self.search_proxy = SearchSortProxyModel(self.listView2)
+        self.search_proxy.setSourceModel(self.search_model)
+        self.listView2.setModel(self.search_proxy)
 
         header = self.listView.header()
         if header is not None:
@@ -437,6 +453,7 @@ class FileManager(QMainWindow):
         try:
             self.listView.doubleClicked.connect(self.on_listView_doubleClicked)
             self.listView.clicked.connect(self.on_listView_clicked)  # 添加單擊事件
+            self.listView2.doubleClicked.connect(self.on_listView2_doubleClicked)
         except Exception:
             pass
 
@@ -448,6 +465,9 @@ class FileManager(QMainWindow):
         tree_selection = self.treeView.selectionModel()
         if tree_selection is not None:
             tree_selection.selectionChanged.connect(self.on_treeView_selectionChanged)
+
+        # 載入 config.ini 並還原上次狀態
+        self.load_config()
 
     def on_treeView_selectionChanged(self, selected, deselected):
         # 当左侧目录树中的项被选择时，更新右侧文件列表
@@ -575,10 +595,70 @@ class FileManager(QMainWindow):
         if self.search_model is None:
             return
         self.search_model.removeRows(0, self.search_model.rowCount())
-        for path in results:
-            item = QStandardItem(path)
-            item.setEditable(False)
-            self.search_model.appendRow(item)
+        icon_provider = QFileIconProvider()
+        for filepath in results:
+            name_item = QStandardItem(os.path.basename(filepath))
+            name_item.setEditable(False)
+            name_item.setData(filepath, Qt.UserRole + 1)
+            name_item.setIcon(icon_provider.icon(QFileInfo(filepath)))
+
+            dir_item = QStandardItem(os.path.dirname(filepath))
+            dir_item.setEditable(False)
+
+            try:
+                mtime = os.path.getmtime(filepath)
+                dt_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
+            except Exception:
+                mtime = 0
+                dt_str = ''
+
+            date_item = QStandardItem(dt_str)
+            date_item.setEditable(False)
+            date_item.setData(mtime, Qt.UserRole)
+
+            try:
+                if os.path.isdir(filepath):
+                    size = 0
+                    size_str = ''
+                else:
+                    size = os.path.getsize(filepath)
+                    size_str = self._format_size(size)
+            except Exception:
+                size = 0
+                size_str = ''
+
+            size_item = QStandardItem(size_str)
+            size_item.setEditable(False)
+            size_item.setData(size, Qt.UserRole)
+
+            self.search_model.appendRow([name_item, dir_item, date_item, size_item])
+
+    def _format_size(self, size):
+        if size < 1024:
+            return f"{size} B"
+        elif size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        elif size < 1024 * 1024 * 1024:
+            return f"{size / (1024 * 1024):.1f} MB"
+        else:
+            return f"{size / (1024 * 1024 * 1024):.1f} GB"
+
+    def on_listView2_doubleClicked(self, index):
+        source_index = self.search_proxy.mapToSource(index)
+        name_index = self.search_model.index(source_index.row(), 0)
+        filepath = name_index.data(Qt.UserRole + 1)
+        if filepath and os.path.exists(filepath):
+            if os.path.isdir(filepath):
+                tree_index = self.model.index(filepath)
+                if tree_index.isValid():
+                    self.treeView.setCurrentIndex(tree_index)
+                    self.treeView.expand(tree_index)
+                    self.treeView.scrollTo(tree_index)
+            else:
+                try:
+                    os.startfile(filepath)
+                except Exception as e:
+                    QMessageBox.warning(self, "錯誤", f"無法開啟檔案: {e}")
 
     def on_new(self):
         # 保留舊功能（建立新檔案），但不再由工具列第一個按鈕觸發
@@ -635,6 +715,192 @@ class FileManager(QMainWindow):
         status = self.statusBar()
         if status is not None:
             status.showMessage(f"字型: {left_size}pt")
+
+    def _config_path(self):
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
+
+    def load_config(self):
+        """從 config.ini 讀取參數並還原狀態。"""
+        cfg = configparser.ConfigParser()
+        cfg.read(self._config_path(), encoding='utf-8')
+
+        # 還原左側目錄樹選取的目錄
+        left_dir = cfg.get('General', 'left_dir', fallback='')
+        if left_dir and os.path.isdir(left_dir):
+            self.model.directoryLoaded.connect(lambda path, d=left_dir: self._try_select_dir(d))
+            self.model.setRootPath(left_dir)
+
+        # 還原分割器大小
+        splitter_sizes = cfg.get('Layout', 'splitter_sizes', fallback='')
+        if splitter_sizes:
+            try:
+                self.splitter.setSizes([int(x) for x in splitter_sizes.split(',')])
+            except Exception:
+                pass
+        right_splitter_sizes = cfg.get('Layout', 'right_splitter_sizes', fallback='')
+        if right_splitter_sizes:
+            try:
+                self.right_splitter.setSizes([int(x) for x in right_splitter_sizes.split(',')])
+            except Exception:
+                pass
+
+        # 還原左側 treeView 欄位寬度
+        left_col_widths = cfg.get('Columns', 'left_col_widths', fallback='')
+        if left_col_widths:
+            try:
+                for i, w in enumerate(left_col_widths.split(',')):
+                    self.treeView.setColumnWidth(i, int(w))
+            except Exception:
+                pass
+
+        # 還原中間 listView 欄位寬度與順序
+        mid_header = self.listView.header()
+        if mid_header is not None:
+            mid_col_widths = cfg.get('Columns', 'mid_col_widths', fallback='')
+            if mid_col_widths:
+                try:
+                    for i, w in enumerate(mid_col_widths.split(',')):
+                        self.listView.setColumnWidth(i, int(w))
+                except Exception:
+                    pass
+            mid_col_order = cfg.get('Columns', 'mid_col_order', fallback='')
+            if mid_col_order:
+                try:
+                    order = [int(x) for x in mid_col_order.split(',')]
+                    for vi, li in enumerate(order):
+                        cur = mid_header.visualIndex(li)
+                        if cur != vi:
+                            mid_header.moveSection(cur, vi)
+                except Exception:
+                    pass
+
+        # 還原右側 listView2 欄位寬度與順序
+        right_header = self.listView2.header()
+        if right_header is not None:
+            right_col_widths = cfg.get('Columns', 'right_col_widths', fallback='')
+            if right_col_widths:
+                try:
+                    for i, w in enumerate(right_col_widths.split(',')):
+                        self.listView2.setColumnWidth(i, int(w))
+                except Exception:
+                    pass
+            right_col_order = cfg.get('Columns', 'right_col_order', fallback='')
+            if right_col_order:
+                try:
+                    order = [int(x) for x in right_col_order.split(',')]
+                    for vi, li in enumerate(order):
+                        cur = right_header.visualIndex(li)
+                        if cur != vi:
+                            right_header.moveSection(cur, vi)
+                except Exception:
+                    pass
+
+        # 還原中間 listView 排序方式
+        mid_sort_col = cfg.get('Sort', 'mid_sort_column', fallback='')
+        mid_sort_ord = cfg.get('Sort', 'mid_sort_order', fallback='')
+        if mid_sort_col and mid_sort_ord:
+            try:
+                col = int(mid_sort_col)
+                order = Qt.SortOrder.AscendingOrder if int(mid_sort_ord) == 0 else Qt.SortOrder.DescendingOrder
+                self.listView.sortByColumn(col, order)
+            except Exception:
+                pass
+
+        # 還原右側 listView2 排序方式
+        right_sort_col = cfg.get('Sort', 'right_sort_column', fallback='')
+        right_sort_ord = cfg.get('Sort', 'right_sort_order', fallback='')
+        if right_sort_col and right_sort_ord:
+            try:
+                col = int(right_sort_col)
+                order = Qt.SortOrder.AscendingOrder if int(right_sort_ord) == 0 else Qt.SortOrder.DescendingOrder
+                self.listView2.sortByColumn(col, order)
+            except Exception:
+                pass
+
+    def _try_select_dir(self, dir_path):
+        """嘗試在左側樹狀視圖中選取並展開指定目錄。"""
+        idx = self.model.index(dir_path)
+        if idx.isValid():
+            self.treeView.setCurrentIndex(idx)
+            self.treeView.scrollTo(idx)
+            self.treeView.expand(idx)
+            # 同時更新中間檔案列表
+            self.fileListModel.setRootPath(dir_path)
+            self.fileListModel.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)
+            self.listView.setRootIndex(self.fileListModel.index(dir_path))
+
+    def save_config(self):
+        """將目前狀態寫入 config.ini。"""
+        cfg = configparser.ConfigParser()
+        cfg.read(self._config_path(), encoding='utf-8')
+
+        if not cfg.has_section('General'):
+            cfg.add_section('General')
+        if not cfg.has_section('Layout'):
+            cfg.add_section('Layout')
+        if not cfg.has_section('Columns'):
+            cfg.add_section('Columns')
+        if not cfg.has_section('Sort'):
+            cfg.add_section('Sort')
+
+        # 儲存左側目錄樹目前選取的目錄
+        indexes = self.treeView.selectedIndexes()
+        if indexes:
+            left_dir = self.model.filePath(indexes[0])
+        else:
+            left_dir = ''
+        cfg.set('General', 'left_dir', left_dir)
+
+        # 儲存分割器大小
+        cfg.set('Layout', 'splitter_sizes', ','.join(str(s) for s in self.splitter.sizes()))
+        cfg.set('Layout', 'right_splitter_sizes', ','.join(str(s) for s in self.right_splitter.sizes()))
+
+        # 儲存左側 treeView 欄位寬度
+        left_widths = []
+        for i in range(self.model.columnCount()):
+            left_widths.append(str(self.treeView.columnWidth(i)))
+        cfg.set('Columns', 'left_col_widths', ','.join(left_widths))
+
+        # 儲存中間 listView 欄位寬度與順序
+        mid_header = self.listView.header()
+        if mid_header is not None:
+            mid_widths = []
+            mid_order = []
+            for i in range(mid_header.count()):
+                mid_widths.append(str(self.listView.columnWidth(i)))
+                mid_order.append(str(mid_header.logicalIndex(i)))
+            cfg.set('Columns', 'mid_col_widths', ','.join(mid_widths))
+            cfg.set('Columns', 'mid_col_order', ','.join(mid_order))
+
+        # 儲存右側 listView2 欄位寬度與順序
+        right_header = self.listView2.header()
+        if right_header is not None:
+            right_widths = []
+            right_order = []
+            for i in range(right_header.count()):
+                right_widths.append(str(self.listView2.columnWidth(i)))
+                right_order.append(str(right_header.logicalIndex(i)))
+            cfg.set('Columns', 'right_col_widths', ','.join(right_widths))
+            cfg.set('Columns', 'right_col_order', ','.join(right_order))
+
+        # 儲存中間 listView 排序方式
+        mid_header = self.listView.header()
+        if mid_header is not None:
+            cfg.set('Sort', 'mid_sort_column', str(mid_header.sortIndicatorSection()))
+            cfg.set('Sort', 'mid_sort_order', str(int(mid_header.sortIndicatorOrder())))
+
+        # 儲存右側 listView2 排序方式
+        right_header = self.listView2.header()
+        if right_header is not None:
+            cfg.set('Sort', 'right_sort_column', str(right_header.sortIndicatorSection()))
+            cfg.set('Sort', 'right_sort_order', str(int(right_header.sortIndicatorOrder())))
+
+        with open(self._config_path(), 'w', encoding='utf-8') as f:
+            cfg.write(f)
+
+    def closeEvent(self, event):
+        self.save_config()
+        super().closeEvent(event)
 
 def main():
     app = QApplication(sys.argv)
