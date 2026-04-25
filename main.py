@@ -7,8 +7,9 @@ import ctypes.wintypes as wt
 import struct
 import time
 import configparser
-from PyQt5.QtWidgets import QApplication, QMainWindow, QTreeView, QFileSystemModel, QListView, QWidget, QHBoxLayout, QVBoxLayout, QToolBar, QAction, QMessageBox, QStyle, QToolButton, QSplitter, QLineEdit, QSizePolicy, QFileIconProvider
-from PyQt5.QtCore import QDir, Qt, QSize, QSortFilterProxyModel, QFileInfo
+import json
+from PyQt5.QtWidgets import QApplication, QMainWindow, QTreeView, QFileSystemModel, QListView, QWidget, QHBoxLayout, QVBoxLayout, QToolBar, QAction, QMessageBox, QStyle, QToolButton, QSplitter, QLineEdit, QSizePolicy, QFileIconProvider, QTabBar, QAbstractItemView, QMenu
+from PyQt5.QtCore import QDir, Qt, QSize, QSortFilterProxyModel, QFileInfo, pyqtSignal, QEvent, QTimer, QItemSelection, QItemSelectionModel
 from PyQt5.QtGui import QKeySequence, QIcon, QFont, QPixmap, QPainter, QColor, QPalette, QStandardItemModel, QStandardItem
 from datetime import datetime
 # Optional SVG renderer (may not be present in minimal PyQt installs)
@@ -224,6 +225,179 @@ class SearchSortProxyModel(QSortFilterProxyModel):
         return super().lessThan(left, right)
 
 
+class SearchListView(QTreeView):
+    """QTreeView 子類別，支援鍵盤創點定錨點的 Shift 區間選取和 Ctrl 切換選取。
+    Shift+點擊從第一次按下的項目開始延伸，不會因後續 Shift+點擊而變更錨點。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._anchor = None  # 錨點 index（第一次普通點擊時設定）
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.RightButton:
+            index = self.indexAt(event.pos())
+            if index.isValid():
+                sel = self.selectionModel()
+                if sel and sel.isSelected(index):
+                    # 右鍵點在已選取的項目上：保留選取，只觸發 context menu
+                    return
+            # 右鍵點在未選取項目上：先讓 Qt 選取它，再觸發 context menu
+            super().mousePressEvent(event)
+            return
+
+        if event.button() != Qt.LeftButton:
+            super().mousePressEvent(event)
+            return
+
+        index = self.indexAt(event.pos())
+        modifiers = event.modifiers()
+        sel = self.selectionModel()
+
+        if not index.isValid() or sel is None:
+            self._anchor = None
+            super().mousePressEvent(event)
+            return
+
+        if modifiers & Qt.ShiftModifier:
+            # Shift+點擊：從錨點延伸至目前項目，不改變錨點
+            anchor = self._anchor if (self._anchor is not None and self._anchor.isValid()) else index
+            a_row = anchor.row()
+            c_row = index.row()
+            model = self.model()
+            top = min(a_row, c_row)
+            bottom = max(a_row, c_row)
+            cols = model.columnCount() if model else 1
+            parent_idx = anchor.parent()
+            selection = QItemSelection()
+            selection.select(
+                model.index(top, 0, parent_idx),
+                model.index(bottom, cols - 1, parent_idx)
+            )
+            sel.select(selection, QItemSelectionModel.ClearAndSelect)
+            sel.setCurrentIndex(index, QItemSelectionModel.NoUpdate)
+        elif modifiers & Qt.ControlModifier:
+            # Ctrl+點擊：切換目前項目，錨點更新至目前項目
+            self._anchor = index
+            sel.select(
+                QItemSelection(index.sibling(index.row(), 0),
+                               index.sibling(index.row(), (self.model().columnCount() - 1) if self.model() else 0)),
+                QItemSelectionModel.Toggle
+            )
+            sel.setCurrentIndex(index, QItemSelectionModel.NoUpdate)
+        else:
+            # 普通點擊：改變錨點並只選該項目
+            self._anchor = index
+            super().mousePressEvent(event)
+
+
+class PathTabBar(QWidget):
+    """多頁籤列，追蹤路徑（左/中面板）或搜尋關鍵字（右面板）。
+    tab_switched 訊號在使用者切換頁籤時發出，帶出該頁籤儲存的資料。"""
+    tab_switched = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.tab_bar = QTabBar(self)
+        self.tab_bar.setTabsClosable(True)
+        self.tab_bar.setMovable(True)
+        self.tab_bar.setExpanding(False)
+        self.tab_bar.tabCloseRequested.connect(self._on_close_tab)
+        self.tab_bar.currentChanged.connect(self._on_current_changed)
+        self.tab_bar.tabMoved.connect(self._on_tab_moved)
+
+        self._add_btn = QToolButton(self)
+        self._add_btn.setText("+")
+        self._add_btn.setToolTip("新增頁籤")
+        self._add_btn.setFixedSize(22, 22)
+        self._add_btn.clicked.connect(lambda: self.add_tab(""))
+
+        layout.addWidget(self.tab_bar, 1)
+        layout.addWidget(self._add_btn, 0)
+        self.setLayout(layout)
+
+        self._tab_data = []   # 每個頁籤儲存的資料（路徑或關鍵字）
+        self._emit_on_change = True
+
+        # 初始頁籤
+        self._internal_add("", "新頁籤")
+
+    def _internal_add(self, data, label):
+        prev = self._emit_on_change
+        self._emit_on_change = False
+        idx = self.tab_bar.addTab(label)
+        self._tab_data.append(data)
+        self._emit_on_change = prev
+        return idx
+
+    def add_tab(self, data="", label=""):
+        """新增頁籤並切換至該頁籤。label 預設由 data 衍生。"""
+        display = label or (data if data else "新頁籤")
+        self._internal_add(data, display)
+        self._emit_on_change = True
+        self.tab_bar.setCurrentIndex(self.tab_bar.count() - 1)
+        return self.tab_bar.count() - 1
+
+    def set_current_data(self, data, label=""):
+        """更新目前頁籤儲存的資料與標籤文字。"""
+        idx = self.tab_bar.currentIndex()
+        if 0 <= idx < len(self._tab_data):
+            self._tab_data[idx] = data
+            display = label or (data if data else "新頁籤")
+            self.tab_bar.setTabText(idx, display)
+
+    def current_data(self):
+        idx = self.tab_bar.currentIndex()
+        if 0 <= idx < len(self._tab_data):
+            return self._tab_data[idx]
+        return ""
+
+    def _on_close_tab(self, index):
+        if self.tab_bar.count() > 1:
+            prev = self._emit_on_change
+            self._emit_on_change = False
+            self.tab_bar.removeTab(index)
+            self._tab_data.pop(index)
+            self._emit_on_change = prev
+
+    def _on_tab_moved(self, from_index, to_index):
+        """頁籤拖動時同步 _tab_data 的順序。"""
+        self._tab_data.insert(to_index, self._tab_data.pop(from_index))
+
+    def _on_current_changed(self, index):
+        if self._emit_on_change and 0 <= index < len(self._tab_data):
+            self.tab_switched.emit(self._tab_data[index])
+
+    def get_all_tabs(self):
+        """回傳 [(data, label), ...] 串列及目前頁籤索引。"""
+        tabs = []
+        for i in range(self.tab_bar.count()):
+            data = self._tab_data[i] if i < len(self._tab_data) else ""
+            label = self.tab_bar.tabText(i)
+            tabs.append((data, label))
+        return tabs, self.tab_bar.currentIndex()
+
+    def restore_tabs(self, tabs, current_index):
+        """以給定的 [(data, label), ...] 重建整個頁籤列。"""
+        prev = self._emit_on_change
+        self._emit_on_change = False
+        while self.tab_bar.count() > 0:
+            self.tab_bar.removeTab(0)
+        self._tab_data.clear()
+        for data, label in tabs:
+            self.tab_bar.addTab(label)
+            self._tab_data.append(data)
+        if not tabs:
+            self.tab_bar.addTab("新頁籤")
+            self._tab_data.append("")
+        safe_idx = current_index if 0 <= current_index < self.tab_bar.count() else 0
+        self.tab_bar.setCurrentIndex(safe_idx)
+        self._emit_on_change = prev
+
+
 class FileManager(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -380,19 +554,34 @@ class FileManager(QMainWindow):
         # 创建右侧的文件列表视图
         self.listView = QTreeView(self)
         self.listView.setSortingEnabled(True)
-        self.listView2 = QTreeView(self)
+        self.listView2 = SearchListView(self)
         self.listView2.setSortingEnabled(True)
+        self.listView2.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.listView2.customContextMenuRequested.connect(self._show_search_context_menu)
 
+        # 中間面板：加入多重頁籤列
+        self.mid_tab_bar = PathTabBar(self)
         self.mid_container = QWidget()
         mid_vbox = QVBoxLayout()
         mid_vbox.setContentsMargins(0, 0, 0, 0)
         mid_vbox.setSpacing(0)
+        mid_vbox.addWidget(self.mid_tab_bar)
         mid_vbox.addWidget(self.listView, 1)
         self.mid_container.setLayout(mid_vbox)
 
+        # 右側面板：加入多重頁籤列並包裝
+        self.right_tab_bar = PathTabBar(self)
+        right_frame = QWidget()
+        right_frame_vbox = QVBoxLayout()
+        right_frame_vbox.setContentsMargins(0, 0, 0, 0)
+        right_frame_vbox.setSpacing(0)
+        right_frame_vbox.addWidget(self.right_tab_bar)
+        right_frame_vbox.addWidget(self.listView2, 1)
+        right_frame.setLayout(right_frame_vbox)
+
         self.right_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.right_splitter.addWidget(self.mid_container)
-        self.right_splitter.addWidget(self.listView2)
+        self.right_splitter.addWidget(right_frame)
         self.right_splitter.setStretchFactor(0, 1)
         self.right_splitter.setStretchFactor(1, 1)
 
@@ -402,9 +591,19 @@ class FileManager(QMainWindow):
         right_vbox.addWidget(self.right_splitter)
         right_container.setLayout(right_vbox)
 
+        # 左側面板：加入多重頁籤列並包裝
+        self.left_tab_bar = PathTabBar(self)
+        left_frame = QWidget()
+        left_vbox = QVBoxLayout()
+        left_vbox.setContentsMargins(0, 0, 0, 0)
+        left_vbox.setSpacing(0)
+        left_vbox.addWidget(self.left_tab_bar)
+        left_vbox.addWidget(self.treeView, 1)
+        left_frame.setLayout(left_vbox)
+
         # 创建一个可调整大小的分割器
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.splitter.addWidget(self.treeView)
+        self.splitter.addWidget(left_frame)
         self.splitter.addWidget(right_container)
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 3)
@@ -465,7 +664,10 @@ class FileManager(QMainWindow):
         tree_selection = self.treeView.selectionModel()
         if tree_selection is not None:
             tree_selection.selectionChanged.connect(self.on_treeView_selectionChanged)
-
+        # 頁籤列切換訊號
+        self.left_tab_bar.tab_switched.connect(self._on_left_tab_switched)
+        self.mid_tab_bar.tab_switched.connect(self._on_mid_tab_switched)
+        self.right_tab_bar.tab_switched.connect(self._on_right_tab_switched)
         # 載入 config.ini 並還原上次狀態
         self.load_config()
 
@@ -481,6 +683,9 @@ class FileManager(QMainWindow):
             root_index = self.fileListModel.index(path)
             self.listView.setRootIndex(root_index)
             self.treeView.resizeColumnToContents(0)  # 自动调整列宽
+            # 更新左側與中間頁籤列標題
+            self.left_tab_bar.set_current_data(path, path)
+            self.mid_tab_bar.set_current_data(path, path)
 
     def on_listView_clicked(self, index):
         """处理中央视窗文件单击事件"""
@@ -507,6 +712,8 @@ class FileManager(QMainWindow):
                 self.treeView.setCurrentIndex(tree_index)
                 self.treeView.expand(tree_index)
                 self.treeView.scrollTo(tree_index)
+            # 更新中間頁籤列標題
+            self.mid_tab_bar.set_current_data(path, path)
         else:
             try:
                 os.startfile(path)
@@ -530,6 +737,14 @@ class FileManager(QMainWindow):
 
     def keyPressEvent(self, e):
         global ref_s, ref_e, global_keywords
+
+        # Delete 鍵：刪除右側搜尋結果中選取的檔案
+        if e.key() == Qt.Key.Key_Delete:
+            fw = QApplication.focusWidget()
+            if fw is self.listView2 or fw is self.listView2.viewport():
+                self._delete_selected_search_files()
+                return
+
         # 参数超过一个以上才能缩减
         if ref_e - ref_s > 0:
             if e.key() == Qt.Key.Key_F3:
@@ -570,7 +785,32 @@ class FileManager(QMainWindow):
         keywords = [keyword for keyword in keywords if keyword.strip()]
         return keywords
 
+    def _on_left_tab_switched(self, path):
+        """切換左側頁籤：導航目錄樹至儲存的路徑。"""
+        if path and os.path.isdir(path):
+            idx = self.model.index(path)
+            if idx.isValid():
+                self.treeView.setCurrentIndex(idx)
+                self.treeView.scrollTo(idx)
+                self.treeView.expand(idx)
+
+    def _on_mid_tab_switched(self, path):
+        """切換中間頁籤：更新檔案列表至儲存的路徑。"""
+        if path and os.path.isdir(path):
+            self.fileListModel.setRootPath(path)
+            self.fileListModel.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)
+            self.listView.setRootIndex(self.fileListModel.index(path))
+
+    def _on_right_tab_switched(self, keyword):
+        """切換右側頁籤：以儲存的關鍵字重新執行搜尋。"""
+        if keyword:
+            self.execute_search_command(keyword)
+        elif self.search_model:
+            self.search_model.removeRows(0, self.search_model.rowCount())
+
     def execute_search_command(self, search_command):
+        # 更新右側頁籤列顯示目前搜尋關鍵字
+        self.right_tab_bar.set_current_data(search_command, search_command)
         # 使用 Everything SDK 查詢
         if self.everything.is_available():
             results = self.everything.query(search_command)
@@ -659,6 +899,169 @@ class FileManager(QMainWindow):
                     os.startfile(filepath)
                 except Exception as e:
                     QMessageBox.warning(self, "錯誤", f"無法開啟檔案: {e}")
+
+    def _get_selected_search_paths(self):
+        """回傳 listView2 中所有選取列的完整路徑。"""
+        rows_seen = set()
+        paths = []
+        for proxy_index in self.listView2.selectedIndexes():
+            if proxy_index.column() != 0:
+                continue
+            source_index = self.search_proxy.mapToSource(proxy_index)
+            row = source_index.row()
+            if row in rows_seen:
+                continue
+            rows_seen.add(row)
+            item = self.search_model.item(row, 0)
+            if item is not None:
+                filepath = item.data(Qt.UserRole + 1)
+                if filepath:
+                    paths.append(filepath)
+        return paths
+
+    def _show_search_context_menu(self, pos):
+        """在 listView2 上顯示 Windows 檔案總管相同的右鍵選單。"""
+        paths = self._get_selected_search_paths()
+        if not paths:
+            return
+        global_pos = self.listView2.viewport().mapToGlobal(pos)
+        try:
+            self._invoke_shell_context_menu(int(self.winId()), paths, global_pos.x(), global_pos.y())
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            menu = QMenu(self)
+            if len(paths) == 1 and os.path.exists(paths[0]):
+                menu.addAction("開啟", lambda p=paths[0]: os.startfile(p))
+            menu.addAction("刪除（移至資源回收桶）", self._delete_selected_search_files)
+            menu.exec_(global_pos)
+
+    def _invoke_shell_context_menu(self, hwnd, paths, x, y):
+        """Show the Windows Shell context menu (identical to Explorer right-click)."""
+        from win32com.shell import shell, shellcon
+        import win32gui
+        import win32con
+        import pythoncom
+
+        pythoncom.CoInitialize()
+        try:
+            # 依第一個路徑的父目錄分組（GetUIObjectOf 要求相同父目錄）
+            parent_dir = os.path.normpath(os.path.dirname(os.path.abspath(paths[0])))
+            norm_parent = os.path.normcase(parent_dir)
+            same_parent = [
+                p for p in paths
+                if os.path.normcase(
+                    os.path.normpath(os.path.dirname(os.path.abspath(p)))
+                ) == norm_parent
+            ]
+
+            # 取得桌面 IShellFolder
+            desktop = shell.SHGetDesktopFolder()
+
+            # SHParseDisplayName 在此 pywin32 版本只接受 2 個參數: (name, sfgaoMask)
+            parent_pidl = shell.SHParseDisplayName(parent_dir, 0)[0]
+
+            # BindToObject: pbc 用 None 代表 NULL
+            parent_sf = desktop.BindToObject(parent_pidl, None, shell.IID_IShellFolder)
+
+            # 取得每個檔案相對於父目錄的子 PIDL
+            # ParseDisplayName 回傳 (eaten, pidl, attrs)，取 index 1 為 PIDL
+            child_pidls = []
+            for p in same_parent:
+                result = parent_sf.ParseDisplayName(hwnd, None, os.path.basename(p))
+                child_pidls.append(result[1])
+
+            # GetUIObjectOf 回傳 (reserved, IContextMenu)，取 index 1 為實際介面
+            icm = parent_sf.GetUIObjectOf(
+                hwnd, child_pidls, shell.IID_IContextMenu, 0
+            )[1]
+
+            # 建立彈出選單並填入 Shell 命令
+            hmenu = win32gui.CreatePopupMenu()
+            icm.QueryContextMenu(
+                hmenu, 0, 1, 0x7FFF,
+                shellcon.CMF_EXPLORE | shellcon.CMF_CANRENAME
+            )
+
+            try:
+                win32gui.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
+
+            cmd = win32gui.TrackPopupMenu(
+                hmenu,
+                win32con.TPM_LEFTALIGN | win32con.TPM_RIGHTBUTTON | win32con.TPM_RETURNCMD,
+                x, y, 0, hwnd, None
+            )
+            win32gui.PostMessage(hwnd, win32con.WM_NULL, 0, 0)
+            win32gui.DestroyMenu(hmenu)
+
+            if cmd > 0:
+                # lpVerb 為整數時代表 MAKEINTRESOURCE(cmd - idCmdFirst)
+                ci = (0, hwnd, cmd - 1, None, None, win32con.SW_SHOWNORMAL, 0, None)
+                icm.InvokeCommand(ci)
+                QTimer.singleShot(800, self._refresh_search_results_existence)
+        finally:
+            pythoncom.CoUninitialize()
+
+    def _refresh_search_results_existence(self):
+        """移除搜尋結果中已不存在的檔案列。"""
+        rows_to_remove = []
+        for row in range(self.search_model.rowCount()):
+            item = self.search_model.item(row, 0)
+            if item is None:
+                continue
+            filepath = item.data(Qt.UserRole + 1)
+            if filepath and not os.path.exists(filepath):
+                rows_to_remove.append(row)
+        for row in reversed(rows_to_remove):
+            self.search_model.removeRow(row)
+
+    def _delete_selected_search_files(self):
+        """將選取的檔案移至資源回收桶（Delete 鍵 / 備援選單）。"""
+        paths = self._get_selected_search_paths()
+        existing = [p for p in paths if os.path.exists(p)]
+        if not existing:
+            return
+
+        count = len(existing)
+        first_name = os.path.basename(existing[0])
+        label = f"「{first_name}」等 {count} 個項目" if count > 1 else f"「{first_name}」"
+        reply = QMessageBox.question(
+            self, "確認刪除",
+            f"確定要將 {label} 移至資源回收桶嗎？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        class SHFILEOPSTRUCTW(ctypes.Structure):
+            _fields_ = [
+                ("hwnd",                  wt.HWND),
+                ("wFunc",                 wt.UINT),
+                ("pFrom",                 ctypes.c_wchar_p),
+                ("pTo",                   ctypes.c_wchar_p),
+                ("fFlags",                ctypes.c_ushort),
+                ("fAnyOperationsAborted", wt.BOOL),
+                ("hNameMappings",         ctypes.c_void_p),
+                ("lpszProgressTitle",     ctypes.c_wchar_p),
+            ]
+
+        FO_DELETE = 0x0003
+        FOF_ALLOWUNDO = 0x0040
+
+        # 路徑以 \0 分隔，結尾雙 \0
+        path_buf = ctypes.create_unicode_buffer('\0'.join(existing) + '\0')
+        op = SHFILEOPSTRUCTW()
+        op.hwnd = int(self.winId())
+        op.wFunc = FO_DELETE
+        op.pFrom = ctypes.cast(path_buf, ctypes.c_wchar_p)
+        op.pTo = None
+        op.fFlags = FOF_ALLOWUNDO
+
+        result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+        if result == 0 and not op.fAnyOperationsAborted:
+            self._refresh_search_results_existence()
 
     def on_new(self):
         # 保留舊功能（建立新檔案），但不再由工具列第一個按鈕觸發
@@ -817,6 +1220,17 @@ class FileManager(QMainWindow):
             except Exception:
                 pass
 
+        # 還原三個面板的頁籤資訊
+        for key, tab_widget in (('left', self.left_tab_bar), ('mid', self.mid_tab_bar), ('right', self.right_tab_bar)):
+            raw = cfg.get('Tabs', f'{key}_tabs', fallback='')
+            current = cfg.getint('Tabs', f'{key}_tabs_current', fallback=0)
+            if raw:
+                try:
+                    tabs = [(d, l) for d, l in json.loads(raw)]
+                    tab_widget.restore_tabs(tabs, current)
+                except Exception:
+                    pass
+
     def _try_select_dir(self, dir_path):
         """嘗試在左側樹狀視圖中選取並展開指定目錄。"""
         idx = self.model.index(dir_path)
@@ -828,6 +1242,9 @@ class FileManager(QMainWindow):
             self.fileListModel.setRootPath(dir_path)
             self.fileListModel.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)
             self.listView.setRootIndex(self.fileListModel.index(dir_path))
+            # 更新頁籤列標題
+            self.left_tab_bar.set_current_data(dir_path, dir_path)
+            self.mid_tab_bar.set_current_data(dir_path, dir_path)
 
     def save_config(self):
         """將目前狀態寫入 config.ini。"""
@@ -842,6 +1259,8 @@ class FileManager(QMainWindow):
             cfg.add_section('Columns')
         if not cfg.has_section('Sort'):
             cfg.add_section('Sort')
+        if not cfg.has_section('Tabs'):
+            cfg.add_section('Tabs')
 
         # 儲存左側目錄樹目前選取的目錄
         indexes = self.treeView.selectedIndexes()
@@ -894,6 +1313,12 @@ class FileManager(QMainWindow):
         if right_header is not None:
             cfg.set('Sort', 'right_sort_column', str(right_header.sortIndicatorSection()))
             cfg.set('Sort', 'right_sort_order', str(int(right_header.sortIndicatorOrder())))
+
+        # 儲存三個面板的頁籤資訊
+        for key, tab_widget in (('left', self.left_tab_bar), ('mid', self.mid_tab_bar), ('right', self.right_tab_bar)):
+            tabs, current = tab_widget.get_all_tabs()
+            cfg.set('Tabs', f'{key}_tabs', json.dumps(tabs, ensure_ascii=False))
+            cfg.set('Tabs', f'{key}_tabs_current', str(current))
 
         with open(self._config_path(), 'w', encoding='utf-8') as f:
             cfg.write(f)
