@@ -8,7 +8,8 @@ import struct
 import time
 import configparser
 import json
-from PyQt5.QtWidgets import QApplication, QMainWindow, QTreeView, QFileSystemModel, QListView, QWidget, QHBoxLayout, QVBoxLayout, QToolBar, QAction, QMessageBox, QStyle, QToolButton, QSplitter, QLineEdit, QSizePolicy, QFileIconProvider, QTabBar, QAbstractItemView, QMenu
+import traceback
+from PyQt5.QtWidgets import QApplication, QMainWindow, QTreeView, QFileSystemModel, QListView, QWidget, QHBoxLayout, QVBoxLayout, QToolBar, QAction, QMessageBox, QStyle, QToolButton, QSplitter, QLineEdit, QSizePolicy, QFileIconProvider, QTabBar, QAbstractItemView, QMenu, QStylePainter, QStyleOptionTab, QComboBox
 from PyQt5.QtCore import QDir, Qt, QSize, QSortFilterProxyModel, QFileInfo, pyqtSignal, QEvent, QTimer, QItemSelection, QItemSelectionModel
 from PyQt5.QtGui import QKeySequence, QIcon, QFont, QPixmap, QPainter, QColor, QPalette, QStandardItemModel, QStandardItem
 from datetime import datetime
@@ -290,6 +291,38 @@ class SearchListView(QTreeView):
             super().mousePressEvent(event)
 
 
+class FixedWidthTabBar(QTabBar):
+    """每個頁籤寬度固定為 10 個字元大小（依字型度量計算），文字靠左對齊。"""
+    CHAR_COUNT = 10
+    LEFT_PAD = 4  # 文字距左邊距 px
+
+    def tabSizeHint(self, index):
+        hint = super().tabSizeHint(index)
+        fm = self.fontMetrics()
+        char_w = max(fm.averageCharWidth(), fm.height())
+        hint.setWidth(char_w * self.CHAR_COUNT)
+        return hint
+
+    def minimumTabSizeHint(self, index):
+        return self.tabSizeHint(index)
+
+    def paintEvent(self, event):
+        # 取得關閉按鈕的像素寬度（含右側 padding），用來保留空間
+        close_btn_w = self.style().pixelMetric(QStyle.PM_TabCloseIndicatorWidth, None, self) + 6
+        painter = QStylePainter(self)
+        for i in range(self.count()):
+            opt = QStyleOptionTab()
+            self.initStyleOption(opt, i)
+            # 移除文字，先畫頁籤底色/邊框
+            text = opt.text
+            opt.text = ""
+            painter.drawControl(QStyle.CE_TabBarTab, opt)
+            # 手動繪製靠左文字，右側保留關閉按鈕空間
+            tab_rect = self.tabRect(i)
+            text_rect = tab_rect.adjusted(self.LEFT_PAD, 0, -close_btn_w, 0)
+            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, text)
+
+
 class PathTabBar(QWidget):
     """多頁籤列，追蹤路徑（左/中面板）或搜尋關鍵字（右面板）。
     tab_switched 訊號在使用者切換頁籤時發出，帶出該頁籤儲存的資料。"""
@@ -301,7 +334,7 @@ class PathTabBar(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.tab_bar = QTabBar(self)
+        self.tab_bar = FixedWidthTabBar(self)
         self.tab_bar.setTabsClosable(True)
         self.tab_bar.setMovable(True)
         self.tab_bar.setExpanding(False)
@@ -561,21 +594,36 @@ class FileManager(QMainWindow):
 
         # 中間面板：加入多重頁籤列
         self.mid_tab_bar = PathTabBar(self)
+        self.mid_info_combo = QComboBox()
+        self.mid_info_combo.setEditable(True)
+        self.mid_info_combo.lineEdit().setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.mid_info_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.mid_container = QWidget()
         mid_vbox = QVBoxLayout()
         mid_vbox.setContentsMargins(0, 0, 0, 0)
         mid_vbox.setSpacing(0)
         mid_vbox.addWidget(self.mid_tab_bar)
+        mid_vbox.addWidget(self.mid_info_combo)
         mid_vbox.addWidget(self.listView, 1)
         self.mid_container.setLayout(mid_vbox)
 
         # 右側面板：加入多重頁籤列並包裝
         self.right_tab_bar = PathTabBar(self)
+        self.right_info_combo = QComboBox()
+        self.right_info_combo.setEditable(True)
+        self.right_info_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.right_info_combo.lineEdit().setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.right_info_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # 儲存使用者輸入的文字，從 textEdited 更新，因此在 returnPressed 時即使 Qt 內部清空 lineEdit 也能取得
+        self._combo_typed_text = ""
+        self.right_info_combo.lineEdit().textEdited.connect(self._on_combo_text_edited)
+        self.right_info_combo.lineEdit().returnPressed.connect(self._on_combo_return_pressed)
         right_frame = QWidget()
         right_frame_vbox = QVBoxLayout()
         right_frame_vbox.setContentsMargins(0, 0, 0, 0)
         right_frame_vbox.setSpacing(0)
         right_frame_vbox.addWidget(self.right_tab_bar)
+        right_frame_vbox.addWidget(self.right_info_combo)
         right_frame_vbox.addWidget(self.listView2, 1)
         right_frame.setLayout(right_frame_vbox)
 
@@ -593,11 +641,16 @@ class FileManager(QMainWindow):
 
         # 左側面板：加入多重頁籤列並包裝
         self.left_tab_bar = PathTabBar(self)
+        self.left_info_combo = QComboBox()
+        self.left_info_combo.setEditable(True)
+        self.left_info_combo.lineEdit().setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.left_info_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         left_frame = QWidget()
         left_vbox = QVBoxLayout()
         left_vbox.setContentsMargins(0, 0, 0, 0)
         left_vbox.setSpacing(0)
         left_vbox.addWidget(self.left_tab_bar)
+        left_vbox.addWidget(self.left_info_combo)
         left_vbox.addWidget(self.treeView, 1)
         left_frame.setLayout(left_vbox)
 
@@ -655,6 +708,10 @@ class FileManager(QMainWindow):
             self.listView2.doubleClicked.connect(self.on_listView2_doubleClicked)
         except Exception:
             pass
+        # 用 eventFilter 追蹤 listView viewport 上的實際滑鼠按下事件，
+        # 只有真正的使用者點擊才觸發 on_listView_clicked 中的搜尋
+        self._listview_mouse_pressed = False
+        self.listView.viewport().installEventFilter(self)
 
         # 设置默认排序为日期排序
         self.listView.sortByColumn(3, Qt.SortOrder.DescendingOrder)
@@ -668,6 +725,12 @@ class FileManager(QMainWindow):
         self.left_tab_bar.tab_switched.connect(self._on_left_tab_switched)
         self.mid_tab_bar.tab_switched.connect(self._on_mid_tab_switched)
         self.right_tab_bar.tab_switched.connect(self._on_right_tab_switched)
+        # 用 eventFilter 追蹤 listView viewport 上的實際滑鼠按下事件，
+        # 只有真正的使用者點擊才觸發 on_listView_clicked 中的搜尋
+        self._listview_mouse_pressed = False
+        self.listView.viewport().installEventFilter(self)
+        # 下拉清單點擊搜尋
+        self.right_info_combo.view().pressed.connect(self._on_right_info_combo_list_pressed)
         # 載入 config.ini 並還原上次狀態
         self.load_config()
 
@@ -686,9 +749,15 @@ class FileManager(QMainWindow):
             # 更新左側與中間頁籤列標題
             self.left_tab_bar.set_current_data(path, path)
             self.mid_tab_bar.set_current_data(path, path)
+            self.left_info_combo.lineEdit().setText(path)
+            self.mid_info_combo.lineEdit().setText(path)
 
     def on_listView_clicked(self, index):
         """处理中央视窗文件单击事件"""
+        # 只有在 listView viewport 上確實發生過滑鼠按下時才觸發搜尋
+        if not self._listview_mouse_pressed:
+            return
+        self._listview_mouse_pressed = False
         global ref_s, ref_e, global_keywords
         
         if not self.fileListModel.isDir(index):
@@ -714,6 +783,7 @@ class FileManager(QMainWindow):
                 self.treeView.scrollTo(tree_index)
             # 更新中間頁籤列標題
             self.mid_tab_bar.set_current_data(path, path)
+            self.mid_info_combo.lineEdit().setText(path)
         else:
             try:
                 os.startfile(path)
@@ -745,21 +815,15 @@ class FileManager(QMainWindow):
                 self._delete_selected_search_files()
                 return
 
-        # 参数超过一个以上才能缩减
-        if ref_e - ref_s > 0:
-            if e.key() == Qt.Key.Key_F3:
-                # 开头指针向后移一格
-                ref_s = ref_s + 1
-
-            if e.key() == Qt.Key.Key_F4:
-                # 结尾指表向前移一格
-                ref_e = ref_e - 1
-
-        # 有超过一个以上的参数，所以需要插入|
-        if ref_e - ref_s > 0:
-            # 参数指针初始化，开头设为0，结尾设为参数总数
-            search_command = '|'.join(global_keywords[ref_s:ref_e])
-            self.execute_search_command(search_command)
+        # F3/F4 縮減搜尋關鍵字範圍，其他鍵不觸發檔案式搜尋
+        if e.key() == Qt.Key.Key_F3 and ref_e - ref_s > 0:
+            ref_s = ref_s + 1
+            if ref_e - ref_s > 0:
+                self.execute_search_command('|'.join(global_keywords[ref_s:ref_e]))
+        elif e.key() == Qt.Key.Key_F4 and ref_e - ref_s > 0:
+            ref_e = ref_e - 1
+            if ref_e - ref_s > 0:
+                self.execute_search_command('|'.join(global_keywords[ref_s:ref_e]))
 
     def extract_keywords(self, file_name):
         # 自定义解析文件名以提取多个参数，只提取括号内的文字
@@ -787,6 +851,7 @@ class FileManager(QMainWindow):
 
     def _on_left_tab_switched(self, path):
         """切換左側頁籤：導航目錄樹至儲存的路徑。"""
+        self.left_info_combo.lineEdit().setText(path)
         if path and os.path.isdir(path):
             idx = self.model.index(path)
             if idx.isValid():
@@ -796,22 +861,67 @@ class FileManager(QMainWindow):
 
     def _on_mid_tab_switched(self, path):
         """切換中間頁籤：更新檔案列表至儲存的路徑。"""
+        self.mid_info_combo.lineEdit().setText(path)
         if path and os.path.isdir(path):
             self.fileListModel.setRootPath(path)
             self.fileListModel.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)
             self.listView.setRootIndex(self.fileListModel.index(path))
 
+    def _on_combo_text_edited(self, text):
+        """user 手動輸入時將文字儲存至 _combo_typed_text，供 returnPressed 時使用。"""
+        self._combo_typed_text = text
+
+    def _on_combo_return_pressed(self):
+        """lineEdit returnPressed 信號。取得 textEdited 儲存的文字，
+        用 singleShot 延遲從而讓 Qt 內部 _q_returnPressed 先執行完畢，
+        再套用自定義搜尋。"""
+        text = self._combo_typed_text.strip()
+        if text:
+            QTimer.singleShot(0, lambda t=text: self.execute_search_command(t))
+
+    def eventFilter(self, obj, event):
+        """追蹤 listView viewport 滑鼠按下。"""
+        # 追蹤 listView viewport 真實的滑鼠按下，讓 on_listView_clicked 能辨別真偽
+        if obj is self.listView.viewport() and event.type() == QEvent.MouseButtonPress:
+            self._listview_mouse_pressed = True
+            return False  # 不消費，讓事件繼續傳遞
+        return super().eventFilter(obj, event)
+
     def _on_right_tab_switched(self, keyword):
-        """切換右側頁籤：以儲存的關鍵字重新執行搜尋。"""
+        """切換右側頁籤：側边發表 combobox 顯示並復原搜尋結果。
+        不更新 tab 資料或 MRU 歷史，只復原查詢。"""
+        self.right_info_combo.blockSignals(True)
+        self.right_info_combo.lineEdit().setText(keyword)
+        self.right_info_combo.blockSignals(False)
         if keyword:
-            self.execute_search_command(keyword)
+            self._do_search(keyword)
         elif self.search_model:
             self.search_model.removeRows(0, self.search_model.rowCount())
 
+    def _on_right_info_combo_list_pressed(self, model_index):
+        """從下拉清單點擊選取項目時執行搜尋。"""
+        text = self.right_info_combo.model().data(model_index)
+        if text:
+            self.execute_search_command(text)
+
     def execute_search_command(self, search_command):
-        # 更新右側頁籤列顯示目前搜尋關鍵字
+        """使用者主動搜尋：更新頁籤資料、combobox MRU 歷史，並執行查詢。"""
+        # 1. 儲存到目前頁籤
         self.right_tab_bar.set_current_data(search_command, search_command)
-        # 使用 Everything SDK 查詢
+        # 2. 更新 combobox MRU 歷史（移除舊同名項目，插入至頂端）
+        self.right_info_combo.blockSignals(True)
+        for i in range(self.right_info_combo.count() - 1, -1, -1):
+            if self.right_info_combo.itemText(i) == search_command:
+                self.right_info_combo.removeItem(i)
+        self.right_info_combo.insertItem(0, search_command)
+        self.right_info_combo.setCurrentIndex(0)
+        self.right_info_combo.blockSignals(False)
+        self.right_info_combo.lineEdit().setText(search_command)
+        # 3. 執行實際查詢
+        self._do_search(search_command)
+
+    def _do_search(self, search_command):
+        """只執行 Everything 查詢並更新展示，不修改頁籤資料或 combobox 歷史。復原搜尋用。"""
         if self.everything.is_available():
             results = self.everything.query(search_command)
             self.update_search_results(results)
@@ -827,9 +937,7 @@ class FileManager(QMainWindow):
                 "Everything SDK",
                 "Everything SDK DLL not found.\n\nDownload Everything-SDK.zip and place Everything64.dll (or Everything32.dll) next to main.py or in a 'sdk' folder.",
             )
-
-        search_command = '"Everything.exe" -search "' + search_command + '"'
-        subprocess.Popen(search_command, shell=True)
+        subprocess.Popen('"Everything.exe" -search "' + search_command + '"', shell=True)
 
     def update_search_results(self, results):
         if self.search_model is None:
@@ -1091,24 +1199,39 @@ class FileManager(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "錯誤", f"無法開啟檔案: {e}")
 
-    def on_font_increase(self):
-        # 放大字型，各增加 1pt（限制最大 72pt）
-        for widget in (self.treeView, self.listView):
+    def _apply_font_size(self, new_size):
+        """將字型大小套用至所有 listview 及頁籤列。"""
+        for widget in (self.treeView, self.listView, self.listView2):
             current_font = widget.font()
-            current_size = current_font.pointSize() if current_font.pointSize() > 0 else 10
-            new_size = min(current_size + 1, 72)
             f = QFont(current_font.family(), new_size)
             widget.setFont(f)
+        # 同步頁籤列字型
+        for tab_container in (self.left_tab_bar, self.mid_tab_bar, self.right_tab_bar):
+            tb = tab_container.tab_bar
+            current_font = tb.font()
+            f = QFont(current_font.family(), new_size)
+            tb.setFont(f)
+            tb.update()
+        # 同步 info combobox 字型
+        for combo in (self.left_info_combo, self.mid_info_combo, self.right_info_combo):
+            current_font = combo.font()
+            f = QFont(current_font.family(), new_size)
+            combo.setFont(f)
+
+    def on_font_increase(self):
+        # 放大字型，各增加 1pt（限制最大 72pt）
+        current_font = self.treeView.font()
+        current_size = current_font.pointSize() if current_font.pointSize() > 0 else 10
+        new_size = min(current_size + 1, 72)
+        self._apply_font_size(new_size)
         self.update_status_bar()
 
     def on_font_decrease(self):
         # 縮小字型，各減少 1pt（限制最小 6pt）
-        for widget in (self.treeView, self.listView):
-            current_font = widget.font()
-            current_size = current_font.pointSize() if current_font.pointSize() > 0 else 10
-            new_size = max(current_size - 1, 6)
-            f = QFont(current_font.family(), new_size)
-            widget.setFont(f)
+        current_font = self.treeView.font()
+        current_size = current_font.pointSize() if current_font.pointSize() > 0 else 10
+        new_size = max(current_size - 1, 6)
+        self._apply_font_size(new_size)
         self.update_status_bar()
 
     def update_status_bar(self):
@@ -1231,6 +1354,18 @@ class FileManager(QMainWindow):
                 except Exception:
                     pass
 
+        # 載入搜尋歷史至右側 combobox
+        raw_history = cfg.get('General', 'search_history', fallback='')
+        if raw_history:
+            try:
+                history = json.loads(raw_history)
+                self.right_info_combo.blockSignals(True)
+                for item in reversed(history):  # reversed 使最新的在頂
+                    self.right_info_combo.insertItem(0, item)
+                self.right_info_combo.blockSignals(False)
+            except Exception:
+                pass
+
     def _try_select_dir(self, dir_path):
         """嘗試在左側樹狀視圖中選取並展開指定目錄。"""
         idx = self.model.index(dir_path)
@@ -1245,6 +1380,8 @@ class FileManager(QMainWindow):
             # 更新頁籤列標題
             self.left_tab_bar.set_current_data(dir_path, dir_path)
             self.mid_tab_bar.set_current_data(dir_path, dir_path)
+            self.left_info_combo.lineEdit().setText(dir_path)
+            self.mid_info_combo.lineEdit().setText(dir_path)
 
     def save_config(self):
         """將目前狀態寫入 config.ini。"""
@@ -1261,6 +1398,10 @@ class FileManager(QMainWindow):
             cfg.add_section('Sort')
         if not cfg.has_section('Tabs'):
             cfg.add_section('Tabs')
+
+        # 儲存右側 combobox 歷史（最多 20 筆）
+        history = [self.right_info_combo.itemText(i) for i in range(self.right_info_combo.count())]
+        cfg.set('General', 'search_history', json.dumps(history[:20], ensure_ascii=False))
 
         # 儲存左側目錄樹目前選取的目錄
         indexes = self.treeView.selectedIndexes()
