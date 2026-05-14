@@ -9,7 +9,7 @@ import configparser
 import json
 import traceback
 from PyQt5.QtWidgets import QApplication, QMainWindow, QTreeView, QFileSystemModel, QListView, QWidget, QHBoxLayout, QVBoxLayout, QToolBar, QAction, QMessageBox, QStyle, QToolButton, QSplitter, QLineEdit, QSizePolicy, QFileIconProvider, QTabBar, QAbstractItemView, QMenu, QStylePainter, QStyleOptionTab, QComboBox
-from PyQt5.QtCore import QDir, Qt, QSize, QSortFilterProxyModel, QFileInfo, pyqtSignal, QEvent, QTimer, QItemSelection, QItemSelectionModel, QMimeData, QUrl, QModelIndex
+from PyQt5.QtCore import QDir, Qt, QSize, QSortFilterProxyModel, QFileInfo, pyqtSignal, QEvent, QTimer, QItemSelection, QItemSelectionModel, QMimeData, QUrl
 from PyQt5.QtGui import QKeySequence, QIcon, QFont, QPixmap, QPainter, QColor, QPalette, QStandardItemModel, QStandardItem, QDrag
 from datetime import datetime
 # Optional SVG renderer (may not be present in minimal PyQt installs)
@@ -364,6 +364,27 @@ class SearchListView(QTreeView):
             self._anchor = index
             super().mousePressEvent(event)
 
+    def startDrag(self, supportedActions):
+        """Qt 在左鍵拖曳達到閾值時呼叫此方法，提供自訂 MIME 資料與預覽圖。"""
+        mime = self._build_drag_mime_data()
+        if mime is None or not mime.hasUrls():
+            return
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        preview = self._build_drag_preview_pixmap()
+        if preview is not None:
+            drag.setPixmap(preview)
+            drag.setHotSpot(preview.rect().center())
+        self._last_drag_button = self._press_button
+        wnd = self.window()
+        if wnd is not None and hasattr(wnd, "_search_drag_button"):
+            wnd._search_drag_button = self._press_button
+        result_action = drag.exec_(supportedActions, Qt.CopyAction)
+        if wnd is not None and hasattr(wnd, "_search_drag_button"):
+            wnd._search_drag_button = Qt.NoButton
+        if result_action != Qt.IgnoreAction:
+            self._notify_search_refresh_delayed()
+
     def mouseMoveEvent(self, event):
         # 右鍵拖曳：Qt 不自動處理，需手動偵測並啟動
         if (self._press_pos is not None
@@ -381,38 +402,17 @@ class SearchListView(QTreeView):
                 wnd = self.window()
                 if wnd is not None and hasattr(wnd, "_search_drag_button"):
                     wnd._search_drag_button = Qt.RightButton
-                result_action = drag.exec_(Qt.CopyAction | Qt.MoveAction | Qt.LinkAction, Qt.IgnoreAction)
+                result_action = drag.exec_(Qt.CopyAction | Qt.MoveAction | Qt.LinkAction, Qt.CopyAction)
                 if wnd is not None and hasattr(wnd, "_search_drag_button"):
                     wnd._search_drag_button = Qt.NoButton
                 self._suppress_next_context_menu = True
                 if result_action != Qt.IgnoreAction:
                     self._notify_search_refresh_delayed()
-                self._press_pos = None
-                self._press_button = Qt.NoButton
-                return
-        # 左鍵拖曳：由 Qt 內部偵測閾值後呼叫 startDrag()
-        super().mouseMoveEvent(event)
-
-    def startDrag(self, supportedActions):
-        """覆寫 Qt 的左鍵拖曳進入點，提供自訂預覽圖與 MIME 資料。"""
-        mime = self._build_drag_mime_data()
-        if mime is None or not mime.hasUrls():
+            self._press_pos = None
+            self._press_button = Qt.NoButton
             return
-        drag = QDrag(self)
-        drag.setMimeData(mime)
-        preview = self._build_drag_preview_pixmap()
-        if preview is not None:
-            drag.setPixmap(preview)
-            drag.setHotSpot(preview.rect().center())
-        self._last_drag_button = self._press_button
-        wnd = self.window()
-        if wnd is not None and hasattr(wnd, "_search_drag_button"):
-            wnd._search_drag_button = self._press_button
-        result_action = drag.exec_(supportedActions, Qt.IgnoreAction)
-        if wnd is not None and hasattr(wnd, "_search_drag_button"):
-            wnd._search_drag_button = Qt.NoButton
-        if result_action != Qt.IgnoreAction:
-            self._notify_search_refresh_delayed()
+        # 左鍵拖曳：交由 Qt 內建機制偵測並呼叫 startDrag()
+        super().mouseMoveEvent(event)
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls() and self._resolve_drop_target_dir(event.pos()):
@@ -605,123 +605,53 @@ class SearchListView(QTreeView):
         return "move" if src_drive and src_drive == dst_drive else "copy"
 
     def _apply_drop_operation(self, src_paths, target_dir, op):
-        wnd = self.window()
-        if wnd is not None and hasattr(wnd, "perform_shell_file_operation"):
-            wnd.perform_shell_file_operation(src_paths, target_dir, op, parent_hwnd=int(self.winId()))
-        else:
-            QMessageBox.warning(self, "拖曳作業失敗", "找不到檔案作業處理器")
+        class SHFILEOPSTRUCTW(ctypes.Structure):
+            _fields_ = [
+                ("hwnd", wt.HWND),
+                ("wFunc", wt.UINT),
+                ("pFrom", ctypes.c_wchar_p),
+                ("pTo", ctypes.c_wchar_p),
+                ("fFlags", ctypes.c_ushort),
+                ("fAnyOperationsAborted", wt.BOOL),
+                ("hNameMappings", ctypes.c_void_p),
+                ("lpszProgressTitle", ctypes.c_wchar_p),
+            ]
+
+        FO_MOVE = 0x0001
+        FO_COPY = 0x0002
+        FOF_SIMPLEPROGRESS = 0x0100
+
+        valid_sources = []
+        for src in src_paths:
+            if not os.path.exists(src):
+                continue
+            dest = os.path.join(target_dir, os.path.basename(src))
+            if os.path.abspath(src) == os.path.abspath(dest):
+                continue
+            valid_sources.append(src)
+
+        if not valid_sources:
+            return
+
+        from_buf = ctypes.create_unicode_buffer("\0".join(valid_sources) + "\0\0")
+        to_buf = ctypes.create_unicode_buffer(target_dir + "\0")
+
+        op_struct = SHFILEOPSTRUCTW()
+        op_struct.hwnd = int(self.winId())
+        op_struct.wFunc = FO_MOVE if op == "move" else FO_COPY
+        op_struct.pFrom = ctypes.cast(from_buf, ctypes.c_wchar_p)
+        op_struct.pTo = ctypes.cast(to_buf, ctypes.c_wchar_p)
+        op_struct.fFlags = FOF_SIMPLEPROGRESS
+        op_struct.lpszProgressTitle = "正在處理檔案..."
+
+        result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op_struct))
+        if result != 0 and not op_struct.fAnyOperationsAborted:
+            QMessageBox.warning(self, "拖曳作業失敗", f"Windows 檔案作業失敗，錯誤碼: {result}")
 
     def _notify_search_refresh_delayed(self):
         wnd = self.window()
         if wnd is not None and hasattr(wnd, "refresh_current_search_results"):
             QTimer.singleShot(600, wnd.refresh_current_search_results)
-
-
-class CenterFileListView(QTreeView):
-    """中央檔案列表：接受從右側搜尋結果拖曳進來的檔案。"""
-
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.setDropAction(Qt.CopyAction)
-            event.accept()
-            return
-        event.ignore()
-
-    def dragMoveEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.setDropAction(Qt.CopyAction)
-            event.accept()
-            return
-        event.ignore()
-
-    def dropEvent(self, event):
-        try:
-            target_dir = self._resolve_drop_target_dir(event.pos())
-            src_paths = self._extract_source_paths_from_mime(event.mimeData())
-            if not target_dir or not src_paths:
-                event.ignore()
-                return
-
-            op = self._decide_drop_operation(src_paths, target_dir, event)
-            if op is None:
-                event.ignore()
-                return
-
-            wnd = self.window()
-            if wnd is not None and hasattr(wnd, "perform_shell_file_operation"):
-                wnd.perform_shell_file_operation(src_paths, target_dir, op, parent_hwnd=int(self.winId()))
-                if hasattr(wnd, "refresh_current_search_results"):
-                    QTimer.singleShot(600, wnd.refresh_current_search_results)
-            event.acceptProposedAction()
-        except Exception as ex:
-            event.ignore()
-            QMessageBox.warning(self, "拖曳失敗", f"中央列表拖放處理發生錯誤: {ex}")
-
-    def _resolve_drop_target_dir(self, pos):
-        model = self.model()
-        if model is None:
-            return ""
-
-        idx = self.indexAt(pos)
-        if idx.isValid():
-            raw = model.filePath(idx)
-            path = os.path.normpath(raw) if raw else ""
-            if path and os.path.isdir(path):
-                return path
-            if path:
-                parent = os.path.dirname(path)
-                if os.path.isdir(parent):
-                    return parent
-
-        root_idx = self.rootIndex()
-        if root_idx.isValid():
-            raw = model.filePath(root_idx)
-            root_path = os.path.normpath(raw) if raw else ""
-            if root_path and os.path.isdir(root_path):
-                return root_path
-        return ""
-
-    def _extract_source_paths_from_mime(self, mime):
-        paths = []
-        seen = set()
-        for url in mime.urls() if mime is not None else []:
-            local = url.toLocalFile()
-            if not local or local in seen:
-                continue
-            seen.add(local)
-            paths.append(local)
-        return paths
-
-    def _decide_drop_operation(self, src_paths, target_dir, event):
-        wnd = self.window()
-        drag_btn = Qt.NoButton
-        if wnd is not None and hasattr(wnd, "_search_drag_button"):
-            drag_btn = wnd._search_drag_button
-
-        if drag_btn == Qt.RightButton:
-            menu = QMenu(self)
-            act_copy = menu.addAction("複製到此處")
-            act_move = menu.addAction("移動到此處")
-            menu.addSeparator()
-            act_cancel = menu.addAction("取消")
-            global_pos = self.viewport().mapToGlobal(event.pos())
-            chosen = menu.exec_(global_pos)
-            if chosen == act_copy:
-                return "copy"
-            if chosen == act_move:
-                return "move"
-            return None
-
-        mods = event.keyboardModifiers()
-        if mods & Qt.ControlModifier:
-            return "copy"
-        if mods & Qt.ShiftModifier:
-            return "move"
-
-        first = src_paths[0] if src_paths else ""
-        src_drive = os.path.splitdrive(os.path.abspath(first))[0].lower() if first else ""
-        dst_drive = os.path.splitdrive(os.path.abspath(target_dir))[0].lower() if target_dir else ""
-        return "move" if src_drive and src_drive == dst_drive else "copy"
 
 
 class FixedWidthTabBar(QTabBar):
@@ -1019,7 +949,7 @@ class FileManager(QMainWindow):
         self.toolbar.addWidget(self.btn_decrease)
 
         # 创建右侧的文件列表视图
-        self.listView = CenterFileListView(self)
+        self.listView = QTreeView(self)
         self.listView.setSortingEnabled(True)
         self.listView2 = SearchListView(self)
         self.listView2.setSortingEnabled(True)
@@ -1132,9 +1062,8 @@ class FileManager(QMainWindow):
         self.listView2.setDropIndicatorShown(True)
         self.listView2.setDefaultDropAction(Qt.IgnoreAction)
 
+        # 中間面板接受從右側搜尋結果拖曳進來的檔案
         self.listView.setAcceptDrops(True)
-        self.listView.setDragEnabled(False)
-        self.listView.setDragDropMode(QAbstractItemView.DropOnly)
         self.listView.setDropIndicatorShown(True)
 
         header = self.listView.header()
@@ -1181,12 +1110,22 @@ class FileManager(QMainWindow):
         self.load_config()
 
     def on_treeView_selectionChanged(self, selected, deselected):
-        # 左側目錄樹選取變更時，只更新左側狀態列與頁籤，不強制覆蓋中央面板
+        # 当左侧目录树中的项被选择时，更新右侧文件列表
         if selected.indexes():
             path = self.model.filePath(selected.indexes()[0])
-            self.treeView.resizeColumnToContents(0)
+
+            # 设置右侧文件列表的模型，再次确保不显示目录属性
+            self.fileListModel.setRootPath(path)
+            self.fileListModel.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)
+
+            root_index = self.fileListModel.index(path)
+            self.listView.setRootIndex(root_index)
+            self.treeView.resizeColumnToContents(0)  # 自动调整列宽
+            # 更新左側與中間頁籤列標題
             self.left_tab_bar.set_current_data(path, path)
+            self.mid_tab_bar.set_current_data(path, path)
             self.left_info_combo.lineEdit().setText(path)
+            self.mid_info_combo.lineEdit().setText(path)
 
     def on_listView_clicked(self, index):
         """处理中央视窗文件单击事件"""
@@ -1211,15 +1150,15 @@ class FileManager(QMainWindow):
     def on_listView_doubleClicked(self, index):
         path = self.fileListModel.filePath(index)
         if self.fileListModel.isDir(index):
-            self.fileListModel.setRootPath(path)
-            self.fileListModel.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)
-            self.listView.setRootIndex(self.fileListModel.index(path))
-            # 更新中間及左側頁籤列標題
+            self.listView.setRootIndex(index)
+            tree_index = self.model.index(path)
+            if tree_index.isValid():
+                self.treeView.setCurrentIndex(tree_index)
+                self.treeView.expand(tree_index)
+                self.treeView.scrollTo(tree_index)
+            # 更新中間頁籤列標題
             self.mid_tab_bar.set_current_data(path, path)
             self.mid_info_combo.lineEdit().setText(path)
-            self.left_tab_bar.set_current_data(path, path)
-            self.left_info_combo.lineEdit().setText(path)
-            self._navigate_left_tree(path)
         else:
             try:
                 os.startfile(path)
@@ -1285,47 +1224,23 @@ class FileManager(QMainWindow):
         keywords = [keyword for keyword in keywords if keyword.strip()]
         return keywords
 
-    def _navigate_left_tree(self, path):
-        """展開左側目錄樹所有祖先節點並選取指定路徑。"""
-        if not path or not os.path.isdir(path):
-            return
-        idx = self.model.index(os.path.normpath(path))
-        if not idx.isValid():
-            return
-        # 收集所有祖先並依由淺至深展開
-        ancestors = []
-        parent = idx.parent()
-        while parent.isValid():
-            ancestors.append(parent)
-            parent = parent.parent()
-        for anc in reversed(ancestors):
-            self.treeView.expand(anc)
-        self.treeView.setCurrentIndex(idx)
-        self.treeView.scrollTo(idx, QAbstractItemView.PositionAtCenter)
-
     def _on_left_tab_switched(self, path):
         """切換左側頁籤：導航目錄樹至儲存的路徑。"""
         self.left_info_combo.lineEdit().setText(path)
         if path and os.path.isdir(path):
-            self._navigate_left_tree(path)
+            idx = self.model.index(path)
+            if idx.isValid():
+                self.treeView.setCurrentIndex(idx)
+                self.treeView.scrollTo(idx)
+                self.treeView.expand(idx)
 
     def _on_mid_tab_switched(self, path):
-        """切換中間頁籤：更新檔案列表至儲存的路徑，左側目錄樹跟著同步。"""
+        """切換中間頁籤：更新檔案列表至儲存的路徑。"""
         self.mid_info_combo.lineEdit().setText(path)
         if path and os.path.isdir(path):
             self.fileListModel.setRootPath(path)
             self.fileListModel.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)
             self.listView.setRootIndex(self.fileListModel.index(path))
-            # 左側目錄樹跟著切換
-            self.left_tab_bar.set_current_data(path, path)
-            self.left_info_combo.lineEdit().setText(path)
-            self._navigate_left_tree(path)
-        else:
-            # 新頁籤或空路徑：顯示磁碟機清單，左側狀態列清空
-            self.fileListModel.setRootPath("")
-            self.fileListModel.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)
-            self.listView.setRootIndex(QModelIndex())
-            self.left_info_combo.lineEdit().setText("")
 
     def _on_combo_text_edited(self, text):
         """user 手動輸入時將文字儲存至 _combo_typed_text，供 returnPressed 時使用。"""
@@ -1340,11 +1255,45 @@ class FileManager(QMainWindow):
             QTimer.singleShot(0, lambda t=text: self.execute_search_command(t))
 
     def eventFilter(self, obj, event):
-        """追蹤 listView viewport 滑鼠按下。"""
-        # 追蹤 listView viewport 真實的滑鼠按下，讓 on_listView_clicked 能辨別真偽
-        if obj is self.listView.viewport() and event.type() == QEvent.MouseButtonPress:
-            self._listview_mouse_pressed = True
-            return False  # 不消費，讓事件繼續傳遞
+        """追蹤 listView viewport 事件：滑鼠按下 + 拖放。"""
+        if obj is self.listView.viewport():
+            et = event.type()
+            if et == QEvent.MouseButtonPress:
+                self._listview_mouse_pressed = True
+                return False  # 不消費，讓事件繼續傳遞
+            if et == QEvent.DragEnter:
+                if event.mimeData().hasUrls():
+                    event.setDropAction(Qt.CopyAction)
+                    event.accept()
+                else:
+                    event.ignore()
+                return True
+            if et == QEvent.DragMove:
+                if event.mimeData().hasUrls():
+                    event.setDropAction(Qt.CopyAction)
+                    event.accept()
+                else:
+                    event.ignore()
+                return True
+            if et == QEvent.Drop:
+                target_dir = self._resolve_listview_drop_target(event.pos())
+                src_paths = [u.toLocalFile() for u in event.mimeData().urls() if u.toLocalFile()]
+                if target_dir and src_paths:
+                    mods = event.keyboardModifiers()
+                    if mods & Qt.ControlModifier:
+                        op = "copy"
+                    elif mods & Qt.ShiftModifier:
+                        op = "move"
+                    else:
+                        s_drv = os.path.splitdrive(os.path.abspath(src_paths[0]))[0].lower()
+                        d_drv = os.path.splitdrive(os.path.abspath(target_dir))[0].lower()
+                        op = "move" if s_drv and s_drv == d_drv else "copy"
+                    self._perform_file_op(src_paths, target_dir, op)
+                    event.acceptProposedAction()
+                    QTimer.singleShot(600, self.refresh_current_search_results)
+                else:
+                    event.ignore()
+                return True
         return super().eventFilter(obj, event)
 
     def _on_right_tab_switched(self, keyword):
@@ -1585,18 +1534,28 @@ class FileManager(QMainWindow):
         for row in reversed(rows_to_remove):
             self.search_model.removeRow(row)
 
-    def refresh_current_search_results(self):
-        """依目前右側關鍵字重新查詢，確保拖曳後結果更新。"""
-        keyword = self.right_tab_bar.current_data().strip() if self.right_tab_bar is not None else ""
-        if not keyword and self.right_info_combo is not None:
-            keyword = self.right_info_combo.lineEdit().text().strip()
-        if keyword:
-            self._do_search(keyword)
-        else:
-            self._refresh_search_results_existence()
+    def _resolve_listview_drop_target(self, pos):
+        """依 viewport 座標決定中間面板的拖放目標目錄。"""
+        idx = self.listView.indexAt(pos)
+        if idx.isValid():
+            path = self.fileListModel.filePath(idx)
+            path = os.path.normpath(path) if path else ""
+            if path and os.path.isdir(path):
+                return path
+            if path:
+                parent = os.path.dirname(path)
+                if os.path.isdir(parent):
+                    return parent
+        root_idx = self.listView.rootIndex()
+        if root_idx.isValid():
+            path = self.fileListModel.filePath(root_idx)
+            path = os.path.normpath(path) if path else ""
+            if path and os.path.isdir(path):
+                return path
+        return ""
 
-    def perform_shell_file_operation(self, src_paths, target_dir, op, parent_hwnd=None):
-        """使用 Windows Shell 執行複製/移動，保留檔案總管衝突提示與進度 UI。"""
+    def _perform_file_op(self, src_paths, target_dir, op):
+        """使用 Windows SHFileOperationW 執行複製或移動。"""
         class SHFILEOPSTRUCTW(ctypes.Structure):
             _fields_ = [
                 ("hwnd", wt.HWND),
@@ -1613,10 +1572,7 @@ class FileManager(QMainWindow):
         FO_COPY = 0x0002
         FOF_SIMPLEPROGRESS = 0x0100
 
-        # Normalize to native Windows backslash separators; SHFileOperationW
-        # does not reliably accept forward-slash paths in pFrom/pTo.
         target_dir = os.path.normpath(target_dir)
-
         valid_sources = []
         for src in src_paths:
             src = os.path.normpath(src)
@@ -1628,13 +1584,13 @@ class FileManager(QMainWindow):
             valid_sources.append(src)
 
         if not valid_sources:
-            return False
+            return
 
         from_buf = ctypes.create_unicode_buffer("\0".join(valid_sources) + "\0\0")
         to_buf = ctypes.create_unicode_buffer(target_dir + "\0")
 
         op_struct = SHFILEOPSTRUCTW()
-        op_struct.hwnd = int(parent_hwnd) if parent_hwnd is not None else int(self.winId())
+        op_struct.hwnd = int(self.winId())
         op_struct.wFunc = FO_MOVE if op == "move" else FO_COPY
         op_struct.pFrom = ctypes.cast(from_buf, ctypes.c_wchar_p)
         op_struct.pTo = ctypes.cast(to_buf, ctypes.c_wchar_p)
@@ -1644,8 +1600,16 @@ class FileManager(QMainWindow):
         result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op_struct))
         if result != 0 and not op_struct.fAnyOperationsAborted:
             QMessageBox.warning(self, "拖曳作業失敗", f"Windows 檔案作業失敗，錯誤碼: {result}")
-            return False
-        return True
+
+    def refresh_current_search_results(self):
+        """依目前右側關鍵字重新查詢，確保拖曳後結果更新。"""
+        keyword = self.right_tab_bar.current_data().strip() if self.right_tab_bar is not None else ""
+        if not keyword and self.right_info_combo is not None:
+            keyword = self.right_info_combo.lineEdit().text().strip()
+        if keyword:
+            self._do_search(keyword)
+        else:
+            self._refresh_search_results_existence()
 
     def _delete_selected_search_files(self):
         """將選取的檔案移至資源回收桶（Delete 鍵 / 備援選單）。"""
@@ -1772,30 +1736,10 @@ class FileManager(QMainWindow):
         cfg = configparser.ConfigParser()
         cfg.read(self._config_path(), encoding='utf-8')
 
-        # 還原字型大小
-        font_size = cfg.get('General', 'font_size', fallback='')
-        if font_size:
-            try:
-                size = max(6, min(72, int(font_size)))
-                self._apply_font_size(size)
-                self.update_status_bar()
-            except Exception:
-                pass
-
-        # 還原左側目錄樹選取的目錄（directoryLoaded 只觸發一次後自動斷開）
+        # 還原左側目錄樹選取的目錄
         left_dir = cfg.get('General', 'left_dir', fallback='')
         if left_dir and os.path.isdir(left_dir):
-            def _on_dir_loaded(path, _target=left_dir):
-                idx = self.model.index(_target)
-                if idx.isValid():
-                    try:
-                        self.model.directoryLoaded.disconnect(_on_dir_loaded)
-                    except Exception:
-                        pass
-                    self._navigate_left_tree(_target)
-                    self.left_tab_bar.set_current_data(_target, _target)
-                    self.left_info_combo.lineEdit().setText(_target)
-            self.model.directoryLoaded.connect(_on_dir_loaded)
+            self.model.directoryLoaded.connect(lambda path, d=left_dir: self._try_select_dir(d))
             self.model.setRootPath(left_dir)
 
         # 還原分割器大小
@@ -1902,18 +1846,6 @@ class FileManager(QMainWindow):
             self.right_info_combo.lineEdit().setText(initial_keyword)
             QTimer.singleShot(0, lambda kw=initial_keyword: self._do_search(kw))
 
-        # 補上 restore_tabs 不觸發 tab_switched 的缺口：初始化中央面板
-        initial_mid_path = self.mid_tab_bar.current_data()
-        if initial_mid_path and os.path.isdir(initial_mid_path):
-            self.fileListModel.setRootPath(initial_mid_path)
-            self.fileListModel.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)
-            self.listView.setRootIndex(self.fileListModel.index(initial_mid_path))
-            self.mid_info_combo.lineEdit().setText(initial_mid_path)
-        else:
-            self.fileListModel.setRootPath("")
-            self.fileListModel.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)
-            self.listView.setRootIndex(QModelIndex())
-
         # 載入搜尋歷史至右側 combobox
         raw_history = cfg.get('General', 'search_history', fallback='')
         if raw_history:
@@ -1927,10 +1859,21 @@ class FileManager(QMainWindow):
                 pass
 
     def _try_select_dir(self, dir_path):
-        """嘗試在左側樹狀視圖中選取並展開指定目錄（僅更新左側）。"""
-        self._navigate_left_tree(dir_path)
-        self.left_tab_bar.set_current_data(dir_path, dir_path)
-        self.left_info_combo.lineEdit().setText(dir_path)
+        """嘗試在左側樹狀視圖中選取並展開指定目錄。"""
+        idx = self.model.index(dir_path)
+        if idx.isValid():
+            self.treeView.setCurrentIndex(idx)
+            self.treeView.scrollTo(idx)
+            self.treeView.expand(idx)
+            # 同時更新中間檔案列表
+            self.fileListModel.setRootPath(dir_path)
+            self.fileListModel.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)
+            self.listView.setRootIndex(self.fileListModel.index(dir_path))
+            # 更新頁籤列標題
+            self.left_tab_bar.set_current_data(dir_path, dir_path)
+            self.mid_tab_bar.set_current_data(dir_path, dir_path)
+            self.left_info_combo.lineEdit().setText(dir_path)
+            self.mid_info_combo.lineEdit().setText(dir_path)
 
     def save_config(self):
         """將目前狀態寫入 config.ini。"""
@@ -1951,11 +1894,6 @@ class FileManager(QMainWindow):
         # 儲存右側 combobox 歷史（最多 20 筆）
         history = [self.right_info_combo.itemText(i) for i in range(self.right_info_combo.count())]
         cfg.set('General', 'search_history', json.dumps(history[:20], ensure_ascii=False))
-
-        # 儲存目前字型大小
-        current_font = self.treeView.font()
-        current_size = current_font.pointSize() if current_font.pointSize() > 0 else 10
-        cfg.set('General', 'font_size', str(current_size))
 
         # 儲存左側目錄樹目前選取的目錄
         indexes = self.treeView.selectedIndexes()
