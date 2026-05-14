@@ -449,6 +449,17 @@ class SearchListView(QTreeView):
                 event.ignore()
                 return
 
+            if self._last_drag_button == Qt.RightButton:
+                # 右鍵拖曳：呼叫 Windows Shell IDropTarget::Drop(MK_RBUTTON)
+                # Shell 自動顯示原生選單（移動/複製/建立捷徑/取消）並執行操作
+                handled = self._shell_right_drag_drop(src_paths, target_dir, event)
+                if handled:
+                    event.acceptProposedAction()
+                    self._notify_search_refresh_delayed()
+                else:
+                    event.ignore()
+                return
+
             op = self._decide_drop_operation(src_paths, target_dir, event)
             if op is None:
                 event.ignore()
@@ -584,21 +595,6 @@ class SearchListView(QTreeView):
         return paths
 
     def _decide_drop_operation(self, src_paths, target_dir, event):
-        if self._last_drag_button == Qt.RightButton:
-            menu = QMenu(self)
-            act_copy = menu.addAction("複製到此處")
-            act_move = menu.addAction("移動到此處")
-            menu.addSeparator()
-            act_cancel = menu.addAction("取消")
-            global_pos = self.viewport().mapToGlobal(event.pos())
-            chosen = menu.exec_(global_pos)
-            if chosen == act_copy:
-                return "copy"
-            if chosen == act_move:
-                return "move"
-            if chosen == act_cancel or chosen is None:
-                return None
-
         mods = event.keyboardModifiers()
         if mods & Qt.ControlModifier:
             return "copy"
@@ -610,6 +606,119 @@ class SearchListView(QTreeView):
         src_drive = os.path.splitdrive(os.path.abspath(first))[0].lower() if first else ""
         dst_drive = os.path.splitdrive(os.path.abspath(target_dir))[0].lower() if target_dir else ""
         return "move" if src_drive and src_drive == dst_drive else "copy"
+
+    def _shell_right_drag_drop(self, src_paths, target_dir, event):
+        """呼叫 Windows Shell IDropTarget::Drop(MK_RBUTTON) 顯示原生右鍵拖曳選單。
+        Shell 自動顯示選單、執行操作並回傳結果。
+        失敗時 fallback 到符合 Windows 樣式的 Qt 選單。
+        回傳 True 表示已完成（含使用者選取後執行），False 表示取消。"""
+        try:
+            from win32com.shell import shell
+            import pythoncom
+
+            pythoncom.CoInitialize()
+            try:
+                hwnd = int(self.winId())
+                desktop = shell.SHGetDesktopFolder()
+
+                # --- 建立來源 IDataObject ---
+                src_parent = os.path.normpath(os.path.dirname(os.path.abspath(src_paths[0])))
+                src_parent_pidl = shell.SHParseDisplayName(src_parent, 0)[0]
+                src_sf = desktop.BindToObject(src_parent_pidl, None, shell.IID_IShellFolder)
+
+                child_pidls = []
+                for p in src_paths:
+                    r = src_sf.ParseDisplayName(hwnd, None, os.path.basename(p))
+                    child_pidls.append(r[1])
+
+                data_obj = src_sf.GetUIObjectOf(
+                    hwnd, child_pidls, pythoncom.IID_IDataObject, 0
+                )[1]
+
+                # --- 取得目標資料夾的 IDropTarget ---
+                tdir = os.path.normpath(target_dir)
+                tparent = os.path.dirname(tdir)
+                tname = os.path.basename(tdir)
+                tparent_pidl = shell.SHParseDisplayName(tparent, 0)[0]
+                tparent_sf = desktop.BindToObject(tparent_pidl, None, shell.IID_IShellFolder)
+                tdir_pidl = tparent_sf.ParseDisplayName(hwnd, None, tname)[1]
+
+                drop_target = tparent_sf.GetUIObjectOf(
+                    hwnd, [tdir_pidl], pythoncom.IID_IDropTarget, 0
+                )[1]
+
+                # --- 模擬右鍵拖放（Shell 顯示選單並執行操作）---
+                MK_RBUTTON = 2
+                DROPEFFECT_NONE = 0
+                DROPEFFECT_ALL = 7  # Copy | Move | Link
+
+                gpos = self.viewport().mapToGlobal(event.pos())
+                pt = (gpos.x(), gpos.y())
+
+                drop_target.DragEnter(data_obj, MK_RBUTTON, pt, DROPEFFECT_ALL)
+                result_effect = drop_target.Drop(data_obj, MK_RBUTTON, pt, DROPEFFECT_ALL)
+                return result_effect != DROPEFFECT_NONE
+            finally:
+                pythoncom.CoUninitialize()
+        except Exception:
+            traceback.print_exc()
+            # COM 路徑失敗：改用符合 Windows 風格的自訂選單
+            return self._fallback_right_drag_menu(src_paths, target_dir, event)
+
+    def _fallback_right_drag_menu(self, src_paths, target_dir, event):
+        """Shell IDropTarget 不可用時，以符合 Windows 檔案總管風格的 Qt 選單處理右鍵拖曳。"""
+        menu = QMenu(self)
+
+        font_bold = QFont(menu.font())
+        font_bold.setBold(True)
+
+        act_move = menu.addAction("移動到這裡(&M)")
+        act_move.setFont(font_bold)  # 預設動作加粗
+        act_copy = menu.addAction("複製到這裡(&C)")
+        act_link = menu.addAction("建立捷徑到這裡(&S)")
+        menu.addSeparator()
+        act_cancel = menu.addAction("取消")
+
+        gpos = self.viewport().mapToGlobal(event.pos())
+        chosen = menu.exec_(gpos)
+
+        if chosen == act_move:
+            self._apply_drop_operation(src_paths, target_dir, "move")
+            return True
+        if chosen == act_copy:
+            self._apply_drop_operation(src_paths, target_dir, "copy")
+            return True
+        if chosen == act_link:
+            self._create_shortcuts(src_paths, target_dir)
+            return True
+        return False  # 取消
+
+    def _create_shortcuts(self, src_paths, target_dir):
+        """在 target_dir 建立 src_paths 的 Windows 捷徑（.lnk）。"""
+        try:
+            import pythoncom
+            from win32com.shell import shell
+
+            pythoncom.CoInitialize()
+            try:
+                for src in src_paths:
+                    if not os.path.exists(src):
+                        continue
+                    base = os.path.splitext(os.path.basename(src))[0]
+                    lnk_path = os.path.join(target_dir, f"{base} - 捷徑.lnk")
+                    link = pythoncom.CoCreateInstance(
+                        shell.CLSID_ShellLink, None,
+                        pythoncom.CLSCTX_INPROC_SERVER,
+                        shell.IID_IShellLink
+                    )
+                    link.SetPath(src)
+                    link.SetWorkingDirectory(os.path.dirname(src))
+                    persist = link.QueryInterface(pythoncom.IID_IPersistFile)
+                    persist.Save(lnk_path, True)
+            finally:
+                pythoncom.CoUninitialize()
+        except Exception as ex:
+            QMessageBox.warning(self, "建立捷徑失敗", f"無法建立捷徑：{ex}")
 
     def _apply_drop_operation(self, src_paths, target_dir, op):
         class SHFILEOPSTRUCTW(ctypes.Structure):
