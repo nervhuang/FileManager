@@ -1351,12 +1351,18 @@ class FileManager(QMainWindow):
                 self.treeView.expand(idx)
 
     def _on_mid_tab_switched(self, path):
-        """切換中間頁籤：更新檔案列表至儲存的路徑。"""
+        """切換中間頁籤：更新檔案列表至儲存的路徑，並同步左側目錄樹。"""
         self.mid_info_combo.lineEdit().setText(path)
         if path and os.path.isdir(path):
             self.fileListModel.setRootPath(path)
             self.fileListModel.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)
             self.listView.setRootIndex(self.fileListModel.index(path))
+            # 同步左側目錄樹
+            idx = self.model.index(path)
+            if idx.isValid():
+                self.treeView.setCurrentIndex(idx)
+                self.treeView.scrollTo(idx)
+                self.treeView.expand(idx)
 
     def _on_combo_text_edited(self, text):
         """user 手動輸入時將文字儲存至 _combo_typed_text，供 returnPressed 時使用。"""
