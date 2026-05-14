@@ -1357,7 +1357,7 @@ class FileManager(QMainWindow):
             self.fileListModel.setRootPath(path)
             self.fileListModel.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)
             self.listView.setRootIndex(self.fileListModel.index(path))
-            # 同步左側目錄樹
+            # 同步左側目錄樹跟隨中間面板的路徑
             idx = self.model.index(path)
             if idx.isValid():
                 self.treeView.setCurrentIndex(idx)
