@@ -415,14 +415,21 @@ class SearchListView(QTreeView):
         super().mouseMoveEvent(event)
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls() and self._resolve_drop_target_dir(event.pos()):
+        # 只要有 URL 就先接受，讓 drag session 保持活躍；
+        # 是否有有效目標由 dragMoveEvent 和 dropEvent 判斷
+        if event.mimeData().hasUrls():
             event.acceptProposedAction()
             return
         event.ignore()
 
     def dragMoveEvent(self, event):
-        if event.mimeData().hasUrls() and self._resolve_drop_target_dir(event.pos()):
-            event.acceptProposedAction()
+        if event.mimeData().hasUrls():
+            if self._resolve_drop_target_dir(event.pos()):
+                event.acceptProposedAction()
+            else:
+                # 游標不在目錄上：顯示禁止圖示但保持 drag session 活躍
+                event.setDropAction(Qt.IgnoreAction)
+                event.accept()
             return
         event.ignore()
 
