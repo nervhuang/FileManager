@@ -36,6 +36,18 @@ ref_e = 1
 global_keywords = []
 
 
+def _bundle_root():
+    if getattr(sys, 'frozen', False):
+        return getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+
+def _runtime_root():
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+
 class FileManager(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -116,7 +128,7 @@ class FileManager(QMainWindow):
         self.addAction(action_open)
 
         # 嘗試從 resources/icons 載入自訂圖示；若不存在或無法載入 SVG，會 fallback 或動態繪製一個文字圖示
-        icons_dir = os.path.join(os.path.dirname(__file__), "..", "resources", "icons")
+        icons_dir = os.path.join(_bundle_root(), "resources", "icons")
         def make_text_icon(ch, font_size=14, color="#222"):
             size = self._toolbar_icon_size
             pix = QPixmap(size)
@@ -1607,7 +1619,7 @@ class FileManager(QMainWindow):
         return font.pointSize() if font.pointSize() > 0 else 10
 
     def _config_path(self):
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config.ini')
+        return os.path.join(_runtime_root(), 'config.ini')
 
     def load_config(self):
         """從 config.ini 讀取參數並還原狀態。"""
