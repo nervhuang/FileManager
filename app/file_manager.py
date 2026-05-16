@@ -1,0 +1,1875 @@
+import sys
+import subprocess
+import os
+import ctypes
+import ctypes.wintypes as wt
+import base64
+import configparser
+import json
+import traceback
+from datetime import datetime
+
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QTreeView, QFileSystemModel, QWidget,
+    QHBoxLayout, QVBoxLayout, QAction, QMessageBox, QStyle,
+    QToolButton, QSplitter, QSizePolicy, QFileIconProvider,
+    QAbstractItemView, QMenu, QComboBox,
+)
+from PyQt5.QtCore import QDir, Qt, QSize, QFileInfo, QEvent, QTimer, QFileSystemWatcher, QPoint
+from PyQt5.QtGui import QKeySequence, QIcon, QFont, QPixmap, QPainter, QColor, QPalette, QStandardItem, QPen
+
+# Optional SVG renderer (may not be present in minimal PyQt installs)
+try:
+    from PyQt5.QtSvg import QSvgRenderer
+    HAVE_SVG_RENDERER = True
+except Exception:
+    QSvgRenderer = None
+    HAVE_SVG_RENDERER = False
+
+from .everything_sdk import EverythingSDK
+from .models import DrivesSortProxyModel, SearchSortProxyModel, SearchResultsModel
+from .views import CustomTreeView, SearchListView
+from .widgets import PathTabBar, TreeComboBox
+
+ref_s = 0
+ref_e = 1
+global_keywords = []
+
+
+class FileManager(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.everything = EverythingSDK()
+        self.search_model = None
+        self.sdk_warned = False
+        self._search_drag_button = Qt.NoButton
+        self._toolbar_icon_size = QSize(48, 48)
+        self._nav_history = []
+        self._nav_history_index = -1
+        self._ignore_tree_selection = False
+        self._search_model_updating = False
+        self._search_item_rename_in_progress = False
+        # 監控中間面板目前目錄，任何外部檔案異動皆可即時刷新
+        self._mid_fs_watcher = QFileSystemWatcher(self)
+        self._mid_fs_watcher.directoryChanged.connect(self._on_mid_dir_changed)
+        # 監控本次檔案操作涉及的來源/目標目錄，等異動真正落地後再刷新
+        self._op_fs_watcher = QFileSystemWatcher(self)
+        self._op_fs_watcher.directoryChanged.connect(self._on_operation_dir_changed)
+        self.initUI()
+
+    def initUI(self):
+        self.setWindowTitle("文件管理器")
+        self.setGeometry(100, 100, 800, 600)
+
+        # 创建左侧的目录树视图
+        self.treeView = CustomTreeView(self)
+        self.treeView.setHeaderHidden(True)
+
+        # 设置左侧目录树的根目录为计算机的顶级目录
+        root_path = ""
+        self.model = QFileSystemModel()
+        self.model.setReadOnly(False)
+        self.model.setRootPath(root_path)
+
+        # 只显示目录和磁盘驱动器，不显示目录属性
+        self.model.setFilter(QDir.Dirs | QDir.Drives | QDir.NoDotAndDotDot)
+
+        # 以 proxy model 讓磁碟機依字母排序
+        self.tree_proxy = DrivesSortProxyModel(self)
+        self.tree_proxy.setSourceModel(self.model)
+        self.tree_proxy.setSortCaseSensitivity(Qt.CaseInsensitive)
+        self.tree_proxy.sort(0, Qt.AscendingOrder)
+
+        self.treeView.setModel(self.tree_proxy)
+        root_idx = self.tree_proxy.mapFromSource(self.model.index(root_path))
+        self.treeView.setRootIndex(root_idx)
+        # 尝试展开根节点并确保可以看到内容
+        try:
+            if root_idx.isValid():
+                self.treeView.expand(root_idx)
+                self.treeView.scrollTo(root_idx)
+        except Exception:
+            pass
+        self.treeView.hideColumn(1)
+        self.treeView.hideColumn(2)
+        self.treeView.hideColumn(3)
+
+        # 保留快捷鍵 action，供 Ctrl +/- 與其他輸入路徑重用
+        action_new = QAction("字型放大", self)
+        action_new.setShortcuts([
+            QKeySequence("Ctrl++"),
+            QKeySequence("Ctrl+="),
+            QKeySequence("Ctrl+Num++"),
+        ])
+        action_new.setToolTip("放大字型 (Ctrl +)")
+        action_new.triggered.connect(self.on_font_increase)
+
+        action_open = QAction("字型縮小", self)
+        action_open.setShortcuts([
+            QKeySequence("Ctrl+-"),
+            QKeySequence("Ctrl+Num+-"),
+        ])
+        action_open.setToolTip("縮小字型 (Ctrl -)")
+        action_open.triggered.connect(self.on_font_decrease)
+        self.addAction(action_new)
+        self.addAction(action_open)
+
+        # 嘗試從 resources/icons 載入自訂圖示；若不存在或無法載入 SVG，會 fallback 或動態繪製一個文字圖示
+        icons_dir = os.path.join(os.path.dirname(__file__), "..", "resources", "icons")
+        def make_text_icon(ch, font_size=14, color="#222"):
+            size = self._toolbar_icon_size
+            pix = QPixmap(size)
+            pix.fill(QColor("transparent"))
+            p = QPainter(pix)
+            p.setPen(QColor(color))
+            f = QFont("Arial", font_size)
+            f.setBold(True)
+            p.setFont(f)
+            rect = pix.rect()
+            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, ch)
+            p.end()
+            return QIcon(pix)
+
+        def make_bg_text_icon(ch, font_size=14, fg="#222", bg="#fff"):
+            size = self._toolbar_icon_size
+            pix = QPixmap(size)
+            pix.fill(QColor(bg))
+            p = QPainter(pix)
+            p.setPen(QColor(fg))
+            f = QFont("Arial", font_size)
+            f.setBold(True)
+            p.setFont(f)
+            rect = pix.rect()
+            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, ch)
+            p.end()
+            return QIcon(pix)
+
+        def load_icon(name, fallback_sp):
+            # For A icons prefer generated icons that match current theme (no SVG dependency)
+            palette = QApplication.palette()
+            fg_col = palette.color(QPalette.Text).name()
+            bg_col = palette.color(QPalette.Window).name()
+            if name == 'A_large':
+                return make_bg_text_icon('A', font_size=16, fg=fg_col, bg=bg_col)
+            if name == 'A_small':
+                return make_bg_text_icon('a', font_size=12, fg=fg_col, bg=bg_col)
+
+            path = os.path.join(icons_dir, f"{name}.svg")
+            style = QApplication.style()
+
+            # Try loading vendor SVG or fallback to system icon
+            try:
+                if os.path.exists(path):
+                    icon = QIcon(path)
+                    if not icon.isNull():
+                        pm = icon.pixmap(self._toolbar_icon_size)
+                        if pm and not pm.isNull():
+                            return icon
+                    pix = QPixmap(path)
+                    if not pix.isNull():
+                        pm = pix.scaled(
+                            self._toolbar_icon_size,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
+                        return QIcon(pm)
+                    if HAVE_SVG_RENDERER and QSvgRenderer is not None:
+                        renderer = QSvgRenderer(path)
+                        size = self._toolbar_icon_size
+                        pixmap = QPixmap(size)
+                        pixmap.fill(QColor("transparent"))
+                        painter = QPainter(pixmap)
+                        renderer.render(painter)
+                        painter.end()
+                        if not pixmap.isNull():
+                            return QIcon(pixmap)
+            except Exception:
+                pass
+
+            if style is not None:
+                return style.standardIcon(fallback_sp)
+            return QIcon()
+
+        def make_up_folder_icon():
+            size = self._toolbar_icon_size
+            pix = QPixmap(size)
+            pix.fill(Qt.transparent)
+
+            p = QPainter(pix)
+            p.setRenderHint(QPainter.Antialiasing)
+
+            width = size.width()
+            height = size.height()
+
+            # Draw a custom angled folder matching the new-folder icon perspective, without the plus mark.
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor("#fff1a8"))
+            p.drawPolygon(
+                QPoint(int(width * 0.18), int(height * 0.16)),
+                QPoint(int(width * 0.44), int(height * 0.16)),
+                QPoint(int(width * 0.54), int(height * 0.06)),
+                QPoint(int(width * 0.80), int(height * 0.06)),
+                QPoint(int(width * 0.70), int(height * 0.28)),
+                QPoint(int(width * 0.08), int(height * 0.28)),
+            )
+
+            p.setBrush(QColor("#f2c23f"))
+            p.drawPolygon(
+                QPoint(int(width * 0.08), int(height * 0.28)),
+                QPoint(int(width * 0.70), int(height * 0.28)),
+                QPoint(int(width * 0.62), int(height * 0.88)),
+                QPoint(int(width * 0.08), int(height * 0.88)),
+            )
+
+            p.setBrush(QColor("#d89613"))
+            p.drawPolygon(
+                QPoint(int(width * 0.70), int(height * 0.28)),
+                QPoint(int(width * 0.86), int(height * 0.16)),
+                QPoint(int(width * 0.78), int(height * 0.78)),
+                QPoint(int(width * 0.62), int(height * 0.88)),
+            )
+
+            p.setPen(QPen(QColor("#8f5c00"), 1.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            p.drawLine(int(width * 0.18), int(height * 0.16), int(width * 0.44), int(height * 0.16))
+            p.drawLine(int(width * 0.44), int(height * 0.16), int(width * 0.54), int(height * 0.06))
+            p.drawLine(int(width * 0.54), int(height * 0.06), int(width * 0.80), int(height * 0.06))
+            p.drawLine(int(width * 0.80), int(height * 0.06), int(width * 0.70), int(height * 0.28))
+            p.drawLine(int(width * 0.70), int(height * 0.28), int(width * 0.62), int(height * 0.88))
+            p.drawLine(int(width * 0.62), int(height * 0.88), int(width * 0.08), int(height * 0.88))
+            p.drawLine(int(width * 0.08), int(height * 0.88), int(width * 0.08), int(height * 0.28))
+            p.drawLine(int(width * 0.08), int(height * 0.28), int(width * 0.18), int(height * 0.16))
+            p.drawLine(int(width * 0.70), int(height * 0.28), int(width * 0.86), int(height * 0.16))
+            p.drawLine(int(width * 0.86), int(height * 0.16), int(width * 0.78), int(height * 0.78))
+            p.drawLine(int(width * 0.78), int(height * 0.78), int(width * 0.62), int(height * 0.88))
+
+            p.setPen(QPen(QColor("#ffe08a"), 1.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            p.drawLine(int(width * 0.14), int(height * 0.32), int(width * 0.64), int(height * 0.32))
+            p.drawLine(int(width * 0.14), int(height * 0.38), int(width * 0.62), int(height * 0.38))
+
+            # Green up arrow, centered and larger
+            arrow_center_x = width // 2 + 1
+            arrow_top_y = max(8, height // 5)
+            arrow_mid_y = height // 2
+            arrow_bottom_y = height - 7
+            arrow_head_half_width = max(6, width // 7)
+
+            arrow_pen = QPen(QColor("#2fb24a"), 4.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            p.setPen(arrow_pen)
+            p.drawLine(arrow_center_x, arrow_bottom_y, arrow_center_x, arrow_top_y)
+            p.drawLine(arrow_center_x, arrow_top_y, arrow_center_x - arrow_head_half_width, arrow_mid_y)
+            p.drawLine(arrow_center_x, arrow_top_y, arrow_center_x + arrow_head_half_width, arrow_mid_y)
+
+            # Arrow highlight
+            p.setPen(QPen(QColor("#8be28d"), 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            p.drawLine(arrow_center_x, arrow_bottom_y - 1, arrow_center_x, arrow_top_y + 1)
+
+            p.end()
+            return QIcon(pix)
+
+        up_folder_icon = make_up_folder_icon()
+
+        def make_panel_nav_button(icon, tooltip, handler):
+            button = QToolButton(self)
+            if isinstance(icon, QIcon):
+                button.setIcon(icon)
+            else:
+                button.setIcon(QApplication.style().standardIcon(icon))
+            button.setIconSize(self._toolbar_icon_size)
+            button.setToolTip(tooltip)
+            button.setAutoRaise(True)
+            button.clicked.connect(handler)
+            return button
+
+        def build_panel_toolbar(button_specs):
+            bar = QWidget(self)
+            layout = QHBoxLayout()
+            layout.setContentsMargins(2, 2, 2, 2)
+            layout.setSpacing(2)
+            buttons = []
+            for icon, tooltip, handler in button_specs:
+                btn = make_panel_nav_button(icon, tooltip, handler)
+                layout.addWidget(btn)
+                buttons.append(btn)
+            bar.setLayout(layout)
+            return bar, buttons
+
+        # 使用 QToolButton 並將其明確命名（以便後續啟用/停用）
+        # 创建右侧的文件列表视图
+        self.listView = QTreeView(self)
+        self.listView.setSortingEnabled(True)
+        self.listView2 = SearchListView(self)
+        self.listView2.setSortingEnabled(True)
+        self.listView2.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.listView2.customContextMenuRequested.connect(self._show_search_context_menu)
+
+        # 中間面板：加入多重頁籤列
+        self.mid_panel_toolbar, self.mid_nav_buttons = build_panel_toolbar([
+            (QStyle.StandardPixmap.SP_ArrowBack, "前一頁", self._navigate_back),
+            (QStyle.StandardPixmap.SP_ArrowForward, "後一頁", self._navigate_forward),
+            (up_folder_icon, "回到上一層目錄", self._navigate_up),
+            (QStyle.StandardPixmap.SP_FileDialogNewFolder, "新增資料夾", self._create_folder_in_current_dir),
+        ])
+        self.left_drive_combo = TreeComboBox(self)
+        self.left_drive_combo.setEditable(True)
+        self.left_drive_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.left_drive_combo.lineEdit().setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.left_drive_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.left_drive_combo.setMinimumWidth(0)
+        self.left_drive_combo_view = QTreeView(self.left_drive_combo)
+        self.left_drive_combo_view.setHeaderHidden(True)
+        self.left_drive_combo_view.setItemsExpandable(True)
+        self.left_drive_combo_view.setRootIsDecorated(True)
+        self.left_drive_combo_view.setUniformRowHeights(True)
+        self.left_drive_combo_view.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.left_drive_combo_view.setModel(self.tree_proxy)
+        self.left_drive_combo_view.hideColumn(1)
+        self.left_drive_combo_view.hideColumn(2)
+        self.left_drive_combo_view.hideColumn(3)
+        self.left_drive_combo.setModel(self.tree_proxy)
+        self.left_drive_combo.setModelColumn(0)
+        self.left_drive_combo.setView(self.left_drive_combo_view)
+        self.left_drive_combo.setRootModelIndex(root_idx)
+        self.left_drive_combo_view.viewport().installEventFilter(self)
+        self.left_drive_combo.lineEdit().returnPressed.connect(self._on_left_drive_entered)
+        self.mid_panel_toolbar.layout().addWidget(self.left_drive_combo, 1)
+        self.mid_panel_toolbar.layout().setStretch(self.mid_panel_toolbar.layout().indexOf(self.left_drive_combo), 1)
+        self.mid_tab_bar = PathTabBar(self)
+        self.mid_info_combo = QComboBox()
+        self.mid_info_combo.setEditable(True)
+        self.mid_info_combo.lineEdit().setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.mid_info_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.mid_container = QWidget()
+        mid_vbox = QVBoxLayout()
+        mid_vbox.setContentsMargins(0, 0, 0, 0)
+        mid_vbox.setSpacing(0)
+        mid_vbox.addWidget(self.mid_panel_toolbar)
+        mid_vbox.addWidget(self.mid_tab_bar)
+        mid_vbox.addWidget(self.mid_info_combo)
+        mid_vbox.addWidget(self.listView, 1)
+        self.mid_container.setLayout(mid_vbox)
+
+        # 右側面板：加入多重頁籤列並包裝
+        self.right_tab_bar = PathTabBar(self)
+        self.right_header_spacer = QWidget(self)
+        self.right_info_combo = QComboBox()
+        self.right_info_combo.setEditable(True)
+        self.right_info_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.right_info_combo.lineEdit().setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.right_info_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # 儲存使用者輸入的文字，從 textEdited 更新，因此在 returnPressed 時即使 Qt 內部清空 lineEdit 也能取得
+        self._combo_typed_text = ""
+        self.right_info_combo.lineEdit().textEdited.connect(self._on_combo_text_edited)
+        self.right_info_combo.lineEdit().returnPressed.connect(self._on_combo_return_pressed)
+        right_frame = QWidget()
+        right_frame_vbox = QVBoxLayout()
+        right_frame_vbox.setContentsMargins(0, 0, 0, 0)
+        right_frame_vbox.setSpacing(0)
+        right_frame_vbox.addWidget(self.right_header_spacer)
+        right_frame_vbox.addWidget(self.right_tab_bar)
+        right_frame_vbox.addWidget(self.right_info_combo)
+        right_frame_vbox.addWidget(self.listView2, 1)
+        right_frame.setLayout(right_frame_vbox)
+
+        self.right_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.right_splitter.addWidget(self.mid_container)
+        self.right_splitter.addWidget(right_frame)
+        self.right_splitter.setStretchFactor(0, 1)
+        self.right_splitter.setStretchFactor(1, 1)
+        self.right_splitter.setSizes([600, 600])
+
+        right_container = QWidget()
+        right_vbox = QVBoxLayout()
+        right_vbox.setContentsMargins(0, 0, 0, 0)
+        right_vbox.addWidget(self.right_splitter)
+        right_container.setLayout(right_vbox)
+
+        # 左側面板：加入多重頁籤列並包裝
+        self.left_panel_toolbar, self.left_nav_buttons = build_panel_toolbar([
+            (QStyle.StandardPixmap.SP_ArrowBack, "前一頁", self._navigate_back),
+            (QStyle.StandardPixmap.SP_ArrowForward, "後一頁", self._navigate_forward),
+            (up_folder_icon, "回到上一層目錄", self._navigate_up),
+            (QStyle.StandardPixmap.SP_FileDialogNewFolder, "新增資料夾", self._create_folder_in_current_dir),
+        ])
+        self.left_tab_bar = PathTabBar(self)
+        self.left_info_combo = QComboBox()
+        self.left_info_combo.setEditable(True)
+        self.left_info_combo.lineEdit().setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.left_info_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.left_frame = QWidget(self)
+        left_vbox = QVBoxLayout()
+        left_vbox.setContentsMargins(0, 0, 0, 0)
+        left_vbox.setSpacing(0)
+        left_vbox.addWidget(self.left_panel_toolbar)
+        left_vbox.addWidget(self.left_tab_bar)
+        left_vbox.addWidget(self.left_info_combo)
+        left_vbox.addWidget(self.treeView, 1)
+        self.left_frame.setLayout(left_vbox)
+        self.left_frame.hide()
+
+        # 左側面板已從主畫面移除，中央視圖直接使用中/右對稱分割
+        self.splitter = None
+        self.setCentralWidget(right_container)
+
+        # 初始化狀態列並顯示目前字型大小
+        status = self.statusBar()
+        if status is not None:
+            status.showMessage("")
+
+        # 设置右侧文件列表的模型
+        self.fileListModel = QFileSystemModel()
+        self.fileListModel.setReadOnly(False)
+        self.listView.setModel(self.fileListModel)
+        self.search_model = SearchResultsModel(self.listView2)
+        self.search_model.setHorizontalHeaderLabels(["檔名", "目錄", "日期", "大小"])
+        self.search_model.itemChanged.connect(self._on_search_result_name_changed)
+        self.search_proxy = SearchSortProxyModel(self.listView2)
+        self.search_proxy.setSourceModel(self.search_model)
+        self.listView2.setModel(self.search_proxy)
+        self.listView2.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.listView2.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.listView2.setDragEnabled(True)
+        self.listView2.setDragDropMode(QAbstractItemView.DragDrop)
+        self.listView2.setAcceptDrops(True)
+        self.listView2.setDropIndicatorShown(True)
+        self.listView2.setDefaultDropAction(Qt.IgnoreAction)
+
+        # 中間面板接受從右側搜尋結果拖曳進來的檔案
+        self.listView.setAcceptDrops(True)
+        self.listView.setDropIndicatorShown(True)
+
+        header = self.listView.header()
+        if header is not None:
+            header.moveSection(3, 1)
+        self.listView.hideColumn(2)
+
+        header2 = self.listView2.header()
+        if header2 is not None:
+            header2.setStretchLastSection(True)
+        # 顯示初始字型資訊
+        self.update_status_bar()
+        # 根據選取啟用/停用刪除與屬性按鈕
+        try:
+            self.listView.doubleClicked.connect(self.on_listView_doubleClicked)
+            self.listView.clicked.connect(self.on_listView_clicked)  # 添加單擊事件
+            self.listView2.doubleClicked.connect(self.on_listView2_doubleClicked)
+        except Exception:
+            pass
+        # 用 eventFilter 追蹤各面板 viewport 事件：滑鼠按下、拖放與 Ctrl+滾輪縮放
+        self._listview_mouse_pressed = False
+        self.treeView.viewport().installEventFilter(self)
+        self.listView.viewport().installEventFilter(self)
+        self.listView2.viewport().installEventFilter(self)
+
+        # 设置默认排序为日期排序
+        self.listView.sortByColumn(3, Qt.SortOrder.DescendingOrder)
+        self.listView2.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+
+        # 连接目录树的项选择事件到显示文件列表的函数
+        tree_selection = self.treeView.selectionModel()
+        if tree_selection is not None:
+            tree_selection.selectionChanged.connect(self.on_treeView_selectionChanged)
+        # 頁籤列切換訊號
+        self.left_tab_bar.tab_switched.connect(self._on_left_tab_switched)
+        self.mid_tab_bar.tab_switched.connect(self._on_mid_tab_switched)
+        self.right_tab_bar.tab_switched.connect(self._on_right_tab_switched)
+        # 下拉清單點擊搜尋
+        self.right_info_combo.view().pressed.connect(self._on_right_info_combo_list_pressed)
+        self._sync_right_header_spacing()
+        self._sync_tab_bar_heights()
+        # 載入 config.ini 並還原上次狀態
+        self.load_config()
+        self._sync_right_header_spacing()
+        self._sync_tab_bar_heights()
+        self._update_nav_buttons()
+
+    def on_treeView_selectionChanged(self, selected, deselected):
+        # 当左侧目录树中的项被选择时，更新右侧文件列表
+        if self._ignore_tree_selection:
+            return
+        if selected.indexes():
+            path = self.model.filePath(self.tree_proxy.mapToSource(selected.indexes()[0]))
+            self._navigate_to_path(path)
+
+    def on_listView_clicked(self, index):
+        """处理中央视窗文件单击事件"""
+        # 只有在 listView viewport 上確實發生過滑鼠按下時才觸發搜尋
+        if not self._listview_mouse_pressed:
+            return
+        self._listview_mouse_pressed = False
+        global ref_s, ref_e, global_keywords
+
+        if not self.fileListModel.isDir(index):
+            file_name = self.fileListModel.fileName(index)
+            keywords = self.extract_keywords(file_name)
+            global_keywords = keywords
+
+            if keywords:
+                ref_s = 0
+                ref_e = len(keywords)
+                search_command = '|'.join(keywords)
+                self.execute_search_command(search_command)
+
+
+    def on_listView_doubleClicked(self, index):
+        path = self.fileListModel.filePath(index)
+        if self.fileListModel.isDir(index):
+            self._navigate_to_path(path)
+        else:
+            try:
+                os.startfile(path)
+            except Exception as e:
+                QMessageBox.warning(self, "錯誤", f"無法開啟檔案: {e}")
+
+    def keyPressEvent(self, e):
+        global ref_s, ref_e, global_keywords
+
+        if e.modifiers() & Qt.ControlModifier:
+            if e.key() in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+                self.on_font_increase()
+                e.accept()
+                return
+            if e.key() in (Qt.Key.Key_Minus, Qt.Key.Key_Underscore):
+                self.on_font_decrease()
+                e.accept()
+                return
+
+        # Delete 鍵：刪除右側搜尋結果中選取的檔案
+        if e.key() == Qt.Key.Key_Delete:
+            if self._delete_selected_focused_items():
+                return
+
+        if e.key() == Qt.Key.Key_F2:
+            if self._rename_selected_focused_item():
+                return
+
+        # F3/F4 縮減搜尋關鍵字範圍，其他鍵不觸發檔案式搜尋
+        if e.key() == Qt.Key.Key_F3 and ref_e - ref_s > 0:
+            ref_s = ref_s + 1
+            if ref_e - ref_s > 0:
+                self.execute_search_command('|'.join(global_keywords[ref_s:ref_e]))
+        elif e.key() == Qt.Key.Key_F4 and ref_e - ref_s > 0:
+            ref_e = ref_e - 1
+            if ref_e - ref_s > 0:
+                self.execute_search_command('|'.join(global_keywords[ref_s:ref_e]))
+
+    def extract_keywords(self, file_name):
+        # 自定义解析文件名以提取多个参数，只提取括号内的文字
+        keywords = []
+        stack = []
+        is_inside_brackets = False
+
+        for char in file_name:
+            if char in "([{":
+                if not is_inside_brackets:
+                    is_inside_brackets = True
+                elif stack:
+                    keywords.append("".join(stack))
+                    stack = []
+            elif char in ")]}":
+                is_inside_brackets = False
+                if stack:
+                    keywords.append("".join(stack))
+                stack = []
+            elif is_inside_brackets:
+                stack.append(char)
+
+        keywords = [keyword for keyword in keywords if keyword.strip()]
+        return keywords
+
+    def _on_left_tab_switched(self, path):
+        """切換左側頁籤：導航目錄樹至儲存的路徑。"""
+        self._navigate_to_path(path)
+
+    def _on_mid_tab_switched(self, path):
+        """切換中間頁籤：更新檔案列表至儲存的路徑，並同步左側目錄樹。"""
+        self._navigate_to_path(path)
+
+    def _on_left_drive_tree_activated(self, proxy_index):
+        if not proxy_index.isValid():
+            return
+        path = self.model.filePath(self.tree_proxy.mapToSource(proxy_index)).strip()
+        if path and os.path.isdir(path):
+            self.left_drive_combo.hidePopup()
+            self._navigate_to_path(path)
+
+    def _on_left_drive_entered(self):
+        path = self.left_drive_combo.currentText().strip() if self.left_drive_combo is not None else ""
+        if path and os.path.isdir(path):
+            self._navigate_to_path(path)
+        else:
+            self._sync_left_drive_combo(self._current_dir())
+
+    def _on_combo_text_edited(self, text):
+        """user 手動輸入時將文字儲存至 _combo_typed_text，供 returnPressed 時使用。"""
+        self._combo_typed_text = text
+
+    def _on_combo_return_pressed(self):
+        """lineEdit returnPressed 信號。取得 textEdited 儲存的文字，
+        用 singleShot 延遲從而讓 Qt 內部 _q_returnPressed 先執行完畢，
+        再套用自定義搜尋。"""
+        text = self._combo_typed_text.strip()
+        if text:
+            QTimer.singleShot(0, lambda t=text: self.execute_search_command(t))
+
+    def eventFilter(self, obj, event):
+        """追蹤 listView viewport 事件：滑鼠按下 + 拖放。"""
+        if event.type() == QEvent.Wheel and obj in (self.treeView.viewport(), self.listView.viewport(), self.listView2.viewport()):
+            if event.modifiers() & Qt.ControlModifier:
+                delta_y = event.angleDelta().y()
+                if delta_y < 0:
+                    self.on_font_increase()
+                    event.accept()
+                    return True
+                if delta_y > 0:
+                    self.on_font_decrease()
+                    event.accept()
+                    return True
+
+        if obj is getattr(self, 'left_drive_combo_view', None).viewport():
+            if event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease):
+                proxy_index = self.left_drive_combo_view.indexAt(event.pos())
+                if not proxy_index.isValid():
+                    return False
+                item_rect = self.left_drive_combo_view.visualRect(proxy_index)
+                if event.pos().x() < item_rect.left():
+                    self.left_drive_combo.keep_popup_open_once()
+                    return False
+                if event.type() == QEvent.MouseButtonRelease:
+                    self._on_left_drive_tree_activated(proxy_index)
+                    event.accept()
+                    return True
+            return False
+
+        if obj is self.listView.viewport():
+            et = event.type()
+            if et == QEvent.MouseButtonPress:
+                self._listview_mouse_pressed = True
+                return False  # 不消費，讓事件繼續傳遞
+            if et == QEvent.DragEnter:
+                if event.mimeData().hasUrls():
+                    # 右鍵拖曳：先接受讓 session 保持活躍，游標圖示由 DragMove 更新
+                    event.accept()
+                else:
+                    event.ignore()
+                return True
+            if et == QEvent.DragMove:
+                if event.mimeData().hasUrls():
+                    event.accept()
+                else:
+                    event.ignore()
+                return True
+            if et == QEvent.Drop:
+                target_dir = self._resolve_listview_drop_target(event.pos())
+                src_paths = [u.toLocalFile() for u in event.mimeData().urls() if u.toLocalFile()]
+                if target_dir and src_paths:
+                    self.track_file_operation(src_paths, target_dir)
+                    if self._search_drag_button == Qt.RightButton:
+                        # 右鍵拖曳：呼叫 Shell IDropTarget 顯示原生選單
+                        done = self._shell_right_drag_drop_to(src_paths, target_dir, event.pos())
+                        if done:
+                            event.acceptProposedAction()
+                            self._schedule_panel_refreshes((600, 1500))
+                        else:
+                            event.ignore()
+                    else:
+                        mods = event.keyboardModifiers()
+                        if mods & Qt.ControlModifier:
+                            op = "copy"
+                        elif mods & Qt.ShiftModifier:
+                            op = "move"
+                        else:
+                            s_drv = os.path.splitdrive(os.path.abspath(src_paths[0]))[0].lower()
+                            d_drv = os.path.splitdrive(os.path.abspath(target_dir))[0].lower()
+                            op = "move" if s_drv and s_drv == d_drv else "copy"
+                        self._perform_file_op(src_paths, target_dir, op)
+                        event.acceptProposedAction()
+                        self._schedule_panel_refreshes((600, 1500))
+                else:
+                    event.ignore()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _on_right_tab_switched(self, keyword):
+        """切換右側頁籤：側边發表 combobox 顯示並復原搜尋結果。
+        不更新 tab 資料或 MRU 歷史，只復原查詢。"""
+        self.right_info_combo.blockSignals(True)
+        self.right_info_combo.lineEdit().setText(keyword)
+        self.right_info_combo.blockSignals(False)
+        if keyword:
+            self._do_search(keyword)
+        elif self.search_model:
+            self.search_model.removeRows(0, self.search_model.rowCount())
+
+    def _on_right_info_combo_list_pressed(self, model_index):
+        """從下拉清單點擊選取項目時執行搜尋。"""
+        text = self.right_info_combo.model().data(model_index)
+        if text:
+            self.execute_search_command(text)
+
+    def execute_search_command(self, search_command):
+        """使用者主動搜尋：更新頁籤資料、combobox MRU 歷史，並執行查詢。"""
+        # 1. 儲存到目前頁籤
+        self.right_tab_bar.set_current_data(search_command, search_command)
+        # 2. 更新 combobox MRU 歷史（移除舊同名項目，插入至頂端）
+        self.right_info_combo.blockSignals(True)
+        for i in range(self.right_info_combo.count() - 1, -1, -1):
+            if self.right_info_combo.itemText(i) == search_command:
+                self.right_info_combo.removeItem(i)
+        self.right_info_combo.insertItem(0, search_command)
+        self.right_info_combo.setCurrentIndex(0)
+        self.right_info_combo.blockSignals(False)
+        self.right_info_combo.lineEdit().setText(search_command)
+        # 3. 執行實際查詢
+        self._do_search(search_command)
+
+    def _normalize_search_command(self, search_command):
+        """將以 | 分隔的關鍵詞個別正規化，避免含空白詞組被 Everything 拆散。"""
+        normalized_terms = []
+        for raw_term in search_command.split('|'):
+            term = raw_term.strip()
+            if not term:
+                continue
+            if any(ch.isspace() for ch in term) and not (term.startswith('"') and term.endswith('"')):
+                term = f'"{term}"'
+            normalized_terms.append(term)
+        return '|'.join(normalized_terms)
+
+    def _split_search_terms(self, search_command):
+        return [term.strip() for term in search_command.split('|') if term.strip()]
+
+    def _is_plain_keyword_term(self, term):
+        candidate = term.strip()
+        if not candidate:
+            return False
+        if candidate.startswith('"') and candidate.endswith('"') and len(candidate) >= 2:
+            candidate = candidate[1:-1]
+        return not any(token in candidate for token in (':', '<', '>', '!', '*', '?'))
+
+    def _search_plain_keyword_terms(self, terms):
+        results = []
+        seen = set()
+        for term in terms:
+            normalized_term = self._normalize_search_command(term)
+            for path in self.everything.query(normalized_term):
+                if path not in seen:
+                    seen.add(path)
+                    results.append(path)
+        return results
+
+    def _do_search(self, search_command):
+        """只執行 Everything 查詢並更新展示，不修改頁籤資料或 combobox 歷史。復原搜尋用。"""
+        terms = self._split_search_terms(search_command)
+        normalized_command = self._normalize_search_command(search_command)
+        if self.everything.is_available():
+            if len(terms) > 1 and all(self._is_plain_keyword_term(term) for term in terms):
+                results = self._search_plain_keyword_terms(terms)
+            else:
+                results = self.everything.query(normalized_command)
+            self.update_search_results(results)
+            return
+
+        if not self.sdk_warned:
+            self.sdk_warned = True
+            status = self.statusBar()
+            if status is not None:
+                status.showMessage("Everything SDK DLL not found. Place Everything64.dll next to main.py or in a sdk folder.")
+            QMessageBox.information(
+                self,
+                "Everything SDK",
+                "Everything SDK DLL not found.\n\nDownload Everything-SDK.zip and place Everything64.dll (or Everything32.dll) next to main.py or in a 'sdk' folder.",
+            )
+        subprocess.Popen('"Everything.exe" -search "' + normalized_command.replace('"', '\\"') + '"', shell=True)
+
+    def update_search_results(self, results):
+        if self.search_model is None:
+            return
+        self._search_model_updating = True
+        self.search_model.removeRows(0, self.search_model.rowCount())
+        icon_provider = QFileIconProvider()
+        for filepath in results:
+            name_item = QStandardItem(os.path.basename(filepath))
+            name_item.setData(filepath, Qt.UserRole + 1)
+            name_item.setIcon(icon_provider.icon(QFileInfo(filepath)))
+
+            dir_item = QStandardItem(os.path.dirname(filepath))
+            dir_item.setEditable(False)
+
+            try:
+                mtime = os.path.getmtime(filepath)
+                dt_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
+            except Exception:
+                mtime = 0
+                dt_str = ''
+
+            date_item = QStandardItem(dt_str)
+            date_item.setEditable(False)
+            date_item.setData(mtime, Qt.UserRole)
+
+            try:
+                if os.path.isdir(filepath):
+                    size = 0
+                    size_str = ''
+                else:
+                    size = os.path.getsize(filepath)
+                    size_str = self._format_size(size)
+            except Exception:
+                size = 0
+                size_str = ''
+
+            size_item = QStandardItem(size_str)
+            size_item.setEditable(False)
+            size_item.setData(size, Qt.UserRole)
+
+            self.search_model.appendRow([name_item, dir_item, date_item, size_item])
+        self._search_model_updating = False
+
+    def _format_size(self, size):
+        if size < 1024:
+            return f"{size} B"
+        elif size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        elif size < 1024 * 1024 * 1024:
+            return f"{size / (1024 * 1024):.1f} MB"
+        else:
+            return f"{size / (1024 * 1024 * 1024):.1f} GB"
+
+    def on_listView2_doubleClicked(self, index):
+        source_index = self.search_proxy.mapToSource(index)
+        name_index = self.search_model.index(source_index.row(), 0)
+        filepath = name_index.data(Qt.UserRole + 1)
+        if filepath and os.path.exists(filepath):
+            if os.path.isdir(filepath):
+                tree_index = self.tree_proxy.mapFromSource(self.model.index(filepath))
+                if tree_index.isValid():
+                    self.treeView.setCurrentIndex(tree_index)
+                    self.treeView.expand(tree_index)
+                    self.treeView.scrollTo(tree_index)
+            else:
+                try:
+                    os.startfile(filepath)
+                except Exception as e:
+                    QMessageBox.warning(self, "錯誤", f"無法開啟檔案: {e}")
+
+    def _get_selected_search_paths(self):
+        """回傳 listView2 中所有選取列的完整路徑。"""
+        rows_seen = set()
+        paths = []
+        for proxy_index in self.listView2.selectedIndexes():
+            if proxy_index.column() != 0:
+                continue
+            source_index = self.search_proxy.mapToSource(proxy_index)
+            row = source_index.row()
+            if row in rows_seen:
+                continue
+            rows_seen.add(row)
+            item = self.search_model.item(row, 0)
+            if item is not None:
+                filepath = item.data(Qt.UserRole + 1)
+                if filepath:
+                    paths.append(filepath)
+        return paths
+
+    def _focused_file_view(self):
+        fw = QApplication.focusWidget()
+        for view in (self.treeView, self.listView, self.listView2):
+            if fw is view or fw is view.viewport():
+                return view
+        return None
+
+    def _get_selected_paths_for_view(self, view):
+        if view is self.listView2:
+            return self._get_selected_search_paths()
+
+        selection_model = view.selectionModel() if view is not None else None
+        if selection_model is None:
+            return []
+
+        paths = []
+        rows_seen = set()
+        for index in selection_model.selectedRows(0):
+            key = (index.row(), index.parent().internalId() if index.parent().isValid() else -1)
+            if key in rows_seen:
+                continue
+            rows_seen.add(key)
+            if view is self.treeView:
+                path = self.model.filePath(self.tree_proxy.mapToSource(index))
+            elif view is self.listView:
+                path = self.fileListModel.filePath(index)
+            else:
+                path = ""
+            if path:
+                paths.append(path)
+        return paths
+
+    def _delete_paths_to_recycle_bin(self, paths, refresh_search=False):
+        existing = [p for p in paths if os.path.exists(p)]
+        if not existing:
+            return False
+
+        class SHFILEOPSTRUCTW(ctypes.Structure):
+            _fields_ = [
+                ("hwnd", wt.HWND),
+                ("wFunc", wt.UINT),
+                ("pFrom", ctypes.c_wchar_p),
+                ("pTo", ctypes.c_wchar_p),
+                ("fFlags", ctypes.c_ushort),
+                ("fAnyOperationsAborted", wt.BOOL),
+                ("hNameMappings", ctypes.c_void_p),
+                ("lpszProgressTitle", ctypes.c_wchar_p),
+            ]
+
+        FO_DELETE = 0x0003
+        FOF_ALLOWUNDO = 0x0040
+        FOF_WANTNUKEWARNING = 0x4000
+
+        path_buf = ctypes.create_unicode_buffer('\0'.join(existing) + '\0')
+        op = SHFILEOPSTRUCTW()
+        op.hwnd = int(self.winId())
+        op.wFunc = FO_DELETE
+        op.pFrom = ctypes.cast(path_buf, ctypes.c_wchar_p)
+        op.pTo = None
+        op.fFlags = FOF_ALLOWUNDO | FOF_WANTNUKEWARNING
+
+        result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+        if result == 0 and not op.fAnyOperationsAborted:
+            self.refresh_mid_panel()
+            if refresh_search:
+                self._refresh_search_results_existence()
+            else:
+                self.refresh_current_search_results()
+            return True
+        return False
+
+    def _delete_selected_focused_items(self):
+        view = self._focused_file_view()
+        if view is None:
+            return False
+        if view is self.listView2:
+            return self._delete_selected_search_files()
+        paths = self._get_selected_paths_for_view(view)
+        return self._delete_paths_to_recycle_bin(paths)
+
+    def _rename_selected_focused_item(self):
+        view = self._focused_file_view()
+        if view is None:
+            return False
+
+        if view in (self.treeView, self.listView, self.listView2):
+            selection_model = view.selectionModel()
+            if selection_model is None:
+                return False
+            selected = selection_model.selectedRows(0)
+            if len(selected) != 1:
+                return False
+            edit_index = selected[0]
+            if view is self.listView2:
+                edit_index = self.search_proxy.mapToSource(edit_index)
+                edit_index = self.search_proxy.mapFromSource(edit_index)
+            view.setCurrentIndex(edit_index)
+            view.edit(edit_index)
+            return True
+        return False
+
+    def _on_search_result_name_changed(self, item):
+        if self._search_model_updating or self._search_item_rename_in_progress:
+            return
+        if item is None or item.column() != 0:
+            return
+
+        old_path = item.data(Qt.UserRole + 1)
+        if not old_path or not os.path.exists(old_path):
+            return
+
+        old_name = os.path.basename(old_path)
+        new_name = item.text().strip()
+        if not new_name or new_name == old_name:
+            self._search_item_rename_in_progress = True
+            item.setText(old_name)
+            self._search_item_rename_in_progress = False
+            return
+        if any(ch in new_name for ch in '\\/:*?"<>|'):
+            QMessageBox.warning(self, "重新命名失敗", "檔名包含無效字元。")
+            self._search_item_rename_in_progress = True
+            item.setText(old_name)
+            self._search_item_rename_in_progress = False
+            return
+
+        new_path = os.path.join(os.path.dirname(old_path), new_name)
+        if os.path.exists(new_path):
+            QMessageBox.warning(self, "重新命名失敗", "目標名稱已存在。")
+            self._search_item_rename_in_progress = True
+            item.setText(old_name)
+            self._search_item_rename_in_progress = False
+            return
+
+        try:
+            os.rename(old_path, new_path)
+        except Exception as ex:
+            QMessageBox.warning(self, "重新命名失敗", f"無法重新命名: {ex}")
+            self._search_item_rename_in_progress = True
+            item.setText(old_name)
+            self._search_item_rename_in_progress = False
+            return
+
+        self._search_item_rename_in_progress = True
+        item.setData(new_path, Qt.UserRole + 1)
+        item.setText(os.path.basename(new_path))
+        self._search_item_rename_in_progress = False
+        self.refresh_mid_panel()
+        self.refresh_current_search_results()
+
+    def _show_search_context_menu(self, pos):
+        """在 listView2 上顯示 Windows 檔案總管相同的右鍵選單。"""
+        paths = self._get_selected_search_paths()
+        if not paths:
+            return
+        global_pos = self.listView2.viewport().mapToGlobal(pos)
+        try:
+            self._invoke_shell_context_menu(int(self.winId()), paths, global_pos.x(), global_pos.y())
+        except Exception:
+            traceback.print_exc()
+            menu = QMenu(self)
+            if len(paths) == 1 and os.path.exists(paths[0]):
+                menu.addAction("開啟", lambda p=paths[0]: os.startfile(p))
+            menu.addAction("刪除（移至資源回收桶）", self._delete_selected_search_files)
+            menu.exec_(global_pos)
+
+    def _invoke_shell_context_menu(self, hwnd, paths, x, y):
+        """Show the Windows Shell context menu (identical to Explorer right-click)."""
+        from win32com.shell import shell, shellcon
+        import win32gui
+        import win32con
+        import pythoncom
+
+        pythoncom.CoInitialize()
+        try:
+            # 依第一個路徑的父目錄分組（GetUIObjectOf 要求相同父目錄）
+            parent_dir = os.path.normpath(os.path.dirname(os.path.abspath(paths[0])))
+            norm_parent = os.path.normcase(parent_dir)
+            same_parent = [
+                p for p in paths
+                if os.path.normcase(
+                    os.path.normpath(os.path.dirname(os.path.abspath(p)))
+                ) == norm_parent
+            ]
+
+            # 取得桌面 IShellFolder
+            desktop = shell.SHGetDesktopFolder()
+
+            # SHParseDisplayName 在此 pywin32 版本只接受 2 個參數: (name, sfgaoMask)
+            parent_pidl = shell.SHParseDisplayName(parent_dir, 0)[0]
+
+            # BindToObject: pbc 用 None 代表 NULL
+            parent_sf = desktop.BindToObject(parent_pidl, None, shell.IID_IShellFolder)
+
+            # 取得每個檔案相對於父目錄的子 PIDL
+            # ParseDisplayName 回傳 (eaten, pidl, attrs)，取 index 1 為 PIDL
+            child_pidls = []
+            for p in same_parent:
+                result = parent_sf.ParseDisplayName(hwnd, None, os.path.basename(p))
+                child_pidls.append(result[1])
+
+            # GetUIObjectOf 回傳 (reserved, IContextMenu)，取 index 1 為實際介面
+            icm = parent_sf.GetUIObjectOf(
+                hwnd, child_pidls, shell.IID_IContextMenu, 0
+            )[1]
+
+            # 建立彈出選單並填入 Shell 命令
+            hmenu = win32gui.CreatePopupMenu()
+            icm.QueryContextMenu(
+                hmenu, 0, 1, 0x7FFF,
+                shellcon.CMF_EXPLORE | shellcon.CMF_CANRENAME
+            )
+
+            try:
+                win32gui.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
+
+            cmd = win32gui.TrackPopupMenu(
+                hmenu,
+                win32con.TPM_LEFTALIGN | win32con.TPM_RIGHTBUTTON | win32con.TPM_RETURNCMD,
+                x, y, 0, hwnd, None
+            )
+            win32gui.PostMessage(hwnd, win32con.WM_NULL, 0, 0)
+            win32gui.DestroyMenu(hmenu)
+
+            if cmd > 0:
+                # lpVerb 為整數時代表 MAKEINTRESOURCE(cmd - idCmdFirst)
+                ci = (0, hwnd, cmd - 1, None, None, win32con.SW_SHOWNORMAL, 0, None)
+                icm.InvokeCommand(ci)
+                QTimer.singleShot(800, self._refresh_search_results_existence)
+        finally:
+            pythoncom.CoUninitialize()
+
+    def _refresh_search_results_existence(self):
+        """移除搜尋結果中已不存在的檔案列。"""
+        rows_to_remove = []
+        for row in range(self.search_model.rowCount()):
+            item = self.search_model.item(row, 0)
+            if item is None:
+                continue
+            filepath = item.data(Qt.UserRole + 1)
+            if filepath and not os.path.exists(filepath):
+                rows_to_remove.append(row)
+        for row in reversed(rows_to_remove):
+            self.search_model.removeRow(row)
+
+    def _resolve_listview_drop_target(self, pos):
+        """依 viewport 座標決定中間面板的拖放目標目錄。"""
+        idx = self.listView.indexAt(pos)
+        if idx.isValid():
+            path = self.fileListModel.filePath(idx)
+            path = os.path.normpath(path) if path else ""
+            if path and os.path.isdir(path):
+                return path
+            if path:
+                parent = os.path.dirname(path)
+                if os.path.isdir(parent):
+                    return parent
+        root_idx = self.listView.rootIndex()
+        if root_idx.isValid():
+            path = self.fileListModel.filePath(root_idx)
+            path = os.path.normpath(path) if path else ""
+            if path and os.path.isdir(path):
+                return path
+        return ""
+
+    def _shell_right_drag_drop_to(self, src_paths, target_dir, viewport_pos):
+        """從中間面板 viewport 座標呼叫 Shell IDropTarget::Drop(MK_RBUTTON)。
+        顯示原生右鍵拖曳選單，失敗時 fallback 到自訂 Qt 選單。
+        回傳 True 表示已完成（含使用者選擇後執行），False 表示取消。"""
+        try:
+            from win32com.shell import shell
+            import pythoncom
+
+            pythoncom.CoInitialize()
+            try:
+                hwnd = int(self.winId())
+                desktop = shell.SHGetDesktopFolder()
+
+                # --- 建立來源 IDataObject ---
+                src_parent = os.path.normpath(os.path.dirname(os.path.abspath(src_paths[0])))
+                src_parent_pidl = shell.SHParseDisplayName(src_parent, 0)[0]
+                src_sf = desktop.BindToObject(src_parent_pidl, None, shell.IID_IShellFolder)
+                child_pidls = []
+                for p in src_paths:
+                    r = src_sf.ParseDisplayName(hwnd, None, os.path.basename(p))
+                    child_pidls.append(r[1])
+                data_obj = src_sf.GetUIObjectOf(
+                    hwnd, child_pidls, pythoncom.IID_IDataObject, 0
+                )[1]
+
+                # --- 取得目標資料夾的 IDropTarget ---
+                tdir = os.path.normpath(target_dir)
+                tparent = os.path.dirname(tdir)
+                tname = os.path.basename(tdir)
+                tparent_pidl = shell.SHParseDisplayName(tparent, 0)[0]
+                tparent_sf = desktop.BindToObject(tparent_pidl, None, shell.IID_IShellFolder)
+                tdir_pidl = tparent_sf.ParseDisplayName(hwnd, None, tname)[1]
+                drop_target = tparent_sf.GetUIObjectOf(
+                    hwnd, [tdir_pidl], pythoncom.IID_IDropTarget, 0
+                )[1]
+
+                # --- 模擬右鍵拖放 ---
+                MK_RBUTTON = 2
+                DROPEFFECT_NONE = 0
+                DROPEFFECT_ALL = 7
+
+                gpos = self.listView.viewport().mapToGlobal(viewport_pos)
+                pt = (gpos.x(), gpos.y())
+
+                drop_target.DragEnter(data_obj, MK_RBUTTON, pt, DROPEFFECT_ALL)
+                result_effect = drop_target.Drop(data_obj, MK_RBUTTON, pt, DROPEFFECT_ALL)
+                return result_effect != DROPEFFECT_NONE
+            finally:
+                pythoncom.CoUninitialize()
+        except Exception:
+            traceback.print_exc()
+            # COM 路徑失敗：fallback 到 Qt 選單
+            return self._fallback_right_drag_menu_fm(src_paths, target_dir, viewport_pos)
+
+    def _fallback_right_drag_menu_fm(self, src_paths, target_dir, viewport_pos):
+        """Shell IDropTarget 不可用時，以符合 Windows 風格的 Qt 選單處理右鍵拖曳。"""
+        menu = QMenu(self)
+        font_bold = QFont(menu.font())
+        font_bold.setBold(True)
+
+        act_move = menu.addAction("移動到這裡(&M)")
+        act_move.setFont(font_bold)
+        act_copy = menu.addAction("複製到這裡(&C)")
+        act_link = menu.addAction("建立捷徑到這裡(&S)")
+        menu.addSeparator()
+        menu.addAction("取消")
+
+        gpos = self.listView.viewport().mapToGlobal(viewport_pos)
+        chosen = menu.exec_(gpos)
+
+        if chosen == act_move:
+            self._perform_file_op(src_paths, target_dir, "move")
+            return True
+        if chosen == act_copy:
+            self._perform_file_op(src_paths, target_dir, "copy")
+            return True
+        if chosen == act_link:
+            self._create_shortcuts_fm(src_paths, target_dir)
+            return True
+        return False
+
+    def _create_shortcuts_fm(self, src_paths, target_dir):
+        """在 target_dir 建立 src_paths 的 Windows 捷徑（.lnk）。"""
+        try:
+            import pythoncom
+            from win32com.shell import shell
+
+            pythoncom.CoInitialize()
+            try:
+                for src in src_paths:
+                    if not os.path.exists(src):
+                        continue
+                    base = os.path.splitext(os.path.basename(src))[0]
+                    lnk_path = os.path.join(target_dir, f"{base} - 捷徑.lnk")
+                    link = pythoncom.CoCreateInstance(
+                        shell.CLSID_ShellLink, None,
+                        pythoncom.CLSCTX_INPROC_SERVER,
+                        shell.IID_IShellLink
+                    )
+                    link.SetPath(src)
+                    link.SetWorkingDirectory(os.path.dirname(src))
+                    persist = link.QueryInterface(pythoncom.IID_IPersistFile)
+                    persist.Save(lnk_path, True)
+            finally:
+                pythoncom.CoUninitialize()
+        except Exception as ex:
+            QMessageBox.warning(self, "建立捷徑失敗", f"無法建立捷徑：{ex}")
+
+    def _perform_file_op(self, src_paths, target_dir, op):
+        """使用 Windows SHFileOperationW 執行複製或移動。"""
+        class SHFILEOPSTRUCTW(ctypes.Structure):
+            _fields_ = [
+                ("hwnd", wt.HWND),
+                ("wFunc", wt.UINT),
+                ("pFrom", ctypes.c_wchar_p),
+                ("pTo", ctypes.c_wchar_p),
+                ("fFlags", ctypes.c_ushort),
+                ("fAnyOperationsAborted", wt.BOOL),
+                ("hNameMappings", ctypes.c_void_p),
+                ("lpszProgressTitle", ctypes.c_wchar_p),
+            ]
+
+        FO_MOVE = 0x0001
+        FO_COPY = 0x0002
+        FOF_SIMPLEPROGRESS = 0x0100
+
+        target_dir = os.path.normpath(target_dir)
+        valid_sources = []
+        for src in src_paths:
+            src = os.path.normpath(src)
+            if not os.path.exists(src):
+                continue
+            dest = os.path.join(target_dir, os.path.basename(src))
+            if os.path.abspath(src) == os.path.abspath(dest):
+                continue
+            valid_sources.append(src)
+
+        if not valid_sources:
+            return
+
+        from_buf = ctypes.create_unicode_buffer("\0".join(valid_sources) + "\0\0")
+        to_buf = ctypes.create_unicode_buffer(target_dir + "\0")
+
+        op_struct = SHFILEOPSTRUCTW()
+        op_struct.hwnd = int(self.winId())
+        op_struct.wFunc = FO_MOVE if op == "move" else FO_COPY
+        op_struct.pFrom = ctypes.cast(from_buf, ctypes.c_wchar_p)
+        op_struct.pTo = ctypes.cast(to_buf, ctypes.c_wchar_p)
+        op_struct.fFlags = FOF_SIMPLEPROGRESS
+        op_struct.lpszProgressTitle = "正在處理檔案..."
+
+        result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op_struct))
+        if result != 0 and not op_struct.fAnyOperationsAborted:
+            QMessageBox.warning(self, "拖曳作業失敗", f"Windows 檔案作業失敗，錯誤碼: {result}")
+
+    def _watch_mid_dir(self, dir_path: str):
+        """更新 QFileSystemWatcher：監看中間面板目前目錄，任何異動皆即時刷新。"""
+        old = self._mid_fs_watcher.directories()
+        if old:
+            self._mid_fs_watcher.removePaths(old)
+        if dir_path and os.path.isdir(dir_path):
+            self._mid_fs_watcher.addPath(dir_path)
+
+    def track_file_operation(self, src_paths, target_dir):
+        """暫時監看拖放操作涉及的目錄，等檔案實際變更後再刷新面板。"""
+        watch_dirs = set()
+        for src in src_paths or []:
+            src_dir = os.path.dirname(os.path.normpath(src)) if src else ""
+            if src_dir and os.path.isdir(src_dir):
+                watch_dirs.add(src_dir)
+        if target_dir:
+            norm_target = os.path.normpath(target_dir)
+            if os.path.isdir(norm_target):
+                watch_dirs.add(norm_target)
+
+        old = self._op_fs_watcher.directories()
+        if old:
+            self._op_fs_watcher.removePaths(old)
+        if watch_dirs:
+            self._op_fs_watcher.addPaths(sorted(watch_dirs))
+
+        self._schedule_panel_refreshes((250, 900, 1800))
+        QTimer.singleShot(4000, self._clear_operation_watch_dirs)
+
+    def _clear_operation_watch_dirs(self):
+        dirs = self._op_fs_watcher.directories()
+        if dirs:
+            self._op_fs_watcher.removePaths(dirs)
+
+    def _on_operation_dir_changed(self, _path: str):
+        """來源/目標目錄真的發生異動後，立即補刷中央與右側面板。"""
+        self._schedule_panel_refreshes((120, 450))
+
+    def _schedule_panel_refreshes(self, delays_ms):
+        for delay in delays_ms:
+            QTimer.singleShot(delay, self.refresh_mid_panel)
+            QTimer.singleShot(delay, self.refresh_current_search_results)
+
+    def _on_mid_dir_changed(self, _path: str):
+        """QFileSystemWatcher 偵測到目錄內容異動（新增/刪除/改名）時自動刷新面板。"""
+        self._schedule_panel_refreshes((300, 400))
+
+    def refresh_mid_panel(self):
+        """強制中間面板重新讀取目前目錄。
+
+        問題根源：QFileSystemModel.setRootPath(同一路徑) 在 Qt 內部是 no-op。
+        解法：先重設為空路徑，再設回原目錄，強制模型重新讀取目錄內容。
+        優先從 listView.rootIndex() 取得實際顯示目錄
+        （雙擊導覽後 rootPath() 可能與實際顯示目錄不同）。
+        """
+        root_idx = self.listView.rootIndex()
+        if root_idx.isValid():
+            dir_path = self.fileListModel.filePath(root_idx)
+        else:
+            dir_path = self.fileListModel.rootPath()
+        if not dir_path or not os.path.isdir(dir_path):
+            return
+        # 強制重新載入：先設為 "" 使 Qt 認為路徑有變，再設回原目錄觸發實際掃描
+        self.fileListModel.setRootPath("")
+        new_idx = self.fileListModel.setRootPath(dir_path)
+        self.listView.setRootIndex(new_idx)
+        # setRootPath("") 不影響我們外部的 watcher，但確保仍在監看
+        self._watch_mid_dir(dir_path)
+
+    def _current_dir(self):
+        root_idx = self.listView.rootIndex()
+        if root_idx.isValid():
+            path = self.fileListModel.filePath(root_idx)
+            if path and os.path.isdir(path):
+                return path
+        indexes = self.treeView.selectedIndexes()
+        if indexes:
+            path = self.model.filePath(self.tree_proxy.mapToSource(indexes[0]))
+            if path and os.path.isdir(path):
+                return path
+        path = self.mid_tab_bar.current_data() or self.left_tab_bar.current_data()
+        return path if path and os.path.isdir(path) else ""
+
+    def _apply_two_panel_layout(self):
+        """左側面板已移除後，固定保留中/右兩欄對稱配置。"""
+        if self.right_splitter is not None:
+            self.right_splitter.setSizes([1, 1])
+
+    def _sync_left_drive_combo(self, path):
+        if self.left_drive_combo is None:
+            return
+        text = path or self.mid_tab_bar.current_data() or self.left_tab_bar.current_data() or ""
+        self.left_drive_combo.blockSignals(True)
+        self.left_drive_combo.lineEdit().setText(text)
+        self.left_drive_combo.blockSignals(False)
+        self._expand_left_drive_combo_tree(text)
+
+    def _expand_left_drive_combo_tree(self, path):
+        if not path or self.left_drive_combo_view is None:
+            return
+        proxy_index = self.tree_proxy.mapFromSource(self.model.index(path))
+        if not proxy_index.isValid():
+            return
+        parent = proxy_index.parent()
+        while parent.isValid():
+            self.left_drive_combo_view.expand(parent)
+            parent = parent.parent()
+        self.left_drive_combo_view.expand(proxy_index)
+        self.left_drive_combo_view.scrollTo(proxy_index)
+        self.left_drive_combo.setRootModelIndex(self.tree_proxy.mapFromSource(self.model.index("")))
+
+    def _sync_tab_bar_heights(self):
+        """三個頁籤列共用同一高度，避免右側因自身 sizeHint 較大而變高。"""
+        base_height = max(self.mid_tab_bar.tab_bar.sizeHint().height(), 22)
+        for tab_container in (self.left_tab_bar, self.mid_tab_bar, self.right_tab_bar):
+            tab_container.sync_height(base_height)
+
+    def _sync_right_header_spacing(self):
+        """右側沒有工具列，補一段同高留白，讓右側頁籤垂直對齊左側頁籤列。"""
+        spacer_height = max(self.mid_panel_toolbar.sizeHint().height(), 0)
+        self.right_header_spacer.setFixedHeight(spacer_height)
+
+    def _record_history(self, path):
+        if not path or not os.path.isdir(path):
+            return
+        if self._nav_history_index >= 0 and self._nav_history[self._nav_history_index] == path:
+            self._update_nav_buttons()
+            return
+        if self._nav_history_index < len(self._nav_history) - 1:
+            self._nav_history = self._nav_history[:self._nav_history_index + 1]
+        self._nav_history.append(path)
+        self._nav_history_index = len(self._nav_history) - 1
+        self._update_nav_buttons()
+
+    def _update_nav_buttons(self):
+        can_back = self._nav_history_index > 0
+        can_forward = 0 <= self._nav_history_index < len(self._nav_history) - 1
+        current_dir = self._current_dir()
+        can_up = bool(current_dir and os.path.dirname(os.path.normpath(current_dir)) and os.path.dirname(os.path.normpath(current_dir)) != current_dir)
+        can_new_folder = bool(current_dir)
+        for buttons in (getattr(self, 'left_nav_buttons', []), getattr(self, 'mid_nav_buttons', [])):
+            if len(buttons) >= 4:
+                buttons[0].setEnabled(can_back)
+                buttons[1].setEnabled(can_forward)
+                buttons[2].setEnabled(can_up)
+                buttons[3].setEnabled(can_new_folder)
+
+    def _navigate_to_path(self, path, record_history=True):
+        if not path or not os.path.isdir(path):
+            self._update_nav_buttons()
+            return
+
+        self.fileListModel.setRootPath(path)
+        self.fileListModel.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)
+        root_index = self.fileListModel.index(path)
+        self.listView.setRootIndex(root_index)
+        self._watch_mid_dir(path)
+
+        idx = self.tree_proxy.mapFromSource(self.model.index(path))
+        if idx.isValid():
+            self._ignore_tree_selection = True
+            try:
+                self.treeView.setCurrentIndex(idx)
+            finally:
+                self._ignore_tree_selection = False
+            self.treeView.scrollTo(idx)
+            self.treeView.expand(idx)
+        self.treeView.resizeColumnToContents(0)
+
+        self.left_tab_bar.set_current_data(path, path)
+        self.mid_tab_bar.set_current_data(path, path)
+        self.left_info_combo.lineEdit().setText(path)
+        self.mid_info_combo.lineEdit().setText(path)
+        self._sync_left_drive_combo(path)
+
+        if record_history:
+            self._record_history(path)
+        else:
+            self._update_nav_buttons()
+
+    def _navigate_back(self):
+        if self._nav_history_index > 0:
+            self._nav_history_index -= 1
+            self._navigate_to_path(self._nav_history[self._nav_history_index], record_history=False)
+
+    def _navigate_forward(self):
+        if self._nav_history_index < len(self._nav_history) - 1:
+            self._nav_history_index += 1
+            self._navigate_to_path(self._nav_history[self._nav_history_index], record_history=False)
+
+    def _navigate_up(self):
+        current_dir = self._current_dir()
+        if not current_dir:
+            return
+        parent_dir = os.path.dirname(os.path.normpath(current_dir))
+        if parent_dir and parent_dir != current_dir and os.path.isdir(parent_dir):
+            self._navigate_to_path(parent_dir)
+
+    def _create_folder_in_current_dir(self):
+        current_dir = self._current_dir()
+        if not current_dir:
+            return
+
+        base_name = "新增資料夾"
+        folder_name = base_name
+        index = 2
+        while os.path.exists(os.path.join(current_dir, folder_name)):
+            folder_name = f"{base_name} ({index})"
+            index += 1
+
+        new_dir = os.path.join(current_dir, folder_name)
+        try:
+            os.makedirs(new_dir, exist_ok=False)
+        except Exception as e:
+            QMessageBox.warning(self, "建立資料夾失敗", f"無法建立資料夾: {e}")
+            return
+
+        self.refresh_mid_panel()
+        self._navigate_to_path(current_dir)
+
+    def refresh_current_search_results(self):
+        """依目前右側關鍵字重新查詢，確保拖曳後結果更新。"""
+        keyword = self.right_tab_bar.current_data().strip() if self.right_tab_bar is not None else ""
+        if not keyword and self.right_info_combo is not None:
+            keyword = self.right_info_combo.lineEdit().text().strip()
+        if keyword:
+            self._do_search(keyword)
+        else:
+            self._refresh_search_results_existence()
+
+    def _delete_selected_search_files(self):
+        """將選取的檔案移至資源回收桶（Delete 鍵 / 備援選單）。"""
+        return self._delete_paths_to_recycle_bin(self._get_selected_search_paths(), refresh_search=True)
+
+    def on_new(self):
+        # 保留舊功能（建立新檔案），但不再由工具列第一個按鈕觸發
+        dir_path = self.fileListModel.rootPath()
+        base = "new_file"
+        i = 0
+        while True:
+            name = f"{base}{i}.txt"
+            path = os.path.join(dir_path, name)
+            if not os.path.exists(path):
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write('')
+                break
+            i += 1
+        # 刷新列表
+        self.fileListModel.setRootPath(dir_path)
+        self.listView.setRootIndex(self.fileListModel.index(dir_path))
+
+    def on_open(self):
+        # 保留舊功能（用系統開啟檔案），但不再由工具列第二個按鈕觸發
+        indexes = self.listView.selectedIndexes()
+        if not indexes:
+            return
+        path = self.fileListModel.filePath(indexes[0])
+        try:
+            os.startfile(path)
+        except Exception as e:
+            QMessageBox.warning(self, "錯誤", f"無法開啟檔案: {e}")
+
+    def _apply_font_size(self, new_size):
+        """將字型大小套用至所有 listview 及頁籤列。"""
+        for widget in (self.treeView, self.listView, self.listView2):
+            current_font = widget.font()
+            f = QFont(current_font.family(), new_size)
+            widget.setFont(f)
+        # 同步頁籤列字型
+        for tab_container in (self.left_tab_bar, self.mid_tab_bar, self.right_tab_bar):
+            tb = tab_container.tab_bar
+            current_font = tb.font()
+            f = QFont(current_font.family(), new_size)
+            tb.setFont(f)
+            tb.update()
+        self._sync_right_header_spacing()
+        self._sync_tab_bar_heights()
+        # 同步 info combobox 字型
+        for combo in (self.left_info_combo, self.mid_info_combo, self.right_info_combo):
+            current_font = combo.font()
+            f = QFont(current_font.family(), new_size)
+            combo.setFont(f)
+        if self.left_drive_combo is not None:
+            current_font = self.left_drive_combo.font()
+            f = QFont(current_font.family(), new_size)
+            self.left_drive_combo.setFont(f)
+
+    def on_font_increase(self):
+        # 放大字型，各增加 1pt（限制最大 72pt）
+        current_font = self.treeView.font()
+        current_size = current_font.pointSize() if current_font.pointSize() > 0 else 10
+        new_size = min(current_size + 1, 72)
+        self._apply_font_size(new_size)
+        self.update_status_bar()
+
+    def on_font_decrease(self):
+        # 縮小字型，各減少 1pt（限制最小 6pt）
+        current_font = self.treeView.font()
+        current_size = current_font.pointSize() if current_font.pointSize() > 0 else 10
+        new_size = max(current_size - 1, 6)
+        self._apply_font_size(new_size)
+        self.update_status_bar()
+
+    def update_status_bar(self):
+        # 更新狀態列以顯示左側視圖的目前字型大小
+        left_font = self.treeView.font()
+        left_size = left_font.pointSize() if left_font.pointSize() > 0 else 10
+        status = self.statusBar()
+        if status is not None:
+            status.showMessage(f"字型: {left_size}pt")
+
+    def _current_font_size(self):
+        font = self.treeView.font()
+        return font.pointSize() if font.pointSize() > 0 else 10
+
+    def _config_path(self):
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config.ini')
+
+    def load_config(self):
+        """從 config.ini 讀取參數並還原狀態。"""
+        cfg = configparser.ConfigParser()
+        cfg.read(self._config_path(), encoding='utf-8')
+
+        # 還原主視窗大小與狀態
+        saved_geometry = cfg.get('Layout', 'window_geometry', fallback='')
+        if saved_geometry:
+            try:
+                geometry_bytes = base64.b64decode(saved_geometry.encode('ascii'))
+                self.restoreGeometry(geometry_bytes)
+            except Exception:
+                pass
+        saved_window_state = cfg.get('Layout', 'window_state', fallback='normal')
+        if saved_window_state == 'maximized':
+            self.setWindowState(self.windowState() | Qt.WindowMaximized)
+        elif saved_window_state == 'fullscreen':
+            self.setWindowState(self.windowState() | Qt.WindowFullScreen)
+
+        # 還原字型大小
+        saved_font_size = cfg.getint('General', 'font_size', fallback=10)
+        self._apply_font_size(max(6, min(saved_font_size, 72)))
+        self.update_status_bar()
+
+        # 還原左側目錄樹選取的目錄
+        left_dir = cfg.get('General', 'left_dir', fallback='')
+        if left_dir and os.path.isdir(left_dir):
+            def restore_left_dir_once(_loaded_path, target_dir=left_dir):
+                try:
+                    self.model.directoryLoaded.disconnect(restore_left_dir_once)
+                except Exception:
+                    pass
+                self._try_select_dir(target_dir)
+
+            self.model.directoryLoaded.connect(restore_left_dir_once)
+            self.model.setRootPath(left_dir)
+
+        # 還原分割器大小
+        splitter_sizes = cfg.get('Layout', 'splitter_sizes', fallback='')
+        if splitter_sizes and self.splitter is not None:
+            try:
+                self.splitter.setSizes([int(x) for x in splitter_sizes.split(',')])
+            except Exception:
+                pass
+        right_splitter_sizes = cfg.get('Layout', 'right_splitter_sizes', fallback='')
+        if right_splitter_sizes:
+            try:
+                self.right_splitter.setSizes([int(x) for x in right_splitter_sizes.split(',')])
+            except Exception:
+                pass
+
+        # 還原左側 treeView 欄位寬度
+        left_col_widths = cfg.get('Columns', 'left_col_widths', fallback='')
+        if left_col_widths:
+            try:
+                for i, w in enumerate(left_col_widths.split(',')):
+                    self.treeView.setColumnWidth(i, int(w))
+            except Exception:
+                pass
+
+        # 還原中間 listView 欄位寬度與順序
+        mid_header = self.listView.header()
+        if mid_header is not None:
+            mid_col_widths = cfg.get('Columns', 'mid_col_widths', fallback='')
+            if mid_col_widths:
+                try:
+                    for i, w in enumerate(mid_col_widths.split(',')):
+                        self.listView.setColumnWidth(i, int(w))
+                except Exception:
+                    pass
+            mid_col_order = cfg.get('Columns', 'mid_col_order', fallback='')
+            if mid_col_order:
+                try:
+                    order = [int(x) for x in mid_col_order.split(',')]
+                    for vi, li in enumerate(order):
+                        cur = mid_header.visualIndex(li)
+                        if cur != vi:
+                            mid_header.moveSection(cur, vi)
+                except Exception:
+                    pass
+
+        # 還原右側 listView2 欄位寬度與順序
+        right_header = self.listView2.header()
+        if right_header is not None:
+            right_col_widths = cfg.get('Columns', 'right_col_widths', fallback='')
+            if right_col_widths:
+                try:
+                    for i, w in enumerate(right_col_widths.split(',')):
+                        self.listView2.setColumnWidth(i, int(w))
+                except Exception:
+                    pass
+            right_col_order = cfg.get('Columns', 'right_col_order', fallback='')
+            if right_col_order:
+                try:
+                    order = [int(x) for x in right_col_order.split(',')]
+                    for vi, li in enumerate(order):
+                        cur = right_header.visualIndex(li)
+                        if cur != vi:
+                            right_header.moveSection(cur, vi)
+                except Exception:
+                    pass
+
+        # 還原中間 listView 排序方式
+        mid_sort_col = cfg.get('Sort', 'mid_sort_column', fallback='')
+        mid_sort_ord = cfg.get('Sort', 'mid_sort_order', fallback='')
+        if mid_sort_col and mid_sort_ord:
+            try:
+                col = int(mid_sort_col)
+                order = Qt.SortOrder.AscendingOrder if int(mid_sort_ord) == 0 else Qt.SortOrder.DescendingOrder
+                self.listView.sortByColumn(col, order)
+            except Exception:
+                pass
+
+        # 還原右側 listView2 排序方式
+        right_sort_col = cfg.get('Sort', 'right_sort_column', fallback='')
+        right_sort_ord = cfg.get('Sort', 'right_sort_order', fallback='')
+        if right_sort_col and right_sort_ord:
+            try:
+                col = int(right_sort_col)
+                order = Qt.SortOrder.AscendingOrder if int(right_sort_ord) == 0 else Qt.SortOrder.DescendingOrder
+                self.listView2.sortByColumn(col, order)
+            except Exception:
+                pass
+
+        # 還原三個面板的頁籤資訊
+        for key, tab_widget in (('left', self.left_tab_bar), ('mid', self.mid_tab_bar), ('right', self.right_tab_bar)):
+            raw = cfg.get('Tabs', f'{key}_tabs', fallback='')
+            current = cfg.getint('Tabs', f'{key}_tabs_current', fallback=0)
+            if raw:
+                try:
+                    tabs = [(d, l) for d, l in json.loads(raw)]
+                    tab_widget.restore_tabs(tabs, current)
+                except Exception:
+                    pass
+
+        # 啟動時主動執行右側當前頁籤的搜尋，補上 restore_tabs 不觸發 tab_switched 的缺口
+        initial_keyword = self.right_tab_bar.current_data()
+        if initial_keyword:
+            self.right_info_combo.lineEdit().setText(initial_keyword)
+            QTimer.singleShot(0, lambda kw=initial_keyword: self._do_search(kw))
+
+        self._sync_left_drive_combo(self.mid_tab_bar.current_data() or self.left_tab_bar.current_data() or left_dir)
+
+        # 載入搜尋歷史至右側 combobox
+        raw_history = cfg.get('General', 'search_history', fallback='')
+        if raw_history:
+            try:
+                history = json.loads(raw_history)
+                self.right_info_combo.blockSignals(True)
+                for item in reversed(history):  # reversed 使最新的在頂
+                    self.right_info_combo.insertItem(0, item)
+                self.right_info_combo.blockSignals(False)
+            except Exception:
+                pass
+
+    def _try_select_dir(self, dir_path):
+        """嘗試在左側樹狀視圖中選取並展開指定目錄。"""
+        self._navigate_to_path(dir_path)
+
+    def save_config(self):
+        """將目前狀態寫入 config.ini。"""
+        cfg = configparser.ConfigParser()
+        cfg.read(self._config_path(), encoding='utf-8')
+
+        if not cfg.has_section('General'):
+            cfg.add_section('General')
+        if not cfg.has_section('Layout'):
+            cfg.add_section('Layout')
+        if not cfg.has_section('Columns'):
+            cfg.add_section('Columns')
+        if not cfg.has_section('Sort'):
+            cfg.add_section('Sort')
+        if not cfg.has_section('Tabs'):
+            cfg.add_section('Tabs')
+
+        # 儲存右側 combobox 歷史（最多 20 筆）
+        history = [self.right_info_combo.itemText(i) for i in range(self.right_info_combo.count())]
+        cfg.set('General', 'search_history', json.dumps(history[:20], ensure_ascii=False))
+
+        # 儲存左側目錄樹目前選取的目錄
+        indexes = self.treeView.selectedIndexes()
+        if indexes:
+            left_dir = self.model.filePath(self.tree_proxy.mapToSource(indexes[0]))
+        else:
+            left_dir = ''
+        cfg.set('General', 'left_dir', left_dir)
+        cfg.set('General', 'font_size', str(self._current_font_size()))
+
+        # 儲存主視窗大小與狀態
+        cfg.set('Layout', 'window_geometry', base64.b64encode(self.saveGeometry().data()).decode('ascii'))
+        if self.isFullScreen():
+            window_state = 'fullscreen'
+        elif self.isMaximized():
+            window_state = 'maximized'
+        else:
+            window_state = 'normal'
+        cfg.set('Layout', 'window_state', window_state)
+
+        # 儲存分割器大小
+        if self.splitter is not None:
+            cfg.set('Layout', 'splitter_sizes', ','.join(str(s) for s in self.splitter.sizes()))
+        else:
+            cfg.set('Layout', 'splitter_sizes', '')
+        cfg.set('Layout', 'right_splitter_sizes', ','.join(str(s) for s in self.right_splitter.sizes()))
+
+        # 儲存左側 treeView 欄位寬度
+        left_widths = []
+        for i in range(self.model.columnCount()):
+            left_widths.append(str(self.treeView.columnWidth(i)))
+        cfg.set('Columns', 'left_col_widths', ','.join(left_widths))
+
+        # 儲存中間 listView 欄位寬度與順序
+        mid_header = self.listView.header()
+        if mid_header is not None:
+            mid_widths = []
+            mid_order = []
+            for i in range(mid_header.count()):
+                mid_widths.append(str(self.listView.columnWidth(i)))
+                mid_order.append(str(mid_header.logicalIndex(i)))
+            cfg.set('Columns', 'mid_col_widths', ','.join(mid_widths))
+            cfg.set('Columns', 'mid_col_order', ','.join(mid_order))
+
+        # 儲存右側 listView2 欄位寬度與順序
+        right_header = self.listView2.header()
+        if right_header is not None:
+            right_widths = []
+            right_order = []
+            for i in range(right_header.count()):
+                right_widths.append(str(self.listView2.columnWidth(i)))
+                right_order.append(str(right_header.logicalIndex(i)))
+            cfg.set('Columns', 'right_col_widths', ','.join(right_widths))
+            cfg.set('Columns', 'right_col_order', ','.join(right_order))
+
+        # 儲存中間 listView 排序方式
+        mid_header = self.listView.header()
+        if mid_header is not None:
+            cfg.set('Sort', 'mid_sort_column', str(mid_header.sortIndicatorSection()))
+            cfg.set('Sort', 'mid_sort_order', str(int(mid_header.sortIndicatorOrder())))
+
+        # 儲存右側 listView2 排序方式
+        right_header = self.listView2.header()
+        if right_header is not None:
+            cfg.set('Sort', 'right_sort_column', str(right_header.sortIndicatorSection()))
+            cfg.set('Sort', 'right_sort_order', str(int(right_header.sortIndicatorOrder())))
+
+        # 儲存三個面板的頁籤資訊
+        for key, tab_widget in (('left', self.left_tab_bar), ('mid', self.mid_tab_bar), ('right', self.right_tab_bar)):
+            tabs, current = tab_widget.get_all_tabs()
+            cfg.set('Tabs', f'{key}_tabs', json.dumps(tabs, ensure_ascii=False))
+            cfg.set('Tabs', f'{key}_tabs_current', str(current))
+
+        with open(self._config_path(), 'w', encoding='utf-8') as f:
+            cfg.write(f)
+
+    def closeEvent(self, event):
+        self.save_config()
+        super().closeEvent(event)
+
+
+def main():
+    app = QApplication(sys.argv)
+    window = FileManager()
+    window.show()
+    sys.exit(app.exec_())
