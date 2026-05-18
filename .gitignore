@@ -2,8 +2,7 @@ venv/
 __pycache__/
 *.pyc
 build/
-dist/*
-!dist/FileManager.exe
+dist/
 *.spec
 debug_out.txt
 debug_err.txt
