@@ -62,6 +62,8 @@ class FileManager(QMainWindow):
         self._ignore_tree_selection = False
         self._search_model_updating = False
         self._search_item_rename_in_progress = False
+        self._search_icon_provider = QFileIconProvider()
+        self._search_icon_cache = {}
         # 監控中間面板目前目錄，任何外部檔案異動皆可即時刷新
         self._mid_fs_watcher = QFileSystemWatcher(self)
         self._mid_fs_watcher.directoryChanged.connect(self._on_mid_dir_changed)
@@ -310,8 +312,10 @@ class FileManager(QMainWindow):
         # 创建右侧的文件列表视图
         self.listView = QTreeView(self)
         self.listView.setSortingEnabled(True)
+        self.listView.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.listView2 = SearchListView(self)
         self.listView2.setSortingEnabled(True)
+        self.listView2.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.listView2.setContextMenuPolicy(Qt.CustomContextMenu)
         self.listView2.customContextMenuRequested.connect(self._show_search_context_menu)
 
@@ -798,19 +802,20 @@ class FileManager(QMainWindow):
             return
         self._search_model_updating = True
         self.search_model.removeRows(0, self.search_model.rowCount())
-        icon_provider = QFileIconProvider()
         for filepath in results:
             name_item = QStandardItem(os.path.basename(filepath))
             name_item.setData(filepath, Qt.UserRole + 1)
-            name_item.setIcon(icon_provider.icon(QFileInfo(filepath)))
+            name_item.setIcon(self._icon_for_search_result(filepath))
 
             dir_item = QStandardItem(os.path.dirname(filepath))
             dir_item.setEditable(False)
 
             try:
-                mtime = os.path.getmtime(filepath)
+                stat_result = os.stat(filepath)
+                mtime = stat_result.st_mtime
                 dt_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
             except Exception:
+                stat_result = None
                 mtime = 0
                 dt_str = ''
 
@@ -823,7 +828,7 @@ class FileManager(QMainWindow):
                     size = 0
                     size_str = ''
                 else:
-                    size = os.path.getsize(filepath)
+                    size = stat_result.st_size if stat_result is not None else os.path.getsize(filepath)
                     size_str = self._format_size(size)
             except Exception:
                 size = 0
@@ -835,6 +840,18 @@ class FileManager(QMainWindow):
 
             self.search_model.appendRow([name_item, dir_item, date_item, size_item])
         self._search_model_updating = False
+
+    def _icon_for_search_result(self, filepath):
+        if os.path.isdir(filepath):
+            cache_key = ('dir', '')
+        else:
+            cache_key = ('file', os.path.splitext(filepath)[1].lower())
+
+        icon = self._search_icon_cache.get(cache_key)
+        if icon is None:
+            icon = self._search_icon_provider.icon(QFileInfo(filepath))
+            self._search_icon_cache[cache_key] = icon
+        return icon
 
     def _format_size(self, size):
         if size < 1024:
