@@ -104,6 +104,7 @@ class SearchListView(QTreeView):
         mime = self._build_drag_mime_data()
         if mime is None or not mime.hasUrls():
             return
+        dragged_paths = self._extract_source_paths_from_mime(mime)
         drag = QDrag(self)
         drag.setMimeData(mime)
         preview = self._build_drag_preview_pixmap()
@@ -117,8 +118,8 @@ class SearchListView(QTreeView):
         result_action = drag.exec_(supportedActions, Qt.CopyAction)
         if wnd is not None and hasattr(wnd, "_search_drag_button"):
             wnd._search_drag_button = Qt.NoButton
-        if result_action != Qt.IgnoreAction:
-            self._notify_search_refresh_delayed(self._extract_source_paths_from_mime(mime))
+        if dragged_paths:
+            self._notify_search_refresh_delayed(dragged_paths)
 
     def mouseMoveEvent(self, event):
         # 右鍵拖曳：Qt 不自動處理，需手動偵測並啟動
@@ -127,6 +128,7 @@ class SearchListView(QTreeView):
                 and (event.pos() - self._press_pos).manhattanLength() >= QApplication.startDragDistance()):
             mime = self._build_drag_mime_data()
             if mime is not None and mime.hasUrls():
+                dragged_paths = self._extract_source_paths_from_mime(mime)
                 drag = QDrag(self)
                 drag.setMimeData(mime)
                 preview = self._build_drag_preview_pixmap()
@@ -141,8 +143,8 @@ class SearchListView(QTreeView):
                 if wnd is not None and hasattr(wnd, "_search_drag_button"):
                     wnd._search_drag_button = Qt.NoButton
                 self._suppress_next_context_menu = True
-                if result_action != Qt.IgnoreAction:
-                    self._notify_search_refresh_delayed(self._extract_source_paths_from_mime(mime))
+                if dragged_paths:
+                    self._notify_search_refresh_delayed(dragged_paths)
             self._press_pos = None
             self._press_button = Qt.NoButton
             return
@@ -153,12 +155,15 @@ class SearchListView(QTreeView):
         # 只要有 URL 就先接受，讓 drag session 保持活躍；
         # 是否有有效目標由 dragMoveEvent 和 dropEvent 判斷
         if event.mimeData().hasUrls():
+            self._sync_drag_button_from_window()
             event.acceptProposedAction()
             return
         event.ignore()
 
     def dragMoveEvent(self, event):
         if event.mimeData().hasUrls():
+            self._sync_drag_button_from_window()
+            self._auto_scroll_during_drag(event.pos())
             if self._resolve_drop_target_dir(event.pos()):
                 event.acceptProposedAction()
             else:
@@ -169,11 +174,11 @@ class SearchListView(QTreeView):
         event.ignore()
 
     def dragLeaveEvent(self, event):
-        self._last_drag_button = Qt.NoButton
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event):
         try:
+            self._sync_drag_button_from_window()
             target_dir = self._resolve_drop_target_dir(event.pos())
             if not target_dir:
                 event.ignore()
@@ -317,6 +322,32 @@ class SearchListView(QTreeView):
         if path and os.path.isdir(path):
             return path
         return ""
+
+    def _auto_scroll_during_drag(self, pos):
+        viewport = self.viewport()
+        scrollbar = self.verticalScrollBar()
+        if viewport is None or scrollbar is None:
+            return
+
+        height = viewport.height()
+        if height <= 0:
+            return
+
+        margin = 32
+        step = max(1, scrollbar.singleStep()) * 2
+        y = pos.y()
+        if y <= margin:
+            delta = max(1, ((margin - y) * step) // margin)
+            scrollbar.setValue(scrollbar.value() - delta)
+        elif y >= height - margin:
+            delta = max(1, ((y - (height - margin)) * step) // margin)
+            scrollbar.setValue(scrollbar.value() + delta)
+
+    def _sync_drag_button_from_window(self):
+        wnd = self.window()
+        if wnd is None or not hasattr(wnd, "_search_drag_button"):
+            return
+        self._last_drag_button = wnd._search_drag_button
 
     def _extract_source_paths_from_mime(self, mime):
         paths = []
@@ -506,6 +537,7 @@ class SearchListView(QTreeView):
             if hasattr(wnd, "track_file_operation"):
                 wnd.track_file_operation(src_paths or [], target_dir)
             if hasattr(wnd, "refresh_current_search_results"):
+                wnd.refresh_current_search_results()
                 QTimer.singleShot(600, wnd.refresh_current_search_results)
                 QTimer.singleShot(1500, wnd.refresh_current_search_results)
             if hasattr(wnd, "refresh_mid_panel"):

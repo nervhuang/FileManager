@@ -6,7 +6,9 @@ import ctypes.wintypes as wt
 import base64
 import configparser
 import json
+import re
 import traceback
+import unicodedata
 from datetime import datetime
 
 from PyQt5.QtWidgets import (
@@ -15,8 +17,8 @@ from PyQt5.QtWidgets import (
     QToolButton, QSplitter, QSizePolicy, QFileIconProvider,
     QAbstractItemView, QMenu, QComboBox,
 )
-from PyQt5.QtCore import QDir, Qt, QSize, QFileInfo, QEvent, QTimer, QFileSystemWatcher, QPoint
-from PyQt5.QtGui import QKeySequence, QIcon, QFont, QPixmap, QPainter, QColor, QPalette, QStandardItem, QPen
+from PyQt5.QtCore import QDir, Qt, QSize, QFileInfo, QEvent, QTimer, QFileSystemWatcher, QPoint, QItemSelectionModel, QMimeData, QUrl
+from PyQt5.QtGui import QKeySequence, QIcon, QFont, QPixmap, QPainter, QColor, QPalette, QStandardItem, QPen, QLinearGradient
 
 # Optional SVG renderer (may not be present in minimal PyQt installs)
 try:
@@ -64,6 +66,16 @@ class FileManager(QMainWindow):
         self._search_item_rename_in_progress = False
         self._search_icon_provider = QFileIconProvider()
         self._search_icon_cache = {}
+        self._clipboard_file_op = "copy"
+        self._clipboard_paths = ()
+        self._pending_new_folder_path = ""
+        self._combo_auto_search_timer = QTimer(self)
+        self._combo_auto_search_timer.setSingleShot(True)
+        self._combo_auto_search_timer.timeout.connect(self._trigger_combo_auto_search)
+        self._right_splitter_sizes_by_orientation = {
+            Qt.Orientation.Horizontal: [600, 600],
+            Qt.Orientation.Vertical: [600, 600],
+        }
         # 監控中間面板目前目錄，任何外部檔案異動皆可即時刷新
         self._mid_fs_watcher = QFileSystemWatcher(self)
         self._mid_fs_watcher.directoryChanged.connect(self._on_mid_dir_changed)
@@ -281,7 +293,95 @@ class FileManager(QMainWindow):
             p.end()
             return QIcon(pix)
 
+        def make_layout_icon(orientation, active=False):
+            size = self._toolbar_icon_size
+            pix = QPixmap(size)
+            pix.fill(Qt.transparent)
+
+            p = QPainter(pix)
+            p.setRenderHint(QPainter.Antialiasing)
+            width = size.width()
+            height = size.height()
+
+            shadow_color = QColor(0, 0, 0, 28)
+            edge_dark = QColor("#6b6b6b")
+            edge_mid = QColor("#9a9a9a")
+            edge_light = QColor("#f8f8f8")
+            fill_top = QColor("#fbfbfb")
+            fill_bottom = QColor("#d8d8d8")
+            divider_dark = QColor("#5d5d5d")
+            divider_light = QColor("#ffffff")
+            accent = QColor("#2f66d0") if active else QColor("#808080")
+
+            def draw_pane(rect):
+                shadow_rect = rect.translated(1, 2)
+                p.setPen(Qt.NoPen)
+                p.setBrush(shadow_color)
+                p.drawRect(shadow_rect)
+
+                grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+                grad.setColorAt(0.0, fill_top)
+                grad.setColorAt(1.0, fill_bottom)
+                p.setBrush(grad)
+                p.setPen(Qt.NoPen)
+                p.drawRect(rect)
+
+                p.setPen(QPen(edge_light, 1.0))
+                p.drawLine(rect.left(), rect.bottom(), rect.left(), rect.top())
+                p.drawLine(rect.left(), rect.top(), rect.right(), rect.top())
+                p.setPen(QPen(edge_dark, 1.0))
+                p.drawLine(rect.right(), rect.top() + 1, rect.right(), rect.bottom())
+                p.drawLine(rect.left() + 1, rect.bottom(), rect.right(), rect.bottom())
+                p.setPen(QPen(edge_mid, 1.0))
+                p.drawLine(rect.left() + 1, rect.bottom() - 1, rect.left() + 1, rect.top() + 1)
+                p.drawLine(rect.left() + 1, rect.top() + 1, rect.right() - 1, rect.top() + 1)
+
+                inset = rect.adjusted(3, 3, -3, -3)
+                p.setPen(QPen(QColor(255, 255, 255, 120), 1.0))
+                p.drawLine(inset.left(), inset.top(), inset.right(), inset.top())
+                p.setPen(QPen(QColor(160, 160, 160, 140), 1.0))
+                p.drawLine(inset.left(), inset.bottom(), inset.right(), inset.bottom())
+
+            content_rect = pix.rect().adjusted(7, 8, -7, -8)
+            pane_gap = max(5, width // 12)
+
+            if orientation == Qt.Orientation.Horizontal:
+                pane_width = max(10, (content_rect.width() - pane_gap) // 2)
+                left_rect = content_rect.adjusted(0, 0, -(content_rect.width() - pane_width), 0)
+                right_rect = content_rect.adjusted(content_rect.width() - pane_width, 0, 0, 0)
+                draw_pane(left_rect)
+                draw_pane(right_rect)
+                split_x = left_rect.right() + pane_gap // 2 + 1
+                p.setPen(QPen(divider_light, 1.0))
+                p.drawLine(split_x - 1, content_rect.top() + 4, split_x - 1, content_rect.bottom() - 4)
+                p.setPen(QPen(divider_dark, 1.4))
+                p.drawLine(split_x, content_rect.top() + 3, split_x, content_rect.bottom() - 3)
+            else:
+                pane_height = max(10, (content_rect.height() - pane_gap) // 2)
+                top_rect = content_rect.adjusted(0, 0, 0, -(content_rect.height() - pane_height))
+                bottom_rect = content_rect.adjusted(0, content_rect.height() - pane_height, 0, 0)
+                draw_pane(top_rect)
+                draw_pane(bottom_rect)
+                split_y = top_rect.bottom() + pane_gap // 2 + 1
+                p.setPen(QPen(divider_light, 1.0))
+                p.drawLine(content_rect.left() + 4, split_y - 1, content_rect.right() - 4, split_y - 1)
+                p.setPen(QPen(divider_dark, 1.4))
+                p.drawLine(content_rect.left() + 3, split_y, content_rect.right() - 3, split_y)
+
+            accent_pen = QPen(accent, 1.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            p.setPen(accent_pen)
+            if orientation == Qt.Orientation.Horizontal:
+                p.drawLine(content_rect.left() + 3, content_rect.bottom() - 2, content_rect.right() - 3, content_rect.bottom() - 2)
+            else:
+                p.drawLine(content_rect.right() - 2, content_rect.top() + 3, content_rect.right() - 2, content_rect.bottom() - 3)
+
+            p.end()
+            return QIcon(pix)
+
+        self._make_layout_icon = make_layout_icon
         up_folder_icon = make_up_folder_icon()
+        horizontal_layout_icon = self._make_layout_icon(Qt.Orientation.Horizontal, active=True)
+        vertical_layout_icon = self._make_layout_icon(Qt.Orientation.Vertical)
 
         def make_panel_nav_button(icon, tooltip, handler):
             button = QToolButton(self)
@@ -326,6 +426,14 @@ class FileManager(QMainWindow):
             (up_folder_icon, "回到上一層目錄", self._navigate_up),
             (QStyle.StandardPixmap.SP_FileDialogNewFolder, "新增資料夾", self._create_folder_in_current_dir),
         ])
+        toolbar_layout = self.mid_panel_toolbar.layout()
+        layout_gap = max(8, self._toolbar_icon_size.width() // 2)
+        toolbar_layout.addSpacing(layout_gap)
+        self.layout_horizontal_button = make_panel_nav_button(horizontal_layout_icon, "左右排列", lambda: self._set_right_panel_layout(Qt.Orientation.Horizontal))
+        toolbar_layout.addWidget(self.layout_horizontal_button)
+        self.layout_vertical_button = make_panel_nav_button(vertical_layout_icon, "上下排列", lambda: self._set_right_panel_layout(Qt.Orientation.Vertical))
+        toolbar_layout.addWidget(self.layout_vertical_button)
+        toolbar_layout.addSpacing(layout_gap)
         self.left_drive_combo = TreeComboBox(self)
         self.left_drive_combo.setEditable(True)
         self.left_drive_combo.setInsertPolicy(QComboBox.NoInsert)
@@ -348,8 +456,8 @@ class FileManager(QMainWindow):
         self.left_drive_combo.setRootModelIndex(root_idx)
         self.left_drive_combo_view.viewport().installEventFilter(self)
         self.left_drive_combo.lineEdit().returnPressed.connect(self._on_left_drive_entered)
-        self.mid_panel_toolbar.layout().addWidget(self.left_drive_combo, 1)
-        self.mid_panel_toolbar.layout().setStretch(self.mid_panel_toolbar.layout().indexOf(self.left_drive_combo), 1)
+        toolbar_layout.addWidget(self.left_drive_combo, 1)
+        toolbar_layout.setStretch(toolbar_layout.indexOf(self.left_drive_combo), 1)
         self.mid_tab_bar = PathTabBar(self)
         self.mid_info_combo = QComboBox()
         self.mid_info_combo.setEditable(True)
@@ -373,9 +481,10 @@ class FileManager(QMainWindow):
         self.right_info_combo.setInsertPolicy(QComboBox.NoInsert)
         self.right_info_combo.lineEdit().setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.right_info_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        # 儲存使用者輸入的文字，從 textEdited 更新，因此在 returnPressed 時即使 Qt 內部清空 lineEdit 也能取得
+        # 儲存使用者輸入的文字，供 Enter 與自動搜尋共用。
         self._combo_typed_text = ""
         self.right_info_combo.lineEdit().textEdited.connect(self._on_combo_text_edited)
+        self.right_info_combo.lineEdit().editingFinished.connect(self._on_combo_editing_finished)
         self.right_info_combo.lineEdit().returnPressed.connect(self._on_combo_return_pressed)
         right_frame = QWidget()
         right_frame_vbox = QVBoxLayout()
@@ -393,6 +502,7 @@ class FileManager(QMainWindow):
         self.right_splitter.setStretchFactor(0, 1)
         self.right_splitter.setStretchFactor(1, 1)
         self.right_splitter.setSizes([600, 600])
+        self._set_right_panel_layout(Qt.Orientation.Horizontal)
 
         right_container = QWidget()
         right_vbox = QVBoxLayout()
@@ -435,6 +545,7 @@ class FileManager(QMainWindow):
         # 设置右侧文件列表的模型
         self.fileListModel = QFileSystemModel()
         self.fileListModel.setReadOnly(False)
+        self.fileListModel.fileRenamed.connect(self._on_file_list_item_renamed)
         self.listView.setModel(self.fileListModel)
         self.search_model = SearchResultsModel(self.listView2)
         self.search_model.setHorizontalHeaderLabels(["檔名", "目錄", "日期", "大小"])
@@ -541,6 +652,18 @@ class FileManager(QMainWindow):
         global ref_s, ref_e, global_keywords
 
         if e.modifiers() & Qt.ControlModifier:
+            if e.key() == Qt.Key.Key_C:
+                if self._copy_selected_paths_from_focused_view():
+                    e.accept()
+                    return
+            if e.key() == Qt.Key.Key_X:
+                if self._cut_selected_paths_from_focused_view():
+                    e.accept()
+                    return
+            if e.key() == Qt.Key.Key_V:
+                if self._paste_into_current_dir_from_clipboard():
+                    e.accept()
+                    return
             if e.key() in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
                 self.on_font_increase()
                 e.accept()
@@ -550,9 +673,16 @@ class FileManager(QMainWindow):
                 e.accept()
                 return
 
+        if e.key() == Qt.Key.Key_Backspace:
+            if self._focused_shortcut_view() is not None:
+                self._navigate_up()
+                e.accept()
+                return
+
         # Delete 鍵：刪除右側搜尋結果中選取的檔案
         if e.key() == Qt.Key.Key_Delete:
             if self._delete_selected_focused_items():
+                e.accept()
                 return
 
         if e.key() == Qt.Key.Key_F2:
@@ -617,13 +747,26 @@ class FileManager(QMainWindow):
             self._sync_left_drive_combo(self._current_dir())
 
     def _on_combo_text_edited(self, text):
-        """user 手動輸入時將文字儲存至 _combo_typed_text，供 returnPressed 時使用。"""
+        """使用者輸入或貼上時更新關鍵字，停頓後自動搜尋。"""
         self._combo_typed_text = text
+        self._combo_auto_search_timer.start(350)
+
+    def _trigger_combo_auto_search(self):
+        text = self._combo_typed_text.strip()
+        if text:
+            self.execute_search_command(text)
+
+    def _on_combo_editing_finished(self):
+        if self._combo_auto_search_timer.isActive():
+            self._combo_auto_search_timer.stop()
+            self._trigger_combo_auto_search()
 
     def _on_combo_return_pressed(self):
         """lineEdit returnPressed 信號。取得 textEdited 儲存的文字，
         用 singleShot 延遲從而讓 Qt 內部 _q_returnPressed 先執行完畢，
         再套用自定義搜尋。"""
+        if self._combo_auto_search_timer.isActive():
+            self._combo_auto_search_timer.stop()
         text = self._combo_typed_text.strip()
         if text:
             QTimer.singleShot(0, lambda t=text: self.execute_search_command(t))
@@ -754,21 +897,71 @@ class FileManager(QMainWindow):
     def _split_search_terms(self, search_command):
         return [term.strip() for term in search_command.split('|') if term.strip()]
 
-    def _is_plain_keyword_term(self, term):
+    def _strip_search_term_quotes(self, term):
         candidate = term.strip()
+        if candidate.startswith('"') and candidate.endswith('"') and len(candidate) >= 2:
+            return candidate[1:-1]
+        return candidate
+
+    def _normalize_plain_keyword_text(self, text):
+        normalized = unicodedata.normalize('NFKC', text or '').casefold()
+        collapsed = re.sub(r'[^\w]+', ' ', normalized, flags=re.UNICODE)
+        return ' '.join(collapsed.split())
+
+    def _plain_keyword_tokens(self, term):
+        normalized = self._normalize_plain_keyword_text(self._strip_search_term_quotes(term))
+        return [token for token in normalized.split(' ') if token]
+
+    def _build_plain_keyword_queries(self, term):
+        raw_term = self._strip_search_term_quotes(term)
+        queries = []
+        seen = set()
+
+        def add_query(query_text):
+            query_text = query_text.strip()
+            if not query_text or query_text in seen:
+                return
+            seen.add(query_text)
+            queries.append(self._normalize_search_command(query_text))
+
+        add_query(raw_term)
+        for left_bracket, right_bracket in (('[', ']'), ('［', '］'), ('【', '】')):
+            add_query(f'{left_bracket}{raw_term}{right_bracket}')
+
+        tokens = self._plain_keyword_tokens(term)
+        if tokens:
+            add_query('regex:' + '.*'.join(re.escape(token) for token in tokens))
+        if len(tokens) >= 2:
+            add_query(' '.join(tokens))
+            add_query('*'.join(tokens))
+            for token in tokens:
+                add_query(token)
+
+        return queries
+
+    def _path_matches_plain_keyword(self, path, term):
+        normalized_term = self._normalize_plain_keyword_text(self._strip_search_term_quotes(term))
+        if not normalized_term:
+            return False
+
+        normalized_path = self._normalize_plain_keyword_text(os.path.basename(path))
+        return normalized_term in normalized_path
+
+    def _is_plain_keyword_term(self, term):
+        candidate = self._strip_search_term_quotes(term)
         if not candidate:
             return False
-        if candidate.startswith('"') and candidate.endswith('"') and len(candidate) >= 2:
-            candidate = candidate[1:-1]
         return not any(token in candidate for token in (':', '<', '>', '!', '*', '?'))
 
     def _search_plain_keyword_terms(self, terms):
         results = []
         seen = set()
         for term in terms:
-            normalized_term = self._normalize_search_command(term)
-            for path in self.everything.query(normalized_term):
-                if path not in seen:
+            for query_text in self._build_plain_keyword_queries(term):
+                max_results = 2000 if query_text.startswith('regex:') or query_text == self._strip_search_term_quotes(term) else 800
+                for path in self.everything.query(query_text, max_results=max_results):
+                    if path in seen or not self._path_matches_plain_keyword(path, term):
+                        continue
                     seen.add(path)
                     results.append(path)
         return results
@@ -778,7 +971,7 @@ class FileManager(QMainWindow):
         terms = self._split_search_terms(search_command)
         normalized_command = self._normalize_search_command(search_command)
         if self.everything.is_available():
-            if len(terms) > 1 and all(self._is_plain_keyword_term(term) for term in terms):
+            if terms and all(self._is_plain_keyword_term(term) for term in terms):
                 results = self._search_plain_keyword_terms(terms)
             else:
                 results = self.everything.query(normalized_command)
@@ -906,6 +1099,13 @@ class FileManager(QMainWindow):
                 return view
         return None
 
+    def _focused_shortcut_view(self):
+        view = self._focused_file_view()
+        return view if view in (self.listView, self.listView2) else None
+
+    def _normalize_clipboard_paths(self, paths):
+        return tuple(os.path.normcase(os.path.normpath(path)) for path in paths if path)
+
     def _get_selected_paths_for_view(self, view):
         if view is self.listView2:
             return self._get_selected_search_paths()
@@ -978,6 +1178,70 @@ class FileManager(QMainWindow):
             return self._delete_selected_search_files()
         paths = self._get_selected_paths_for_view(view)
         return self._delete_paths_to_recycle_bin(paths)
+
+    def _set_clipboard_file_paths(self, paths, op):
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(path) for path in paths if path])
+        if not mime.urls():
+            return False
+
+        QApplication.clipboard().setMimeData(mime)
+        self._clipboard_file_op = op
+        self._clipboard_paths = self._normalize_clipboard_paths(paths)
+        return True
+
+    def _copy_selected_paths_from_focused_view(self):
+        view = self._focused_shortcut_view()
+        if view is None:
+            return False
+
+        paths = self._get_selected_paths_for_view(view)
+        if not paths:
+            return False
+
+        return self._set_clipboard_file_paths(paths, "copy")
+
+    def _cut_selected_paths_from_focused_view(self):
+        view = self._focused_shortcut_view()
+        if view is None:
+            return False
+
+        paths = self._get_selected_paths_for_view(view)
+        if not paths:
+            return False
+
+        return self._set_clipboard_file_paths(paths, "move")
+
+    def _paste_into_current_dir_from_clipboard(self):
+        view = self._focused_shortcut_view()
+        if view is None:
+            return False
+
+        target_dir = self._current_dir()
+        if not target_dir or not os.path.isdir(target_dir):
+            return False
+
+        clipboard = QApplication.clipboard()
+        mime = clipboard.mimeData() if clipboard is not None else None
+        if mime is None or not mime.hasUrls():
+            return False
+
+        src_paths = []
+        seen = set()
+        for url in mime.urls():
+            local_path = url.toLocalFile()
+            if not local_path or local_path in seen:
+                continue
+            seen.add(local_path)
+            src_paths.append(local_path)
+        if not src_paths:
+            return False
+
+        clipboard_paths = self._normalize_clipboard_paths(src_paths)
+        op = "move" if (self._clipboard_file_op == "move" and clipboard_paths == self._clipboard_paths) else "copy"
+        self.track_file_operation(src_paths, target_dir)
+        self._perform_file_op(src_paths, target_dir, op)
+        return True
 
     def _rename_selected_focused_item(self):
         view = self._focused_file_view()
@@ -1319,6 +1583,14 @@ class FileManager(QMainWindow):
         result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op_struct))
         if result != 0 and not op_struct.fAnyOperationsAborted:
             QMessageBox.warning(self, "拖曳作業失敗", f"Windows 檔案作業失敗，錯誤碼: {result}")
+            return False
+
+        if result == 0 and not op_struct.fAnyOperationsAborted:
+            self.refresh_mid_panel()
+            self.refresh_current_search_results()
+            return True
+
+        return False
 
     def _watch_mid_dir(self, dir_path: str):
         """更新 QFileSystemWatcher：監看中間面板目前目錄，任何異動皆即時刷新。"""
@@ -1406,7 +1678,30 @@ class FileManager(QMainWindow):
     def _apply_two_panel_layout(self):
         """左側面板已移除後，固定保留中/右兩欄對稱配置。"""
         if self.right_splitter is not None:
-            self.right_splitter.setSizes([1, 1])
+            self._set_right_panel_layout(self.right_splitter.orientation())
+
+    def _set_right_panel_layout(self, orientation):
+        if self.right_splitter is None:
+            return
+
+        current_orientation = self.right_splitter.orientation()
+        if current_orientation in self._right_splitter_sizes_by_orientation:
+            self._right_splitter_sizes_by_orientation[current_orientation] = self.right_splitter.sizes()
+
+        self.right_splitter.setOrientation(orientation)
+        sizes = self._right_splitter_sizes_by_orientation.get(orientation) or [1, 1]
+        self.right_splitter.setSizes(sizes)
+        self._sync_right_header_spacing()
+        self._update_layout_buttons()
+
+    def _update_layout_buttons(self):
+        current_orientation = self.right_splitter.orientation() if self.right_splitter is not None else Qt.Orientation.Horizontal
+        horizontal_active = current_orientation == Qt.Orientation.Horizontal
+        vertical_active = current_orientation == Qt.Orientation.Vertical
+        if hasattr(self, 'layout_horizontal_button'):
+            self.layout_horizontal_button.setIcon(self._make_layout_icon(Qt.Orientation.Horizontal, active=horizontal_active))
+        if hasattr(self, 'layout_vertical_button'):
+            self.layout_vertical_button.setIcon(self._make_layout_icon(Qt.Orientation.Vertical, active=vertical_active))
 
     def _sync_left_drive_combo(self, path):
         if self.left_drive_combo is None:
@@ -1439,7 +1734,10 @@ class FileManager(QMainWindow):
 
     def _sync_right_header_spacing(self):
         """右側沒有工具列，補一段同高留白，讓右側頁籤垂直對齊左側頁籤列。"""
-        spacer_height = max(self.mid_panel_toolbar.sizeHint().height(), 0)
+        if self.right_splitter is not None and self.right_splitter.orientation() == Qt.Orientation.Vertical:
+            spacer_height = 0
+        else:
+            spacer_height = max(self.mid_panel_toolbar.sizeHint().height(), 0)
         self.right_header_spacer.setFixedHeight(spacer_height)
 
     def _record_history(self, path):
@@ -1537,8 +1835,43 @@ class FileManager(QMainWindow):
             QMessageBox.warning(self, "建立資料夾失敗", f"無法建立資料夾: {e}")
             return
 
+        self._pending_new_folder_path = os.path.normcase(os.path.normpath(new_dir))
         self.refresh_mid_panel()
         self._navigate_to_path(current_dir)
+        QTimer.singleShot(0, lambda path=new_dir: self._focus_new_folder_for_rename(path))
+
+    def _focus_new_folder_for_rename(self, folder_path, retries=8, start_edit=True):
+        if not folder_path or self.listView is None or self.fileListModel is None:
+            return False
+
+        edit_index = self.fileListModel.index(folder_path)
+        if not edit_index.isValid():
+            if retries > 0:
+                QTimer.singleShot(120, lambda path=folder_path, remaining=retries - 1, do_edit=start_edit: self._focus_new_folder_for_rename(path, remaining, do_edit))
+            return False
+
+        selection_model = self.listView.selectionModel()
+        if selection_model is not None:
+            selection_model.setCurrentIndex(edit_index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+        self.listView.setCurrentIndex(edit_index)
+        self.listView.scrollTo(edit_index)
+        self.listView.setFocus()
+        if start_edit:
+            self.listView.edit(edit_index)
+        return True
+
+    def _on_file_list_item_renamed(self, parent_path, old_name, new_name):
+        if not self._pending_new_folder_path:
+            return
+
+        old_path = os.path.normcase(os.path.normpath(os.path.join(parent_path, old_name)))
+        if old_path != self._pending_new_folder_path:
+            return
+
+        self._pending_new_folder_path = ""
+        new_path = os.path.join(parent_path, new_name)
+        QTimer.singleShot(0, self.refresh_mid_panel)
+        QTimer.singleShot(120, lambda path=new_path: self._focus_new_folder_for_rename(path, start_edit=False))
 
     def refresh_current_search_results(self):
         """依目前右側關鍵字重新查詢，確保拖曳後結果更新。"""
@@ -1685,9 +2018,17 @@ class FileManager(QMainWindow):
         right_splitter_sizes = cfg.get('Layout', 'right_splitter_sizes', fallback='')
         if right_splitter_sizes:
             try:
-                self.right_splitter.setSizes([int(x) for x in right_splitter_sizes.split(',')])
+                self._right_splitter_sizes_by_orientation[Qt.Orientation.Horizontal] = [int(x) for x in right_splitter_sizes.split(',')]
             except Exception:
                 pass
+        right_splitter_vertical_sizes = cfg.get('Layout', 'right_splitter_vertical_sizes', fallback='')
+        if right_splitter_vertical_sizes:
+            try:
+                self._right_splitter_sizes_by_orientation[Qt.Orientation.Vertical] = [int(x) for x in right_splitter_vertical_sizes.split(',')]
+            except Exception:
+                pass
+        right_splitter_orientation = cfg.get('Layout', 'right_splitter_orientation', fallback='horizontal').lower()
+        self._set_right_panel_layout(Qt.Orientation.Vertical if right_splitter_orientation == 'vertical' else Qt.Orientation.Horizontal)
 
         # 還原左側 treeView 欄位寬度
         left_col_widths = cfg.get('Columns', 'left_col_widths', fallback='')
@@ -1841,7 +2182,10 @@ class FileManager(QMainWindow):
             cfg.set('Layout', 'splitter_sizes', ','.join(str(s) for s in self.splitter.sizes()))
         else:
             cfg.set('Layout', 'splitter_sizes', '')
-        cfg.set('Layout', 'right_splitter_sizes', ','.join(str(s) for s in self.right_splitter.sizes()))
+        self._right_splitter_sizes_by_orientation[self.right_splitter.orientation()] = self.right_splitter.sizes()
+        cfg.set('Layout', 'right_splitter_orientation', 'vertical' if self.right_splitter.orientation() == Qt.Orientation.Vertical else 'horizontal')
+        cfg.set('Layout', 'right_splitter_sizes', ','.join(str(s) for s in self._right_splitter_sizes_by_orientation.get(Qt.Orientation.Horizontal, [])))
+        cfg.set('Layout', 'right_splitter_vertical_sizes', ','.join(str(s) for s in self._right_splitter_sizes_by_orientation.get(Qt.Orientation.Vertical, [])))
 
         # 儲存左側 treeView 欄位寬度
         left_widths = []
