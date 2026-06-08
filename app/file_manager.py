@@ -925,17 +925,11 @@ class FileManager(QMainWindow):
             queries.append(self._normalize_search_command(query_text))
 
         add_query(raw_term)
-        for left_bracket, right_bracket in (('[', ']'), ('［', '］'), ('【', '】')):
-            add_query(f'{left_bracket}{raw_term}{right_bracket}')
+        add_query(f'[{raw_term}]')
 
         tokens = self._plain_keyword_tokens(term)
-        if tokens:
-            add_query('regex:' + '.*'.join(re.escape(token) for token in tokens))
         if len(tokens) >= 2:
-            add_query(' '.join(tokens))
-            add_query('*'.join(tokens))
-            for token in tokens:
-                add_query(token)
+            add_query('regex:' + '.*'.join(re.escape(token) for token in tokens))
 
         return queries
 
@@ -994,7 +988,7 @@ class FileManager(QMainWindow):
         if self.search_model is None:
             return
         self._search_model_updating = True
-        self.search_model.removeRows(0, self.search_model.rowCount())
+        rows = []
         for filepath in results:
             name_item = QStandardItem(os.path.basename(filepath))
             name_item.setData(filepath, Qt.UserRole + 1)
@@ -1031,7 +1025,14 @@ class FileManager(QMainWindow):
             size_item.setEditable(False)
             size_item.setData(size, Qt.UserRole)
 
-            self.search_model.appendRow([name_item, dir_item, date_item, size_item])
+            rows.append([name_item, dir_item, date_item, size_item])
+
+        self.search_model.blockSignals(True)
+        self.search_model.removeRows(0, self.search_model.rowCount())
+        for row in rows:
+            self.search_model.appendRow(row)
+        self.search_model.blockSignals(False)
+        self.search_model.layoutChanged.emit()
         self._search_model_updating = False
 
     def _icon_for_search_result(self, filepath):

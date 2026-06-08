@@ -1,5 +1,6 @@
 import ctypes
 import ctypes.wintypes as wt
+import os
 import struct
 import time
 
@@ -20,6 +21,9 @@ class EverythingSDK:
         self._ipc_results = []
         self._ipc_got_reply = False
         self._wndproc_ref = self._WNDPROCTYPE(self._wnd_proc)
+        self._reply_hwnd = None
+        self._cls_name = None
+        self._create_reply_window()
 
     def _setup_winapi(self):
         """Configure ctypes signatures for Windows API calls."""
@@ -104,6 +108,32 @@ class EverythingSDK:
         hwnd = self._user32.FindWindowW(self._IPC_WNDCLASS_14, None)
         return hwnd
 
+    def _create_reply_window(self):
+        """建立持久化的 IPC 回覆視窗，整個生命週期共用。"""
+        hInst = self._kernel32.GetModuleHandleW(None)
+        self._cls_name = f"EvIPC_{os.getpid()}"
+        wc = self._WNDCLASSEXW()
+        wc.cbSize = ctypes.sizeof(self._WNDCLASSEXW)
+        wc.lpfnWndProc = self._wndproc_ref
+        wc.hInstance = hInst
+        wc.lpszClassName = self._cls_name
+        self._user32.RegisterClassExW(ctypes.byref(wc))
+        self._reply_hwnd = self._user32.CreateWindowExW(
+            0, self._cls_name, "R", 0, 0, 0, 0, 0, None, None, hInst, None
+        )
+
+    def __del__(self):
+        try:
+            if self._reply_hwnd:
+                self._user32.DestroyWindow(self._reply_hwnd)
+                self._reply_hwnd = None
+            if self._cls_name:
+                hInst = self._kernel32.GetModuleHandleW(None)
+                self._user32.UnregisterClassW(self._cls_name, hInst)
+                self._cls_name = None
+        except Exception:
+            pass
+
     def is_available(self):
         return bool(self._find_everything_hwnd())
 
@@ -116,29 +146,14 @@ class EverythingSDK:
         if not everything_hwnd:
             return []
 
-        hInst = self._kernel32.GetModuleHandleW(None)
-        cls_name = f"EvIPC{time.time_ns()}"
-
-        wc = self._WNDCLASSEXW()
-        wc.cbSize = ctypes.sizeof(self._WNDCLASSEXW)
-        wc.lpfnWndProc = self._wndproc_ref
-        wc.hInstance = hInst
-        wc.lpszClassName = cls_name
-        self._user32.RegisterClassExW(ctypes.byref(wc))
-
-        reply_hwnd = self._user32.CreateWindowExW(
-            0, cls_name, "R", 0, 0, 0, 0, 0, None, None, hInst, None
-        )
-        if not reply_hwnd:
-            try:
-                self._user32.UnregisterClassW(cls_name, hInst)
-            except Exception:
-                pass
+        if not self._reply_hwnd:
+            self._create_reply_window()
+        if not self._reply_hwnd:
             return []
 
         # Build EVERYTHING_IPC_QUERY2: reply_hwnd, reply_msg, search_flags, offset, max, req_flags, sort
         search_bytes = search_text.encode('utf-16-le') + b'\x00\x00'
-        reply_hwnd_32 = reply_hwnd & 0xFFFFFFFF
+        reply_hwnd_32 = self._reply_hwnd & 0xFFFFFFFF
         header = struct.pack('<IIIIIII', reply_hwnd_32, 0, 0, 0, max_results,
                              self.EVERYTHING_REQUEST_FULL_PATH_AND_FILE_NAME, 1)
         query_data = header + search_bytes
@@ -150,23 +165,17 @@ class EverythingSDK:
         cds.lpData = ctypes.cast(data_buf, ctypes.c_void_p)
 
         result = self._user32.SendMessageW(
-            everything_hwnd, self.WM_COPYDATA, reply_hwnd, ctypes.addressof(cds)
+            everything_hwnd, self.WM_COPYDATA, self._reply_hwnd, ctypes.addressof(cds)
         )
 
         if result:
             msg = wt.MSG()
             end_time = time.time() + 5
             while time.time() < end_time and not self._ipc_got_reply:
-                ret = self._user32.PeekMessageW(ctypes.byref(msg), reply_hwnd, 0, 0, 1)
+                ret = self._user32.PeekMessageW(ctypes.byref(msg), self._reply_hwnd, 0, 0, 1)
                 if ret:
                     self._user32.DispatchMessageW(ctypes.byref(msg))
                 else:
                     time.sleep(0.01)
-
-        self._user32.DestroyWindow(reply_hwnd)
-        try:
-            self._user32.UnregisterClassW(cls_name, hInst)
-        except Exception:
-            pass
 
         return list(self._ipc_results)

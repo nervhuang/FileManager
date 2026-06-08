@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-06-08
+- Rewrite tab drag-and-drop with fully custom implementation
+  - Disable Qt native movable drag (whose ghost widget cannot be repositioned mid-scroll)
+  - Draw dragged tab as a floating copy that follows the cursor at all times
+  - In-bounds drag reorders tabs immediately as the floating copy center crosses a neighbor
+  - Out-of-bounds drag leapfrogs hidden tabs one at a time via timer (80 ms/step)
+  - Hide close button on the dragged tab during drag to avoid layout artifacts
+  - Add `scroll_index_into_view` using `arrowType()` to reliably find Left/Right scroll buttons
+
 ## 2026-06-01
 - Improve file browsing interactions and release hygiene
   - Add right-panel horizontal/vertical layout switching and persist splitter orientation per layout
