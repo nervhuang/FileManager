@@ -1,0 +1,30 @@
+{
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+    "pylance.analysis.typeCheckingMode": "basic",
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/.venv/Lib/site-packages"
+    ],
+    "python.analysis.diagnosticSeverityOverrides": {
+        "reportAttributeAccessIssue": "none",
+        "reportOperatorIssue": "none",
+        "reportCallIssue": "none",
+        "reportIndexIssue": "none",
+        "reportArgumentType": "none",
+        "reportReturnType": "none",
+        "reportAssignmentType": "none",
+        "reportOptionalCall": "none",
+        "reportOptionalMemberAccess": "none",
+        "reportOptionalSubscript": "none",
+        "reportOptionalIterable": "none",
+        "reportOptionalOperand": "none",
+        "reportGeneralTypeIssues": "none",
+        "reportPrivateUsage": "none",
+        "reportUnknownMemberType": "none",
+        "reportUnknownVariableType": "none",
+        "reportUnknownArgumentType": "none",
+        "reportUnknownParameterType": "none",
+        "reportMissingTypeArgument": "none",
+        "reportMissingModuleSource": "none"
+    }
+}

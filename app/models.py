@@ -17,8 +17,22 @@ class DrivesSortProxyModel(QSortFilterProxyModel):
 
 
 class SearchSortProxyModel(QSortFilterProxyModel):
-    """Proxy model for proper numeric sorting on date and size columns."""
+    """Proxy model for proper numeric sorting on date and size columns.
+
+    資料夾恆排於所有檔案之上，不論排序欄位或升冪/降冪。"""
     def lessThan(self, left, right):
+        # 先以「是否為資料夾」分組：資料夾永遠在檔案之前。
+        # is_dir 旗標存於第 0 欄的 item（見 update_search_results）。
+        left_dir = bool(left.sibling(left.row(), 0).data(SearchResultsModel.IS_DIR_ROLE))
+        right_dir = bool(right.sibling(right.row(), 0).data(SearchResultsModel.IS_DIR_ROLE))
+        if left_dir != right_dir:
+            # 升冪時資料夾視為「較小」即排前面；降冪時 Qt 會反轉 lessThan 的結果，
+            # 故需先反轉以確保資料夾仍維持在最上方。
+            folder_first = left_dir  # left 是資料夾 → left 應在前
+            if self.sortOrder() == Qt.DescendingOrder:
+                return not folder_first
+            return folder_first
+
         col = left.column()
         if col in (2, 3):  # Date or Size columns
             left_val = left.data(Qt.UserRole)
@@ -62,6 +76,7 @@ class SearchResultsModel(QStandardItemModel):
     """Search results model that supports dragging files to external apps."""
 
     FILEPATH_ROLE = Qt.UserRole + 1
+    IS_DIR_ROLE = Qt.UserRole + 2
 
     def flags(self, index):
         base = super().flags(index)

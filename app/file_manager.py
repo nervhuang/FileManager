@@ -30,7 +30,7 @@ except Exception:
 
 from .everything_sdk import EverythingSDK
 from .models import DrivesSortProxyModel, SearchSortProxyModel, SearchResultsModel
-from .views import CustomTreeView, SearchListView
+from .views import CustomTreeView, SearchListView, FileListView
 from .widgets import PathTabBar, TreeComboBox
 
 ref_s = 0
@@ -72,6 +72,10 @@ class FileManager(QMainWindow):
         self._combo_auto_search_timer = QTimer(self)
         self._combo_auto_search_timer.setSingleShot(True)
         self._combo_auto_search_timer.timeout.connect(self._trigger_combo_auto_search)
+        # 防抖動：多個來源同時排程刷新時合併為單次執行，避免 SearchSortProxyModel 索引損毀
+        self._panel_refresh_timer = QTimer(self)
+        self._panel_refresh_timer.setSingleShot(True)
+        self._panel_refresh_timer.timeout.connect(self._do_scheduled_panel_refresh)
         self._right_splitter_sizes_by_orientation = {
             Qt.Orientation.Horizontal: [600, 600],
             Qt.Orientation.Vertical: [600, 600],
@@ -410,9 +414,11 @@ class FileManager(QMainWindow):
 
         # 使用 QToolButton 並將其明確命名（以便後續啟用/停用）
         # 创建右侧的文件列表视图
-        self.listView = QTreeView(self)
+        self.listView = FileListView(self)
         self.listView.setSortingEnabled(True)
         self.listView.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.listView.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.listView.customContextMenuRequested.connect(self._show_file_context_menu)
         self.listView2 = SearchListView(self)
         self.listView2.setSortingEnabled(True)
         self.listView2.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -562,6 +568,8 @@ class FileManager(QMainWindow):
         self.listView2.setDefaultDropAction(Qt.IgnoreAction)
 
         # 中間面板接受從右側搜尋結果拖曳進來的檔案
+        self.listView.setDragEnabled(True)
+        self.listView.setDragDropMode(QAbstractItemView.DragDrop)
         self.listView.setAcceptDrops(True)
         self.listView.setDropIndicatorShown(True)
 
@@ -720,7 +728,7 @@ class FileManager(QMainWindow):
             elif is_inside_brackets:
                 stack.append(char)
 
-        keywords = [keyword for keyword in keywords if keyword.strip()]
+        keywords = [keyword.strip() for keyword in keywords if keyword.strip()]
         return keywords
 
     def _on_left_tab_switched(self, path):
@@ -822,16 +830,18 @@ class FileManager(QMainWindow):
                 target_dir = self._resolve_listview_drop_target(event.pos())
                 src_paths = [u.toLocalFile() for u in event.mimeData().urls() if u.toLocalFile()]
                 if target_dir and src_paths:
-                    self.track_file_operation(src_paths, target_dir)
                     if self._search_drag_button == Qt.RightButton:
-                        # 右鍵拖曳：呼叫 Shell IDropTarget 顯示原生選單
+                        # 右鍵拖曳：先完成 Shell 操作，再排程刷新，避免在 Shell 選單期間觸發模型重設
                         done = self._shell_right_drag_drop_to(src_paths, target_dir, event.pos())
                         if done:
-                            event.acceptProposedAction()
+                            self.track_file_operation(src_paths, target_dir)
+                            event.setDropAction(Qt.CopyAction)
+                            event.accept()
                             self._schedule_panel_refreshes((600, 1500))
                         else:
                             event.ignore()
                     else:
+                        self.track_file_operation(src_paths, target_dir)
                         mods = event.keyboardModifiers()
                         if mods & Qt.ControlModifier:
                             op = "copy"
@@ -990,8 +1000,12 @@ class FileManager(QMainWindow):
         self._search_model_updating = True
         rows = []
         for filepath in results:
+            is_dir = os.path.isdir(filepath)
+
             name_item = QStandardItem(os.path.basename(filepath))
             name_item.setData(filepath, Qt.UserRole + 1)
+            # 是否為資料夾旗標：供 SearchSortProxyModel 讓資料夾恆排於檔案之上
+            name_item.setData(is_dir, SearchResultsModel.IS_DIR_ROLE)
             name_item.setIcon(self._icon_for_search_result(filepath))
 
             dir_item = QStandardItem(os.path.dirname(filepath))
@@ -1011,7 +1025,7 @@ class FileManager(QMainWindow):
             date_item.setData(mtime, Qt.UserRole)
 
             try:
-                if os.path.isdir(filepath):
+                if is_dir:
                     size = 0
                     size_str = ''
                 else:
@@ -1027,12 +1041,14 @@ class FileManager(QMainWindow):
 
             rows.append([name_item, dir_item, date_item, size_item])
 
-        self.search_model.blockSignals(True)
+        # 不可用 blockSignals 包住結構性變更：SearchSortProxyModel 靠 rowsRemoved/
+        # rowsInserted 訊號維護「proxy 列 ↔ 來源列」對應表，擋掉訊號會讓對應表指向
+        # 已刪除的 item，之後點擊搜尋結果映射時即解參考已釋放記憶體而崩潰。
+        # itemChanged 連線的 _on_search_result_name_changed 已用 _search_model_updating
+        # 旗標擋掉，無須再 blockSignals。
         self.search_model.removeRows(0, self.search_model.rowCount())
         for row in rows:
             self.search_model.appendRow(row)
-        self.search_model.blockSignals(False)
-        self.search_model.layoutChanged.emit()
         self._search_model_updating = False
 
     def _icon_for_search_result(self, filepath):
@@ -1329,7 +1345,22 @@ class FileManager(QMainWindow):
             menu.addAction("刪除（移至資源回收桶）", self._delete_selected_search_files)
             menu.exec_(global_pos)
 
-    def _invoke_shell_context_menu(self, hwnd, paths, x, y):
+    def _show_file_context_menu(self, pos):
+        """在 listView 上顯示 Windows 檔案總管相同的右鍵選單。"""
+        paths = self._get_selected_paths_for_view(self.listView)
+        if not paths:
+            return
+        global_pos = self.listView.viewport().mapToGlobal(pos)
+        try:
+            self._invoke_shell_context_menu(int(self.winId()), paths, global_pos.x(), global_pos.y())
+        except Exception:
+            traceback.print_exc()
+            menu = QMenu(self)
+            if len(paths) == 1 and os.path.exists(paths[0]):
+                menu.addAction("開啟", lambda p=paths[0]: os.startfile(p))
+            menu.exec_(global_pos)
+
+    def _invoke_shell_context_menu(self, hwnd, paths, x, y, after_fn=None):
         """Show the Windows Shell context menu (identical to Explorer right-click)."""
         from win32com.shell import shell, shellcon
         import win32gui
@@ -1337,6 +1368,7 @@ class FileManager(QMainWindow):
         import pythoncom
 
         pythoncom.CoInitialize()
+        do_rename = False
         try:
             # 依第一個路徑的父目錄分組（GetUIObjectOf 要求相同父目錄）
             parent_dir = os.path.normpath(os.path.dirname(os.path.abspath(paths[0])))
@@ -1390,12 +1422,22 @@ class FileManager(QMainWindow):
             win32gui.DestroyMenu(hmenu)
 
             if cmd > 0:
-                # lpVerb 為整數時代表 MAKEINTRESOURCE(cmd - idCmdFirst)
-                ci = (0, hwnd, cmd - 1, None, None, win32con.SW_SHOWNORMAL, 0, None)
-                icm.InvokeCommand(ci)
-                QTimer.singleShot(800, self._refresh_search_results_existence)
+                # 偵測 rename verb：Shell InvokeCommand("rename") 會傳送 WM_CLOSE 給 hwnd，
+                # 導致 Qt 主視窗關閉。改為觸發我們自己的 F2 重命名。
+                try:
+                    verb = icm.GetCommandString(cmd - 1, shellcon.GCS_VERBW)
+                except Exception:
+                    verb = ""
+                if verb.lower() == "rename":
+                    do_rename = True
+                else:
+                    ci = (0, hwnd, cmd - 1, None, None, win32con.SW_SHOWNORMAL, 0, None)
+                    icm.InvokeCommand(ci)
+                    QTimer.singleShot(800, after_fn if after_fn is not None else self._refresh_search_results_existence)
         finally:
             pythoncom.CoUninitialize()
+        if do_rename:
+            QTimer.singleShot(0, self._rename_selected_focused_item)
 
     def _refresh_search_results_existence(self):
         """移除搜尋結果中已不存在的檔案列。"""
@@ -1587,8 +1629,10 @@ class FileManager(QMainWindow):
             return False
 
         if result == 0 and not op_struct.fAnyOperationsAborted:
-            self.refresh_mid_panel()
-            self.refresh_current_search_results()
+            # 不可同步刷新：拖放來源（如搜尋面板 listView2）的 drag.exec_() 巢狀
+            # 事件迴圈可能仍在堆疊上，立即重設其 model 會造成原生層存取已釋放物件
+            # 而導致程式崩潰自關。改以延遲排程，等拖曳迴圈解開後再刷新。
+            self._schedule_panel_refreshes((600, 1500))
             return True
 
         return False
@@ -1632,9 +1676,16 @@ class FileManager(QMainWindow):
         self._schedule_panel_refreshes((120, 450))
 
     def _schedule_panel_refreshes(self, delays_ms):
-        for delay in delays_ms:
-            QTimer.singleShot(delay, self.refresh_mid_panel)
-            QTimer.singleShot(delay, self.refresh_current_search_results)
+        # 每次呼叫都重設計時器：最後一次呼叫後 max(delays_ms) ms 才真正執行，
+        # 避免多個來源在短時間內連續觸發導致 update_search_results 被重複呼叫。
+        self._panel_refresh_timer.start(max(delays_ms) if delays_ms else 500)
+
+    def _do_scheduled_panel_refresh(self):
+        if getattr(self.listView, '_drag_in_progress', False):
+            self._panel_refresh_timer.start(400)
+            return
+        self.refresh_mid_panel()
+        self.refresh_current_search_results()
 
     def _on_mid_dir_changed(self, _path: str):
         """QFileSystemWatcher 偵測到目錄內容異動（新增/刪除/改名）時自動刷新面板。"""
@@ -1648,6 +1699,8 @@ class FileManager(QMainWindow):
         優先從 listView.rootIndex() 取得實際顯示目錄
         （雙擊導覽後 rootPath() 可能與實際顯示目錄不同）。
         """
+        if getattr(self.listView, '_drag_in_progress', False):
+            return
         root_idx = self.listView.rootIndex()
         if root_idx.isValid():
             dir_path = self.fileListModel.filePath(root_idx)
@@ -1876,6 +1929,8 @@ class FileManager(QMainWindow):
 
     def refresh_current_search_results(self):
         """依目前右側關鍵字重新查詢，確保拖曳後結果更新。"""
+        if getattr(self.listView, '_drag_in_progress', False):
+            return
         keyword = self.right_tab_bar.current_data().strip() if self.right_tab_bar is not None else ""
         if not keyword and self.right_info_combo is not None:
             keyword = self.right_info_combo.lineEdit().text().strip()
@@ -2242,7 +2297,73 @@ class FileManager(QMainWindow):
         super().closeEvent(event)
 
 
+def _install_crash_logger():
+    """安裝崩潰記錄器：把原生崩潰（存取違規）、Qt 致命訊息與未捕捉的 Python
+    例外都寫進 crash.log，讓「無聲消失」的原生崩潰留下可診斷的呼叫堆疊。
+
+    回傳開啟中的 log 檔物件——必須在整個行程生命週期保持開啟，faulthandler
+    才能在崩潰當下寫入。"""
+    import faulthandler
+    from datetime import datetime as _dt
+
+    log_path = os.path.join(_runtime_root(), 'crash.log')
+    try:
+        log_file = open(log_path, 'a', buffering=1, encoding='utf-8')
+    except Exception:
+        return None
+
+    log_file.write(f"\n===== session start {_dt.now():%Y-%m-%d %H:%M:%S} =====\n")
+    log_file.flush()
+
+    # faulthandler：在 SIGSEGV / Windows 存取違規等致命錯誤時 dump 所有執行緒的
+    # Python 堆疊到 log_file（含造成崩潰的那一行）。
+    try:
+        faulthandler.enable(file=log_file, all_threads=True)
+    except Exception:
+        pass
+
+    # 未捕捉的 Python 例外也寫入 log（保留原本的主控台輸出）。
+    _prev_excepthook = sys.excepthook
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        try:
+            log_file.write(f"\n----- uncaught exception {_dt.now():%Y-%m-%d %H:%M:%S} -----\n")
+            traceback.print_exception(exc_type, exc_value, exc_tb, file=log_file)
+            log_file.flush()
+        except Exception:
+            pass
+        _prev_excepthook(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _excepthook
+
+    # Qt 端的警告/致命訊息（QSortFilterProxyModel 索引越界常以 qWarning 先示警）。
+    try:
+        from PyQt5.QtCore import qInstallMessageHandler, QtMsgType
+
+        def _qt_message_handler(mode, context, message):
+            label = {
+                QtMsgType.QtDebugMsg: 'DEBUG',
+                QtMsgType.QtInfoMsg: 'INFO',
+                QtMsgType.QtWarningMsg: 'WARNING',
+                QtMsgType.QtCriticalMsg: 'CRITICAL',
+                QtMsgType.QtFatalMsg: 'FATAL',
+            }.get(mode, 'MSG')
+            try:
+                log_file.write(f"[Qt {label}] {message}\n")
+                log_file.flush()
+            except Exception:
+                pass
+
+        qInstallMessageHandler(_qt_message_handler)
+    except Exception:
+        pass
+
+    return log_file
+
+
 def main():
+    # 保持參考避免被 GC；log 檔需在整個行程期間開啟供 faulthandler 寫入。
+    _crash_log = _install_crash_logger()  # noqa: F841
     app = QApplication(sys.argv)
     window = FileManager()
     window.show()

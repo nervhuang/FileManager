@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 build/
 dist/
+build_nuitka/
+build_nuitka_log.txt
 *.spec
 debug_out.txt
 debug_err.txt
+crash.log
