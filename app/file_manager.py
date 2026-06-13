@@ -29,7 +29,8 @@ except Exception:
     HAVE_SVG_RENDERER = False
 
 from .everything_sdk import EverythingSDK
-from .models import DrivesSortProxyModel, SearchSortProxyModel, SearchResultsModel
+from .file_index import FileMetadataCache
+from .models import DrivesSortProxyModel, SearchSortProxyModel, SearchResultsModel, FileSystemSortProxyModel
 from .views import CustomTreeView, SearchListView, FileListView
 from .widgets import PathTabBar, TreeComboBox
 
@@ -55,6 +56,11 @@ class FileManager(QMainWindow):
         super().__init__()
 
         self.everything = EverythingSDK()
+        # 開啟時於背景預載固定磁碟的檔案中繼資料，加速搜尋結果渲染。
+        # 索引會存到磁碟，下次開啟直接載入（秒級），不必每次重掃幾分鐘。
+        self.file_index = FileMetadataCache(
+            cache_path=os.path.join(_runtime_root(), 'file_index_cache.dat')
+        )
         self.search_model = None
         self.sdk_warned = False
         self._search_drag_button = Qt.NoButton
@@ -87,6 +93,8 @@ class FileManager(QMainWindow):
         self._op_fs_watcher = QFileSystemWatcher(self)
         self._op_fs_watcher.directoryChanged.connect(self._on_operation_dir_changed)
         self.initUI()
+        # 背景開始掃描磁碟建立中繼資料快取（daemon 執行緒，不阻塞 UI）
+        self.file_index.start()
 
     def initUI(self):
         self.setWindowTitle("文件管理器")
@@ -552,7 +560,11 @@ class FileManager(QMainWindow):
         self.fileListModel = QFileSystemModel()
         self.fileListModel.setReadOnly(False)
         self.fileListModel.fileRenamed.connect(self._on_file_list_item_renamed)
-        self.listView.setModel(self.fileListModel)
+        # 以 proxy model 讓資料夾恆排於檔案之上（與搜尋面板一致）。
+        self.file_proxy = FileSystemSortProxyModel(self.listView)
+        self.file_proxy.setSourceModel(self.fileListModel)
+        self.file_proxy.setSortCaseSensitivity(Qt.CaseInsensitive)
+        self.listView.setModel(self.file_proxy)
         self.search_model = SearchResultsModel(self.listView2)
         self.search_model.setHorizontalHeaderLabels(["檔名", "目錄", "日期", "大小"])
         self.search_model.itemChanged.connect(self._on_search_result_name_changed)
@@ -634,8 +646,8 @@ class FileManager(QMainWindow):
         self._listview_mouse_pressed = False
         global ref_s, ref_e, global_keywords
 
-        if not self.fileListModel.isDir(index):
-            file_name = self.fileListModel.fileName(index)
+        if not self.file_proxy.isDir(index):
+            file_name = self.file_proxy.fileName(index)
             keywords = self.extract_keywords(file_name)
             global_keywords = keywords
 
@@ -647,8 +659,8 @@ class FileManager(QMainWindow):
 
 
     def on_listView_doubleClicked(self, index):
-        path = self.fileListModel.filePath(index)
-        if self.fileListModel.isDir(index):
+        path = self.file_proxy.filePath(index)
+        if self.file_proxy.isDir(index):
             self._navigate_to_path(path)
         else:
             try:
@@ -994,46 +1006,48 @@ class FileManager(QMainWindow):
             )
         subprocess.Popen('"Everything.exe" -search "' + normalized_command.replace('"', '\\"') + '"', shell=True)
 
+    def _search_result_metadata(self, filepath):
+        """回傳 (is_dir, size, mtime)。優先讀開啟時預載的磁碟快取，
+        未命中（新檔案或尚未掃到）才 fallback 到 os.stat。"""
+        cached = self.file_index.lookup(filepath)
+        if cached is not None:
+            return cached
+        try:
+            stat_result = os.stat(filepath)
+            return os.path.isdir(filepath), stat_result.st_size, stat_result.st_mtime
+        except OSError:
+            return False, 0, 0
+
     def update_search_results(self, results):
         if self.search_model is None:
             return
         self._search_model_updating = True
         rows = []
         for filepath in results:
-            is_dir = os.path.isdir(filepath)
+            is_dir, size, mtime = self._search_result_metadata(filepath)
 
             name_item = QStandardItem(os.path.basename(filepath))
             name_item.setData(filepath, Qt.UserRole + 1)
             # 是否為資料夾旗標：供 SearchSortProxyModel 讓資料夾恆排於檔案之上
             name_item.setData(is_dir, SearchResultsModel.IS_DIR_ROLE)
-            name_item.setIcon(self._icon_for_search_result(filepath))
+            name_item.setIcon(self._icon_for_search_result(filepath, is_dir))
 
             dir_item = QStandardItem(os.path.dirname(filepath))
             dir_item.setEditable(False)
 
-            try:
-                stat_result = os.stat(filepath)
-                mtime = stat_result.st_mtime
-                dt_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
-            except Exception:
-                stat_result = None
-                mtime = 0
+            if mtime:
+                try:
+                    dt_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
+                except Exception:
+                    dt_str = ''
+            else:
                 dt_str = ''
 
             date_item = QStandardItem(dt_str)
             date_item.setEditable(False)
             date_item.setData(mtime, Qt.UserRole)
 
-            try:
-                if is_dir:
-                    size = 0
-                    size_str = ''
-                else:
-                    size = stat_result.st_size if stat_result is not None else os.path.getsize(filepath)
-                    size_str = self._format_size(size)
-            except Exception:
-                size = 0
-                size_str = ''
+            size_str = '' if (is_dir or not size) else self._format_size(size)
 
             size_item = QStandardItem(size_str)
             size_item.setEditable(False)
@@ -1051,8 +1065,10 @@ class FileManager(QMainWindow):
             self.search_model.appendRow(row)
         self._search_model_updating = False
 
-    def _icon_for_search_result(self, filepath):
-        if os.path.isdir(filepath):
+    def _icon_for_search_result(self, filepath, is_dir=None):
+        if is_dir is None:
+            is_dir = os.path.isdir(filepath)
+        if is_dir:
             cache_key = ('dir', '')
         else:
             cache_key = ('file', os.path.splitext(filepath)[1].lower())
@@ -1141,7 +1157,7 @@ class FileManager(QMainWindow):
             if view is self.treeView:
                 path = self.model.filePath(self.tree_proxy.mapToSource(index))
             elif view is self.listView:
-                path = self.fileListModel.filePath(index)
+                path = self.file_proxy.filePath(index)
             else:
                 path = ""
             if path:
@@ -1456,7 +1472,7 @@ class FileManager(QMainWindow):
         """依 viewport 座標決定中間面板的拖放目標目錄。"""
         idx = self.listView.indexAt(pos)
         if idx.isValid():
-            path = self.fileListModel.filePath(idx)
+            path = self.file_proxy.filePath(idx)
             path = os.path.normpath(path) if path else ""
             if path and os.path.isdir(path):
                 return path
@@ -1466,7 +1482,7 @@ class FileManager(QMainWindow):
                     return parent
         root_idx = self.listView.rootIndex()
         if root_idx.isValid():
-            path = self.fileListModel.filePath(root_idx)
+            path = self.file_proxy.filePath(root_idx)
             path = os.path.normpath(path) if path else ""
             if path and os.path.isdir(path):
                 return path
@@ -1703,7 +1719,7 @@ class FileManager(QMainWindow):
             return
         root_idx = self.listView.rootIndex()
         if root_idx.isValid():
-            dir_path = self.fileListModel.filePath(root_idx)
+            dir_path = self.file_proxy.filePath(root_idx)
         else:
             dir_path = self.fileListModel.rootPath()
         if not dir_path or not os.path.isdir(dir_path):
@@ -1711,14 +1727,14 @@ class FileManager(QMainWindow):
         # 強制重新載入：先設為 "" 使 Qt 認為路徑有變，再設回原目錄觸發實際掃描
         self.fileListModel.setRootPath("")
         new_idx = self.fileListModel.setRootPath(dir_path)
-        self.listView.setRootIndex(new_idx)
+        self.listView.setRootIndex(self.file_proxy.mapFromSource(new_idx))
         # setRootPath("") 不影響我們外部的 watcher，但確保仍在監看
         self._watch_mid_dir(dir_path)
 
     def _current_dir(self):
         root_idx = self.listView.rootIndex()
         if root_idx.isValid():
-            path = self.fileListModel.filePath(root_idx)
+            path = self.file_proxy.filePath(root_idx)
             if path and os.path.isdir(path):
                 return path
         indexes = self.treeView.selectedIndexes()
@@ -1827,7 +1843,7 @@ class FileManager(QMainWindow):
         self.fileListModel.setRootPath(path)
         self.fileListModel.setFilter(QDir.AllEntries | QDir.NoDotAndDotDot)
         root_index = self.fileListModel.index(path)
-        self.listView.setRootIndex(root_index)
+        self.listView.setRootIndex(self.file_proxy.mapFromSource(root_index))
         self._watch_mid_dir(path)
 
         idx = self.tree_proxy.mapFromSource(self.model.index(path))
@@ -1898,7 +1914,8 @@ class FileManager(QMainWindow):
         if not folder_path or self.listView is None or self.fileListModel is None:
             return False
 
-        edit_index = self.fileListModel.index(folder_path)
+        source_index = self.fileListModel.index(folder_path)
+        edit_index = self.file_proxy.mapFromSource(source_index)
         if not edit_index.isValid():
             if retries > 0:
                 QTimer.singleShot(120, lambda path=folder_path, remaining=retries - 1, do_edit=start_edit: self._focus_new_folder_for_rename(path, remaining, do_edit))
@@ -1958,14 +1975,14 @@ class FileManager(QMainWindow):
             i += 1
         # 刷新列表
         self.fileListModel.setRootPath(dir_path)
-        self.listView.setRootIndex(self.fileListModel.index(dir_path))
+        self.listView.setRootIndex(self.file_proxy.mapFromSource(self.fileListModel.index(dir_path)))
 
     def on_open(self):
         # 保留舊功能（用系統開啟檔案），但不再由工具列第二個按鈕觸發
         indexes = self.listView.selectedIndexes()
         if not indexes:
             return
-        path = self.fileListModel.filePath(indexes[0])
+        path = self.file_proxy.filePath(indexes[0])
         try:
             os.startfile(path)
         except Exception as e:
@@ -2293,6 +2310,8 @@ class FileManager(QMainWindow):
             cfg.write(f)
 
     def closeEvent(self, event):
+        # 等背景執行緒把索引寫回磁碟（含本次新掃到的部分），下次開啟可快速載入
+        self.file_index.stop(wait_timeout=15)
         self.save_config()
         super().closeEvent(event)
 
