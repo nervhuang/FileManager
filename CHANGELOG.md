@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-14
+- Fix multi-selection in the file and search panels
+  - File panel: enable `ExtendedSelection` so multiple files can be selected (previously single-only)
+  - Search panel: dragging one of several selected items now drags the whole selection instead of collapsing to the clicked item
+    - Pressing an already-selected item kept the view in `NoState`, so the first mouse move was treated as rubber-band selection and overwrote the multi-selection
+    - Now the selection is preserved on press and the drag is started manually; a click without dragging still collapses to the single clicked item
+
 ## 2026-06-08
 - Rewrite tab drag-and-drop with fully custom implementation
   - Disable Qt native movable drag (whose ghost widget cannot be repositioned mid-scroll)

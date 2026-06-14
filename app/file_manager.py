@@ -565,6 +565,9 @@ class FileManager(QMainWindow):
         self.file_proxy.setSourceModel(self.fileListModel)
         self.file_proxy.setSortCaseSensitivity(Qt.CaseInsensitive)
         self.listView.setModel(self.file_proxy)
+        # 中間檔案面板允許多選（與搜尋面板一致），以便一次拖曳/操作多個檔案。
+        self.listView.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.listView.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.search_model = SearchResultsModel(self.listView2)
         self.search_model.setHorizontalHeaderLabels(["檔名", "目錄", "日期", "大小"])
         self.search_model.itemChanged.connect(self._on_search_result_name_changed)

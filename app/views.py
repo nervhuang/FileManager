@@ -4,7 +4,7 @@ import ctypes.wintypes as wt
 import traceback
 
 from PyQt5.QtWidgets import QTreeView, QApplication, QMessageBox, QMenu
-from PyQt5.QtCore import Qt, QItemSelection, QItemSelectionModel, QMimeData, QUrl, QTimer
+from PyQt5.QtCore import Qt, QItemSelection, QItemSelectionModel, QMimeData, QUrl, QTimer, QPersistentModelIndex
 from PyQt5.QtGui import QDrag, QPixmap, QPainter, QColor, QIcon, QFont
 
 
@@ -210,10 +210,14 @@ class SearchListView(_ShellDropMixin, QTreeView):
         self._press_button = Qt.NoButton
         self._suppress_next_context_menu = False
         self._last_drag_button = Qt.NoButton
+        # 按在「多選之一」的項目上時，先保留整個多選等待是否拖曳；
+        # 記錄該 index，放開若未拖曳再收斂為單選（見 mouseReleaseEvent）。
+        self._press_on_selected = None
 
     def mousePressEvent(self, event):
         self._press_pos = event.pos()
         self._press_button = event.button()
+        self._press_on_selected = None
 
         if event.button() == Qt.RightButton:
             index = self.indexAt(event.pos())
@@ -265,9 +269,17 @@ class SearchListView(_ShellDropMixin, QTreeView):
                 QItemSelectionModel.Toggle
             )
             sel.setCurrentIndex(index, QItemSelectionModel.NoUpdate)
+        elif sel.isSelected(index) and len(sel.selectedRows(0)) > 1:
+            # 普通點擊在「多選之一」上：保留整個多選，先不更動選取。
+            # 若接著拖曳 → 一次拖曳所有選取（見 mouseMoveEvent）；
+            # 若只是放開沒拖曳 → 於 mouseReleaseEvent 收斂為單選。
+            # 不可呼叫 super()，否則 Qt 會把選取收斂成單一項，導致只拖到被點的那個。
+            self._anchor = index
+            self._press_on_selected = QPersistentModelIndex(index)
         else:
             # 普通點擊：改變錨點並只選該項目
             self._anchor = index
+            self._press_on_selected = None
             super().mousePressEvent(event)
 
     def startDrag(self, supportedActions):
@@ -293,6 +305,18 @@ class SearchListView(_ShellDropMixin, QTreeView):
             self._notify_search_refresh_delayed(dragged_paths)
 
     def mouseMoveEvent(self, event):
+        # 多選左鍵拖曳：press 落在「多選之一」時，Qt 因留在 NoState 會把移動當成
+        # 框選（rubber band）而改寫選取，只剩游標下的項目被拖。故此處自行偵測門檻
+        # 並啟動拖曳，startDrag 會讀取完整選取，確保一次拖曳所有選取的檔案。
+        if (self._press_pos is not None
+                and self._press_button == Qt.LeftButton
+                and self._press_on_selected is not None
+                and (event.pos() - self._press_pos).manhattanLength() >= QApplication.startDragDistance()):
+            self._press_on_selected = None
+            self.startDrag(Qt.CopyAction | Qt.MoveAction | Qt.LinkAction)
+            self._press_pos = None
+            self._press_button = Qt.NoButton
+            return
         # 右鍵拖曳：Qt 不自動處理，需手動偵測並啟動
         if (self._press_pos is not None
                 and self._press_button == Qt.RightButton
@@ -466,6 +490,27 @@ class SearchListView(_ShellDropMixin, QTreeView):
         return pix
 
     def mouseReleaseEvent(self, event):
+        # 在「多選之一」上按下後直接放開（沒有拖曳）：比照一般檔案總管行為，
+        # 收斂為僅選取被點的那一項。若期間已啟動拖曳，_press_on_selected 已於
+        # mouseMoveEvent 清空，不會進入此分支。
+        if (self._press_on_selected is not None
+                and event.button() == Qt.LeftButton):
+            pindex = self._press_on_selected
+            self._press_on_selected = None
+            self._press_pos = None
+            self._press_button = Qt.NoButton
+            sel = self.selectionModel()
+            model = self.model()
+            if sel is not None and model is not None and pindex.isValid():
+                index = model.index(pindex.row(), 0, pindex.parent())
+                last_col = model.columnCount() - 1 if model.columnCount() else 0
+                sel.select(
+                    QItemSelection(index, index.sibling(index.row(), last_col)),
+                    QItemSelectionModel.ClearAndSelect,
+                )
+                sel.setCurrentIndex(index, QItemSelectionModel.NoUpdate)
+            return
+        self._press_on_selected = None
         super().mouseReleaseEvent(event)
         self._press_pos = None
         self._press_button = Qt.NoButton
