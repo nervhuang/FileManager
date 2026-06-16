@@ -187,16 +187,20 @@ class _ShellDropMixin:
 
     def _notify_search_refresh_delayed(self, src_paths=None, target_dir=""):
         wnd = self.window()
-        if wnd is not None:
-            if hasattr(wnd, "track_file_operation"):
-                wnd.track_file_operation(src_paths or [], target_dir)
-            if hasattr(wnd, "refresh_current_search_results"):
-                wnd.refresh_current_search_results()
-                QTimer.singleShot(600, wnd.refresh_current_search_results)
-                QTimer.singleShot(1500, wnd.refresh_current_search_results)
-            if hasattr(wnd, "refresh_mid_panel"):
-                QTimer.singleShot(600, wnd.refresh_mid_panel)
-                QTimer.singleShot(1500, wnd.refresh_mid_panel)
+        if wnd is None:
+            return
+        if hasattr(wnd, "track_file_operation"):
+            # track_file_operation 已以防抖計時器排程一次「完整重查 + 中央面板刷新」，
+            # 並監看來源/目標目錄，等異動真正落地後再補刷。先前在此又同步直接重查、
+            # 外加 600ms/1500ms 各一次，使單一拖放觸發多達 3 次完整 Everything 查詢與
+            # 模型重建，正是拖放後卡頓的主因。改為一律委派給防抖排程，去除重複觸發。
+            wnd.track_file_operation(src_paths or [], target_dir)
+            return
+        # 後備：視窗未提供 track_file_operation 時才直接延遲刷新一次。
+        if hasattr(wnd, "refresh_current_search_results"):
+            QTimer.singleShot(600, wnd.refresh_current_search_results)
+        if hasattr(wnd, "refresh_mid_panel"):
+            QTimer.singleShot(600, wnd.refresh_mid_panel)
 
 
 class SearchListView(_ShellDropMixin, QTreeView):

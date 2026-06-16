@@ -82,6 +82,10 @@ class FileManager(QMainWindow):
         self._panel_refresh_timer = QTimer(self)
         self._panel_refresh_timer.setSingleShot(True)
         self._panel_refresh_timer.timeout.connect(self._do_scheduled_panel_refresh)
+        # 排程刷新時是否需要重跑整個 Everything 查詢。僅「可能新增符合搜尋結果」的
+        # 操作（貼上/移動/新增）才需要；刪除/改名/單純瀏覽或外部異動只需輕量的
+        # 逐列存在性檢查，避免每次檔案異動都在 GUI 執行緒上同步重查造成卡頓。
+        self._pending_full_search = False
         self._right_splitter_sizes_by_orientation = {
             Qt.Orientation.Horizontal: [600, 600],
             Qt.Orientation.Vertical: [600, 600],
@@ -722,6 +726,13 @@ class FileManager(QMainWindow):
             if ref_e - ref_s > 0:
                 self.execute_search_command('|'.join(global_keywords[ref_s:ref_e]))
 
+    # 半形與全形/CJK 括弧（點擊檔名以括弧內文字自動搜尋時辨識）。
+    # 全形括弧（（）［］｛｝）、CJK 角括弧（【】〔〕「」『』〈〉《》）在檔名中
+    # 與半形括弧同樣常用來標註，原本只認半形 ([{ )]}，導致全形括弧內的文字
+    # （如「【tsf-saeki】」）點擊時無法被擷取為搜尋關鍵字。
+    _OPEN_BRACKETS = "([{（［｛【〔「『〈《〖｟"
+    _CLOSE_BRACKETS = ")]}）］｝】〕」』〉》〗｠"
+
     def extract_keywords(self, file_name):
         # 自定义解析文件名以提取多个参数，只提取括号内的文字
         keywords = []
@@ -729,13 +740,13 @@ class FileManager(QMainWindow):
         is_inside_brackets = False
 
         for char in file_name:
-            if char in "([{":
+            if char in self._OPEN_BRACKETS:
                 if not is_inside_brackets:
                     is_inside_brackets = True
                 elif stack:
                     keywords.append("".join(stack))
                     stack = []
-            elif char in ")]}":
+            elif char in self._CLOSE_BRACKETS:
                 is_inside_brackets = False
                 if stack:
                     keywords.append("".join(stack))
@@ -852,7 +863,7 @@ class FileManager(QMainWindow):
                             self.track_file_operation(src_paths, target_dir)
                             event.setDropAction(Qt.CopyAction)
                             event.accept()
-                            self._schedule_panel_refreshes((600, 1500))
+                            self._schedule_panel_refreshes((600, 1500), full_search=True)
                         else:
                             event.ignore()
                     else:
@@ -868,7 +879,7 @@ class FileManager(QMainWindow):
                             op = "move" if s_drv and s_drv == d_drv else "copy"
                         self._perform_file_op(src_paths, target_dir, op)
                         event.acceptProposedAction()
-                        self._schedule_panel_refreshes((600, 1500))
+                        self._schedule_panel_refreshes((600, 1500), full_search=True)
                 else:
                     event.ignore()
                 return True
@@ -942,29 +953,45 @@ class FileManager(QMainWindow):
         queries = []
         seen = set()
 
-        def add_query(query_text):
+        def add_query(query_text, normalize=True):
             query_text = query_text.strip()
             if not query_text or query_text in seen:
                 return
             seen.add(query_text)
-            queries.append(self._normalize_search_command(query_text))
+            # normalize=False：保留原樣送出（用於空白分隔的 AND 查詢，
+            # 不可被 _normalize_search_command 加引號變成片語比對）。
+            queries.append(self._normalize_search_command(query_text) if normalize else query_text)
 
         add_query(raw_term)
         add_query(f'[{raw_term}]')
 
+        # 全形括弧等符號（（）【】「」『』〔〕…）與連字號在檔名/關鍵字中通常只是
+        # 標註或分隔，使用者真正想搜的是「符號之間的文字」。但原本只把含符號的原字串
+        # 交給 Everything，實際檔名不含那些符號時就查無結果（如搜「（重要）」找不到
+        # 「重要.txt」、搜「【tsf-saeki】」找不到「tsf-saeki」）。這裡改以去符號後的
+        # tokens（NFKC 正規化＋去標點，已涵蓋全形/半形括弧與連字號）組查詢：
+        #   單一詞 → 直接查該詞；
+        #   多個詞 → 以空白分隔（Everything 原生 AND，不加引號、不需開 regex 旗標、
+        #            也不要求詞序）查詢，最穩健；另保留 regex 依序串接作為輔助。
         tokens = self._plain_keyword_tokens(term)
-        if len(tokens) >= 2:
+        if len(tokens) == 1:
+            add_query(tokens[0])
+        elif len(tokens) >= 2:
+            add_query(' '.join(tokens), normalize=False)
             add_query('regex:' + '.*'.join(re.escape(token) for token in tokens))
 
         return queries
 
     def _path_matches_plain_keyword(self, path, term):
-        normalized_term = self._normalize_plain_keyword_text(self._strip_search_term_quotes(term))
-        if not normalized_term:
+        tokens = self._plain_keyword_tokens(term)
+        if not tokens:
             return False
 
         normalized_path = self._normalize_plain_keyword_text(os.path.basename(path))
-        return normalized_term in normalized_path
+        # 以「去符號後的各詞是否都出現在檔名」為準，與查詢端一致：括弧會被正規化成
+        # 空白，若仍要求整個 normalized_term 為連續子字串，會因括弧造成的空白差異
+        # （如關鍵字「重要（報告）」對檔名「重要報告」）而誤判不符。改為各詞皆需命中。
+        return all(token in normalized_path for token in tokens)
 
     def _is_plain_keyword_term(self, term):
         candidate = self._strip_search_term_quotes(term)
@@ -1063,9 +1090,17 @@ class FileManager(QMainWindow):
         # 已刪除的 item，之後點擊搜尋結果映射時即解參考已釋放記憶體而崩潰。
         # itemChanged 連線的 _on_search_result_name_changed 已用 _search_model_updating
         # 旗標擋掉，無須再 blockSignals。
+        #
+        # 效能關鍵：search_proxy 預設 dynamicSortFilter=True，且 listView2 已啟用排序，
+        # 因此每次 appendRow 都會觸發 proxy 重新尋找排序插入位置（O(n) 比較），
+        # 大量結果（可達 2000 筆）逐筆插入即退化成 O(n²)，造成新增/刪除/改名後 GUI
+        # 凍結 2~3 秒。改為批次插入前關閉動態排序，全部插入後再開啟、僅排序一次。
+        # 關閉的是「排序」而非訊號，rowsInserted 仍正常發出，對應表不會失效。
+        self.search_proxy.setDynamicSortFilter(False)
         self.search_model.removeRows(0, self.search_model.rowCount())
         for row in rows:
             self.search_model.appendRow(row)
+        self.search_proxy.setDynamicSortFilter(True)
         self._search_model_updating = False
 
     def _icon_for_search_result(self, filepath, is_dir=None):
@@ -1167,7 +1202,7 @@ class FileManager(QMainWindow):
                 paths.append(path)
         return paths
 
-    def _delete_paths_to_recycle_bin(self, paths, refresh_search=False):
+    def _delete_paths_to_recycle_bin(self, paths):
         existing = [p for p in paths if os.path.exists(p)]
         if not existing:
             return False
@@ -1199,10 +1234,9 @@ class FileManager(QMainWindow):
         result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
         if result == 0 and not op.fAnyOperationsAborted:
             self.refresh_mid_panel()
-            if refresh_search:
-                self._refresh_search_results_existence()
-            else:
-                self.refresh_current_search_results()
+            # 刪除只會「移除」搜尋結果，不可能新增符合項，故一律走輕量的逐列存在性
+            # 檢查，避免重跑整個 Everything 查詢並重建模型而造成 GUI 凍結。
+            self._refresh_search_results_existence()
             return True
         return False
 
@@ -1325,7 +1359,12 @@ class FileManager(QMainWindow):
             return
 
         new_path = os.path.join(os.path.dirname(old_path), new_name)
-        if os.path.exists(new_path):
+        # Windows 上 os.path.exists 不分大小寫：把「同一檔案僅改大小寫」（如
+        # Report.txt → report.txt）誤判為目標已存在而報錯。改名為自己（含純大小寫
+        # 變更）不算衝突，交給 os.rename 處理；只有指向「不同」檔案時才視為已存在。
+        same_file = (os.path.normcase(os.path.normpath(new_path)) ==
+                     os.path.normcase(os.path.normpath(old_path)))
+        if not same_file and os.path.exists(new_path):
             QMessageBox.warning(self, "重新命名失敗", "目標名稱已存在。")
             self._search_item_rename_in_progress = True
             item.setText(old_name)
@@ -1345,8 +1384,9 @@ class FileManager(QMainWindow):
         item.setData(new_path, Qt.UserRole + 1)
         item.setText(os.path.basename(new_path))
         self._search_item_rename_in_progress = False
+        # 該列已就地更新為新名稱／新路徑，無須重跑整個 Everything 查詢並重建模型
+        # （那會造成 GUI 凍結）。只需刷新中間面板反映檔案系統異動即可。
         self.refresh_mid_panel()
-        self.refresh_current_search_results()
 
     def _show_search_context_menu(self, pos):
         """在 listView2 上顯示 Windows 檔案總管相同的右鍵選單。"""
@@ -1651,7 +1691,7 @@ class FileManager(QMainWindow):
             # 不可同步刷新：拖放來源（如搜尋面板 listView2）的 drag.exec_() 巢狀
             # 事件迴圈可能仍在堆疊上，立即重設其 model 會造成原生層存取已釋放物件
             # 而導致程式崩潰自關。改以延遲排程，等拖曳迴圈解開後再刷新。
-            self._schedule_panel_refreshes((600, 1500))
+            self._schedule_panel_refreshes((600, 1500), full_search=True)
             return True
 
         return False
@@ -1682,7 +1722,7 @@ class FileManager(QMainWindow):
         if watch_dirs:
             self._op_fs_watcher.addPaths(sorted(watch_dirs))
 
-        self._schedule_panel_refreshes((250, 900, 1800))
+        self._schedule_panel_refreshes((250, 900, 1800), full_search=True)
         QTimer.singleShot(4000, self._clear_operation_watch_dirs)
 
     def _clear_operation_watch_dirs(self):
@@ -1691,32 +1731,50 @@ class FileManager(QMainWindow):
             self._op_fs_watcher.removePaths(dirs)
 
     def _on_operation_dir_changed(self, _path: str):
-        """來源/目標目錄真的發生異動後，立即補刷中央與右側面板。"""
-        self._schedule_panel_refreshes((120, 450))
+        """來源/目標目錄真的發生異動後，立即補刷中央與右側面板。
+        此事件源自我們發起的貼上/移動操作，可能新增符合搜尋的檔案，故需完整重查。"""
+        self._schedule_panel_refreshes((120, 450), full_search=True)
 
-    def _schedule_panel_refreshes(self, delays_ms):
+    def _schedule_panel_refreshes(self, delays_ms, full_search=False):
         # 每次呼叫都重設計時器：最後一次呼叫後 max(delays_ms) ms 才真正執行，
         # 避免多個來源在短時間內連續觸發導致 update_search_results 被重複呼叫。
+        # full_search：本次排程是否需要重跑完整查詢（貼上/移動/新增等可能新增結果者）。
+        # 多來源合併到同一次刷新時，只要任一來源要求即保留 True。
+        if full_search:
+            self._pending_full_search = True
         self._panel_refresh_timer.start(max(delays_ms) if delays_ms else 500)
 
     def _do_scheduled_panel_refresh(self):
         if getattr(self.listView, '_drag_in_progress', False):
             self._panel_refresh_timer.start(400)
             return
+        do_full_search = self._pending_full_search
+        self._pending_full_search = False
         self.refresh_mid_panel()
-        self.refresh_current_search_results()
+        if do_full_search:
+            # 可能新增了符合搜尋條件的檔案，需重跑查詢才能讓新項目出現。
+            self.refresh_current_search_results()
+        else:
+            # 刪除/改名/外部異動：只剔除已不存在的列，省去整個 Everything 重查與重建。
+            self._refresh_search_results_existence()
 
     def _on_mid_dir_changed(self, _path: str):
         """QFileSystemWatcher 偵測到目錄內容異動（新增/刪除/改名）時自動刷新面板。"""
         self._schedule_panel_refreshes((300, 400))
 
-    def refresh_mid_panel(self):
-        """強制中間面板重新讀取目前目錄。
+    def refresh_mid_panel(self, force=False):
+        """讓中間面板反映目前目錄的最新內容。
 
-        問題根源：QFileSystemModel.setRootPath(同一路徑) 在 Qt 內部是 no-op。
-        解法：先重設為空路徑，再設回原目錄，強制模型重新讀取目錄內容。
-        優先從 listView.rootIndex() 取得實際顯示目錄
-        （雙擊導覽後 rootPath() 可能與實際顯示目錄不同）。
+        關鍵：QFileSystemModel 對其 rootPath 目錄已啟用內建監看，檔案新增/刪除/
+        改名會自動增刪、更新對應列，無須干預。先前無論如何都以 setRootPath("")
+        再設回原目錄「強制重載」，會清空整份清單再由背景 gatherer 重新串流，期間
+        FileSystemSortProxyModel 對每個項目呼叫 fileInfo() 比較排序，全在 GUI
+        執行緒上執行——目錄檔案一多就停頓數秒，使用者得等檔案面板更新完才能繼續操作。
+
+        因導覽（_navigate_to_path）已讓 rootPath 與顯示目錄同步，絕大多數刷新都是
+        「同一目錄」：此時直接交給內建監看，不重載即可即時反映且不卡頓。
+        force=True 才執行強制重讀（如手動重新整理），因 setRootPath(同路徑) 為
+        no-op，須先設空再設回。切換到不同目錄則直接 setRootPath 即可（非 no-op）。
         """
         if getattr(self.listView, '_drag_in_progress', False):
             return
@@ -1727,12 +1785,19 @@ class FileManager(QMainWindow):
             dir_path = self.fileListModel.rootPath()
         if not dir_path or not os.path.isdir(dir_path):
             return
-        # 強制重新載入：先設為 "" 使 Qt 認為路徑有變，再設回原目錄觸發實際掃描
-        self.fileListModel.setRootPath("")
+        self._watch_mid_dir(dir_path)
+
+        current_root = self.fileListModel.rootPath()
+        same_dir = (os.path.normcase(os.path.normpath(current_root or "")) ==
+                    os.path.normcase(os.path.normpath(dir_path)))
+        if same_dir:
+            if not force:
+                # 模型已監看此目錄，內容變動自動反映，無須重載（避免 GUI 停頓）。
+                return
+            # 明確要求強制重讀：setRootPath(同路徑) 是 no-op，須先設空再設回。
+            self.fileListModel.setRootPath("")
         new_idx = self.fileListModel.setRootPath(dir_path)
         self.listView.setRootIndex(self.file_proxy.mapFromSource(new_idx))
-        # setRootPath("") 不影響我們外部的 watcher，但確保仍在監看
-        self._watch_mid_dir(dir_path)
 
     def _current_dir(self):
         root_idx = self.listView.rootIndex()
@@ -1961,7 +2026,7 @@ class FileManager(QMainWindow):
 
     def _delete_selected_search_files(self):
         """將選取的檔案移至資源回收桶（Delete 鍵 / 備援選單）。"""
-        return self._delete_paths_to_recycle_bin(self._get_selected_search_paths(), refresh_search=True)
+        return self._delete_paths_to_recycle_bin(self._get_selected_search_paths())
 
     def on_new(self):
         # 保留舊功能（建立新檔案），但不再由工具列第一個按鈕觸發

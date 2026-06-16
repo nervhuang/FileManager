@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-06-17
+- Fix file-operation stalls and full-width-bracket search handling
+  - Eliminate the 2–3s UI freeze after create/delete/rename/move
+    - Disable the search proxy's dynamic sorting during result-model rebuild (per-`appendRow` re-sort was O(n²) for up to 2000 rows)
+    - Only re-run the full Everything query for operations that can add matches (paste/move/drop); delete/rename/external changes now do a lightweight row-existence reconcile instead
+    - Deduplicate redundant synchronous search refreshes triggered on drag-and-drop
+    - Stop the destructive `setRootPath("")` reload of the file panel; rely on `QFileSystemModel`'s built-in watcher to update the displayed directory incrementally
+  - Fix search-panel rename falsely reporting "name already exists" on case-only renames (Windows `os.path.exists` is case-insensitive; the file being renamed is no longer treated as a conflict)
+  - Recognize text inside full-width/CJK brackets and hyphen-separated terms when interpreting search keywords
+    - Query builder now also searches the de-bracketed inner text (single token directly; multiple tokens via Everything's native space-AND, plus a regex fallback)
+    - Match filter switched to token-subset so bracket-induced spacing no longer rejects valid matches
+    - `extract_keywords` (click a filename to auto-search) now recognizes full-width `（）［］｛｝` and CJK `【】〔〕「」『』〈〉《》` brackets, not just ASCII `([{`
+
 ## 2026-06-14
 - Fix multi-selection in the file and search panels
   - File panel: enable `ExtendedSelection` so multiple files can be selected (previously single-only)
