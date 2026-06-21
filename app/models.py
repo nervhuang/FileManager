@@ -25,7 +25,37 @@ class FileSystemSortProxyModel(QSortFilterProxyModel):
 
     另對外轉送 QFileSystemModel 常用方法（filePath/isDir/fileName/fileInfo/
     rootPath），參數皆為「本代理」的 index，內部自動 mapToSource，讓既有以
-    來源模型 API 操作 view index 的程式碼可直接改用本代理。"""
+    來源模型 API 操作 view index 的程式碼可直接改用本代理。
+
+    另支援「排除目錄」：set_excluded_dirs() 設定一組已正規化的絕對路徑後，
+    凡是落在這些目錄（或其子路徑）下的項目都不列出（filterAcceptsRow）。"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._excluded_dirs = ()
+
+    def set_excluded_dirs(self, dirs):
+        """設定要排除的目錄（已正規化的絕對路徑序列）；空序列代表不排除。"""
+        self._excluded_dirs = tuple(dirs)
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row, source_parent):
+        if not self._excluded_dirs:
+            return True
+        src = self.sourceModel()
+        if src is None:
+            return True
+        index = src.index(source_row, 0, source_parent)
+        path = os.path.normcase(os.path.normpath(src.filePath(index)))
+        for ex in self._excluded_dirs:
+            if path == ex:
+                return False
+            # 磁碟根目錄（如 C:\）normpath 後已帶尾端分隔符，不可再補一個，
+            # 否則 "c:\\" 變 "c:\\\\" 而永遠比對不到底下的檔案。
+            base = ex if ex.endswith(os.sep) else ex + os.sep
+            if path.startswith(base):
+                return False
+        return True
 
     def lessThan(self, left, right):
         src = self.sourceModel()

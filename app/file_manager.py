@@ -16,6 +16,8 @@ from PyQt5.QtWidgets import (
     QHBoxLayout, QVBoxLayout, QAction, QMessageBox, QStyle,
     QToolButton, QSplitter, QSizePolicy, QFileIconProvider,
     QAbstractItemView, QMenu, QComboBox,
+    QDialog, QCheckBox, QListWidget, QFileDialog, QDialogButtonBox,
+    QPushButton, QLabel,
 )
 from PyQt5.QtCore import QDir, Qt, QSize, QFileInfo, QEvent, QTimer, QFileSystemWatcher, QPoint, QItemSelectionModel, QMimeData, QUrl
 from PyQt5.QtGui import QKeySequence, QIcon, QFont, QPixmap, QPainter, QColor, QPalette, QStandardItem, QPen, QLinearGradient
@@ -51,6 +53,71 @@ def _runtime_root():
     return os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 
+class ExcludeSettingsDialog(QDialog):
+    """排除設定對話框：勾選是否啟用排除清單，並維護「不列出的目錄」清單。
+
+    被排除的目錄（及其子路徑）不會在中間檔案面板與右側搜尋結果中列出。"""
+
+    def __init__(self, enabled, dirs, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("排除設定")
+        self.resize(560, 420)
+
+        layout = QVBoxLayout(self)
+
+        self.enable_checkbox = QCheckBox("啟用排除清單", self)
+        self.enable_checkbox.setChecked(bool(enabled))
+        layout.addWidget(self.enable_checkbox)
+
+        layout.addWidget(QLabel("排除的目錄（這些目錄及其內容不會列出）：", self))
+
+        body = QHBoxLayout()
+        self.dir_list = QListWidget(self)
+        self.dir_list.addItems(list(dirs))
+        body.addWidget(self.dir_list, 1)
+
+        button_col = QVBoxLayout()
+        self.add_button = QPushButton("新增資料夾...", self)
+        self.remove_button = QPushButton("移除", self)
+        self.add_button.clicked.connect(self._on_add_folder)
+        self.remove_button.clicked.connect(self._on_remove)
+        button_col.addWidget(self.add_button)
+        button_col.addWidget(self.remove_button)
+        button_col.addStretch(1)
+        body.addLayout(button_col)
+        layout.addLayout(body)
+
+        self.dir_list.currentRowChanged.connect(self._update_buttons)
+        self._update_buttons()
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _update_buttons(self, *args):
+        self.remove_button.setEnabled(self.dir_list.currentRow() >= 0)
+
+    def _on_add_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "選擇要排除的資料夾")
+        if not folder:
+            return
+        folder = os.path.normpath(folder)
+        existing = {os.path.normcase(self.dir_list.item(i).text())
+                    for i in range(self.dir_list.count())}
+        if os.path.normcase(folder) not in existing:
+            self.dir_list.addItem(folder)
+
+    def _on_remove(self):
+        row = self.dir_list.currentRow()
+        if row >= 0:
+            self.dir_list.takeItem(row)
+
+    def result_values(self):
+        dirs = [self.dir_list.item(i).text() for i in range(self.dir_list.count())]
+        return self.enable_checkbox.isChecked(), dirs
+
+
 class FileManager(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -63,6 +130,11 @@ class FileManager(QMainWindow):
         )
         self.search_model = None
         self.sdk_warned = False
+        # 排除目錄設定：被排除的目錄（及其子路徑）不在中間面板與搜尋結果中列出。
+        # _exclude_dirs 保存使用者原始路徑（供顯示），_exclude_norm 為比對用正規化路徑。
+        self._exclude_enabled = False
+        self._exclude_dirs = []
+        self._exclude_norm = ()
         self._search_drag_button = Qt.NoButton
         self._toolbar_icon_size = QSize(48, 48)
         self._nav_history = []
@@ -452,6 +524,21 @@ class FileManager(QMainWindow):
         self.layout_vertical_button = make_panel_nav_button(vertical_layout_icon, "上下排列", lambda: self._set_right_panel_layout(Qt.Orientation.Vertical))
         toolbar_layout.addWidget(self.layout_vertical_button)
         toolbar_layout.addSpacing(layout_gap)
+
+        # 下拉式功能表（漢堡選單）：目前提供「選項…」開啟排除設定。
+        self.menu_button = QToolButton(self)
+        self.menu_button.setIcon(self._make_menu_icon())
+        self.menu_button.setIconSize(self._toolbar_icon_size)
+        self.menu_button.setToolTip("功能表")
+        self.menu_button.setAutoRaise(True)
+        self.menu_button.setPopupMode(QToolButton.InstantPopup)
+        self.main_menu = QMenu(self.menu_button)
+        option_action = self.main_menu.addAction("選項…")
+        option_action.triggered.connect(self._open_exclude_dialog)
+        self.menu_button.setMenu(self.main_menu)
+        toolbar_layout.addWidget(self.menu_button)
+        toolbar_layout.addSpacing(layout_gap)
+
         self.left_drive_combo = TreeComboBox(self)
         self.left_drive_combo.setEditable(True)
         self.left_drive_combo.setInsertPolicy(QComboBox.NoInsert)
@@ -716,6 +803,20 @@ class FileManager(QMainWindow):
             if self._rename_selected_focused_item():
                 return
 
+        # F5 刷新：搜尋面板有焦點 → 重新查詢；檔案面板/目錄樹有焦點 → 重整檔案列表；
+        # 無明確焦點 → 兩者都刷新，確保 F5 永遠有作用。
+        if e.key() == Qt.Key.Key_F5:
+            view = self._focused_file_view()
+            if view is self.listView2:
+                self.refresh_current_search_results()
+            elif view in (self.listView, self.treeView):
+                self.refresh_mid_panel(force=True)
+            else:
+                self.refresh_mid_panel(force=True)
+                self.refresh_current_search_results()
+            e.accept()
+            return
+
         # F3/F4 縮減搜尋關鍵字範圍，其他鍵不觸發檔案式搜尋
         if e.key() == Qt.Key.Key_F3 and ref_e - ref_s > 0:
             ref_s = ref_s + 1
@@ -756,6 +857,58 @@ class FileManager(QMainWindow):
 
         keywords = [keyword.strip() for keyword in keywords if keyword.strip()]
         return keywords
+
+    def _make_menu_icon(self):
+        """畫一個漢堡選單（三條橫線）圖示給下拉式功能表按鈕使用。"""
+        size = self._toolbar_icon_size
+        pix = QPixmap(size)
+        pix.fill(Qt.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = size.width(), size.height()
+        pen = QPen(self.palette().color(QPalette.WindowText), max(2, h // 16),
+                   Qt.SolidLine, Qt.RoundCap)
+        p.setPen(pen)
+        margin = w // 4
+        for frac in (0.34, 0.5, 0.66):
+            y = int(h * frac)
+            p.drawLine(margin, y, w - margin, y)
+        p.end()
+        return QIcon(pix)
+
+    def _open_exclude_dialog(self):
+        dialog = ExcludeSettingsDialog(self._exclude_enabled, self._exclude_dirs, self)
+        if dialog.exec_() == QDialog.Accepted:
+            enabled, dirs = dialog.result_values()
+            self._exclude_enabled = enabled
+            self._exclude_dirs = dirs
+            self._apply_exclude_settings()
+            self.save_config()
+
+    def _apply_exclude_settings(self):
+        """依目前排除設定更新比對用路徑，並重整檔案面板與搜尋結果。"""
+        if self._exclude_enabled:
+            self._exclude_norm = tuple(
+                os.path.normcase(os.path.normpath(d)) for d in self._exclude_dirs if d
+            )
+        else:
+            self._exclude_norm = ()
+        if self.file_proxy is not None:
+            self.file_proxy.set_excluded_dirs(self._exclude_norm)
+        self.refresh_current_search_results()
+
+    def _is_path_excluded(self, path):
+        if not self._exclude_norm:
+            return False
+        norm = os.path.normcase(os.path.normpath(path))
+        for ex in self._exclude_norm:
+            if norm == ex:
+                return True
+            # 磁碟根目錄（如 C:\）normpath 後已帶尾端分隔符，避免補成雙分隔符。
+            base = ex if ex.endswith(os.sep) else ex + os.sep
+            if norm.startswith(base):
+                return True
+        return False
 
     def _on_left_tab_switched(self, path):
         """切換左側頁籤：導航目錄樹至儲存的路徑。"""
@@ -941,12 +1094,15 @@ class FileManager(QMainWindow):
 
     def _normalize_plain_keyword_text(self, text):
         normalized = unicodedata.normalize('NFKC', text or '').casefold()
-        collapsed = re.sub(r'[^\w]+', ' ', normalized, flags=re.UNICODE)
+        # 連字號（-）與點（.）不視為分隔符：像「A-10」「ver.2」「a.b.c」這類關鍵字
+        # 需整體保留，不可被拆開。NFKC 已把全形 －／．正規化為半形 -／.。
+        collapsed = re.sub(r'[^\w.-]+', ' ', normalized, flags=re.UNICODE)
         return ' '.join(collapsed.split())
 
     def _plain_keyword_tokens(self, term):
         normalized = self._normalize_plain_keyword_text(self._strip_search_term_quotes(term))
-        return [token for token in normalized.split(' ') if token]
+        # 過濾只剩連字號／點的孤立 token（如「tsf - saeki」中間的 -），避免污染查詢。
+        return [token for token in normalized.split(' ') if token.strip('.-')]
 
     def _build_plain_keyword_queries(self, term):
         raw_term = self._strip_search_term_quotes(term)
@@ -1051,6 +1207,9 @@ class FileManager(QMainWindow):
     def update_search_results(self, results):
         if self.search_model is None:
             return
+        # 排除設定啟用時，濾掉落在被排除目錄（及其子路徑）下的結果。
+        if self._exclude_norm:
+            results = [p for p in results if not self._is_path_excluded(p)]
         self._search_model_updating = True
         rows = []
         for filepath in results:
@@ -2136,6 +2295,17 @@ class FileManager(QMainWindow):
         self._apply_font_size(max(6, min(saved_font_size, 72)))
         self.update_status_bar()
 
+        # 還原排除目錄設定（須在還原頁籤觸發搜尋之前，過濾才會生效）
+        self._exclude_enabled = cfg.getboolean('Exclude', 'enabled', fallback=False)
+        raw_exclude = cfg.get('Exclude', 'dirs', fallback='')
+        if raw_exclude:
+            try:
+                loaded = json.loads(raw_exclude)
+                self._exclude_dirs = [str(d) for d in loaded if d]
+            except Exception:
+                self._exclude_dirs = []
+        self._apply_exclude_settings()
+
         # 還原左側目錄樹選取的目錄
         left_dir = cfg.get('General', 'left_dir', fallback='')
         if left_dir and os.path.isdir(left_dir):
@@ -2294,6 +2464,12 @@ class FileManager(QMainWindow):
             cfg.add_section('Sort')
         if not cfg.has_section('Tabs'):
             cfg.add_section('Tabs')
+        if not cfg.has_section('Exclude'):
+            cfg.add_section('Exclude')
+
+        # 儲存排除目錄設定
+        cfg.set('Exclude', 'enabled', 'true' if self._exclude_enabled else 'false')
+        cfg.set('Exclude', 'dirs', json.dumps(self._exclude_dirs, ensure_ascii=False))
 
         # 儲存右側 combobox 歷史（最多 20 筆）
         history = [self.right_info_combo.itemText(i) for i in range(self.right_info_combo.count())]
