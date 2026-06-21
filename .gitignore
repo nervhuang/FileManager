@@ -11,3 +11,5 @@ debug_err.txt
 crash.log
 perf.log
 file_index_cache.dat
+config.ini
+.codegraph/
