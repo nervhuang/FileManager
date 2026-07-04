@@ -1,16 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_submodules
-
-hiddenimports = ['PyQt5.QtSvg']
-hiddenimports += collect_submodules('PyQt5.QtSvg')
-
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('config.ini', '.'), ('resources/icons', 'resources/icons')],
-    hiddenimports=hiddenimports,
+    datas=[('config.ini', '.'), ('icon.ico', '.')],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

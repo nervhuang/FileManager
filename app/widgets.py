@@ -287,20 +287,24 @@ class PathTabBar(QWidget):
         self._add_btn.setFixedSize(bar_height, bar_height)
         self.setFixedHeight(bar_height)
 
-    def _internal_add(self, data, label):
+    def _internal_add(self, data, label, index=None):
         prev = self._emit_on_change
         self._emit_on_change = False
-        idx = self.tab_bar.addTab(label)
-        self._tab_data.append(data)
+        if index is None:
+            idx = self.tab_bar.addTab(label)
+            self._tab_data.append(data)
+        else:
+            idx = self.tab_bar.insertTab(index, label)
+            self._tab_data.insert(index, data)
         self._emit_on_change = prev
         return idx
 
-    def add_tab(self, data="", label=""):
+    def add_tab(self, data="", label="", index=None):
         display = label or (data if data else "新頁籤")
-        self._internal_add(data, display)
+        idx = self._internal_add(data, display, index)
         self._emit_on_change = True
-        self.tab_bar.setCurrentIndex(self.tab_bar.count() - 1)
-        return self.tab_bar.count() - 1
+        self.tab_bar.setCurrentIndex(idx)
+        return idx
 
     def set_current_data(self, data, label=""):
         idx = self.tab_bar.currentIndex()

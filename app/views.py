@@ -8,26 +8,6 @@ from PyQt5.QtCore import Qt, QItemSelection, QItemSelectionModel, QMimeData, QUr
 from PyQt5.QtGui import QDrag, QPixmap, QPainter, QColor, QIcon, QFont
 
 
-class CustomTreeView(QTreeView):
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.expanded_indexes = set()
-        self.expanding_in_progress = False
-
-    def mouseDoubleClickEvent(self, event):
-        index = self.indexAt(event.pos())
-        if index.isValid() and index not in self.expanded_indexes:
-            self.setExpanded(index, not self.isExpanded(index))
-            self.expanded_indexes.add(index)
-
-    def setExpanded(self, index, expanded):
-        if not self.expanding_in_progress:
-            self.expanding_in_progress = True
-            super().setExpanded(index, expanded)
-            self.expanding_in_progress = False
-
-
 class _ShellDropMixin:
     """共用的 Windows Shell 拖放方法，供 SearchListView 與 FileListView 繼承使用。"""
 

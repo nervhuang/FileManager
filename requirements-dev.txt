@@ -1,0 +1,1 @@
+Pillow>=10  # scripts/generate_icon.py 產生 icon.ico/png 用
