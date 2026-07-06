@@ -328,6 +328,16 @@ class PathTabBar(QWidget):
             self._tab_data.pop(index)
             self._emit_on_change = prev
 
+    def close_current_tab(self):
+        """關閉目前分頁（至少保留一個），關閉後切換至相鄰分頁並發出 tab_switched，
+        讓面板內容更新為新目前分頁的資料。供 Ctrl+W 熱鍵使用。"""
+        if self.tab_bar.count() <= 1:
+            return
+        self._on_close_tab(self.tab_bar.currentIndex())
+        new_idx = self.tab_bar.currentIndex()
+        if self._emit_on_change and 0 <= new_idx < len(self._tab_data):
+            self.tab_switched.emit(self._tab_data[new_idx])
+
     def _on_tab_moved(self, from_index, to_index):
         self._tab_data.insert(to_index, self._tab_data.pop(from_index))
         self._tab_moved_during_drag = True

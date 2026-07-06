@@ -3,6 +3,16 @@ import ctypes.wintypes as wt
 import os
 import struct
 import time
+from collections import namedtuple
+
+
+# 單筆搜尋結果：路徑與 Everything 索引中既有的中繼資料。
+# 直接由 IPC 回覆取得，免去對每筆結果逐一 os.stat 的磁碟 I/O。
+SearchResult = namedtuple('SearchResult', ('path', 'is_dir', 'size', 'mtime'))
+
+# FILETIME（1601-01-01 起算的 100ns）轉 Unix epoch 的偏移量
+_FILETIME_EPOCH_DELTA = 116444736000000000
+_FILETIME_UNKNOWN = 0xFFFFFFFFFFFFFFFF
 
 
 class EverythingSDK:
@@ -11,6 +21,9 @@ class EverythingSDK:
     WM_COPYDATA = 0x004A
     EVERYTHING_IPC_COPYDATA_QUERY2W = 18
     EVERYTHING_REQUEST_FULL_PATH_AND_FILE_NAME = 0x00000004
+    EVERYTHING_REQUEST_SIZE = 0x00000010
+    EVERYTHING_REQUEST_DATE_MODIFIED = 0x00000040
+    EVERYTHING_IPC_FOLDER = 0x00000001
 
     # Window class names for different Everything versions
     _IPC_WNDCLASS_15A = "EVERYTHING_TASKBAR_NOTIFICATION_(1.5a)"
@@ -81,7 +94,11 @@ class EverythingSDK:
         return self._user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
     def _parse_ipc2_response(self, data):
-        """Parse EVERYTHING_IPC_LIST2 response data."""
+        """Parse EVERYTHING_IPC_LIST2 response data.
+
+        每筆 item 的資料區依 request flags 的位元順序排列：
+        full_path 字串區塊（DWORD 字元數不含結尾 null，後接含 null 的 WCHAR 陣列）、
+        size（8 bytes LARGE_INTEGER）、date_modified（8 bytes FILETIME）。"""
         if len(data) < 20:
             return
         totitems, numitems, offset, req_flags, sort_type = struct.unpack_from('<IIIII', data, 0)
@@ -96,9 +113,21 @@ class EverythingSDK:
             str_len_chars = struct.unpack_from('<I', data, data_offset)[0]
             str_start = data_offset + 4
             str_bytes = str_len_chars * 2
-            if str_start + str_bytes <= len(data):
-                full_path = data[str_start:str_start + str_bytes].decode('utf-16-le', errors='replace')
-                self._ipc_results.append(full_path)
+            if str_start + str_bytes > len(data):
+                continue
+            full_path = data[str_start:str_start + str_bytes].decode('utf-16-le', errors='replace')
+
+            size = 0
+            mtime = 0
+            meta_off = str_start + str_bytes + 2  # 跳過字串的 null 結尾
+            if meta_off + 16 <= len(data):
+                size, filetime = struct.unpack_from('<qQ', data, meta_off)
+                if size < 0:  # 資料夾大小未索引時 Everything 回傳 -1
+                    size = 0
+                if 0 < filetime < _FILETIME_UNKNOWN and filetime > _FILETIME_EPOCH_DELTA:
+                    mtime = (filetime - _FILETIME_EPOCH_DELTA) / 10000000
+            is_dir = bool(flags & self.EVERYTHING_IPC_FOLDER)
+            self._ipc_results.append(SearchResult(full_path, is_dir, size, mtime))
 
     def _find_everything_hwnd(self):
         """Find Everything IPC window (1.5a or 1.4)."""
@@ -138,7 +167,7 @@ class EverythingSDK:
         return bool(self._find_everything_hwnd())
 
     def query(self, search_text, max_results=200):
-        """Query Everything via IPC2 (WM_COPYDATA)."""
+        """Query Everything via IPC2 (WM_COPYDATA)。回傳 SearchResult 清單。"""
         self._ipc_results = []
         self._ipc_got_reply = False
 
@@ -154,8 +183,11 @@ class EverythingSDK:
         # Build EVERYTHING_IPC_QUERY2: reply_hwnd, reply_msg, search_flags, offset, max, req_flags, sort
         search_bytes = search_text.encode('utf-16-le') + b'\x00\x00'
         reply_hwnd_32 = self._reply_hwnd & 0xFFFFFFFF
+        request_flags = (self.EVERYTHING_REQUEST_FULL_PATH_AND_FILE_NAME
+                         | self.EVERYTHING_REQUEST_SIZE
+                         | self.EVERYTHING_REQUEST_DATE_MODIFIED)
         header = struct.pack('<IIIIIII', reply_hwnd_32, 0, 0, 0, max_results,
-                             self.EVERYTHING_REQUEST_FULL_PATH_AND_FILE_NAME, 1)
+                             request_flags, 1)
         query_data = header + search_bytes
         data_buf = ctypes.create_string_buffer(query_data)
 

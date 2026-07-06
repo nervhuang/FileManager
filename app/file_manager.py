@@ -23,7 +23,6 @@ from PyQt5.QtCore import QDir, Qt, QSize, QFileInfo, QEvent, QTimer, QFileSystem
 from PyQt5.QtGui import QKeySequence, QIcon, QFont, QPixmap, QPainter, QColor, QStandardItem, QPen, QLinearGradient
 
 from .everything_sdk import EverythingSDK
-from .file_index import FileMetadataCache
 from .models import DrivesSortProxyModel, SearchSortProxyModel, SearchResultsModel, FileSystemSortProxyModel
 from .views import SearchListView, FileListView
 from .widgets import PathTabBar, TreeComboBox
@@ -115,11 +114,13 @@ class FileManager(QMainWindow):
         super().__init__()
 
         self.everything = EverythingSDK()
-        # 開啟時於背景預載固定磁碟的檔案中繼資料，加速搜尋結果渲染。
-        # 索引會存到磁碟，下次開啟直接載入（秒級），不必每次重掃幾分鐘。
-        self.file_index = FileMetadataCache(
-            cache_path=os.path.join(_runtime_root(), 'file_index_cache.dat')
-        )
+        # 搜尋結果的 is_dir/size/mtime 直接由 Everything IPC 查詢回傳（其索引本身
+        # 就有這些欄位），不再於啟動時自建全碟中繼資料快取。清掉舊版遺留的快取檔。
+        for leftover in ('file_index_cache.dat', 'file_index_cache.dat.tmp'):
+            try:
+                os.remove(os.path.join(_runtime_root(), leftover))
+            except OSError:
+                pass
         self.search_model = None
         self.sdk_warned = False
         # 排除目錄設定：被排除的目錄（及其子路徑）不在中間面板與搜尋結果中列出。
@@ -160,8 +161,6 @@ class FileManager(QMainWindow):
         self._op_fs_watcher = QFileSystemWatcher(self)
         self._op_fs_watcher.directoryChanged.connect(self._on_operation_dir_changed)
         self.initUI()
-        # 背景開始掃描磁碟建立中繼資料快取（daemon 執行緒，不阻塞 UI）
-        self.file_index.start()
 
     def initUI(self):
         self.setWindowTitle("文件管理器")
@@ -203,6 +202,23 @@ class FileManager(QMainWindow):
         action_open.triggered.connect(self.on_font_decrease)
         self.addAction(action_new)
         self.addAction(action_open)
+
+        # 分頁切換熱鍵：下一個 Ctrl+PageDown、上一個 Ctrl+PageUp（檔案/搜尋面板皆適用）。
+        # 以 QAction 註冊（WindowShortcut），優先於清單視圖對 PageUp/Down 的預設處理。
+        action_next_tab = QAction("下一個分頁", self)
+        action_next_tab.setShortcut(QKeySequence("Ctrl+PgDown"))
+        action_next_tab.triggered.connect(lambda: self._switch_tab(1))
+        action_prev_tab = QAction("上一個分頁", self)
+        action_prev_tab.setShortcut(QKeySequence("Ctrl+PgUp"))
+        action_prev_tab.triggered.connect(lambda: self._switch_tab(-1))
+        self.addAction(action_next_tab)
+        self.addAction(action_prev_tab)
+
+        # 關閉目前分頁：Ctrl+W（檔案/搜尋面板皆適用，至少保留一個分頁）。
+        action_close_tab = QAction("關閉分頁", self)
+        action_close_tab.setShortcut(QKeySequence("Ctrl+W"))
+        action_close_tab.triggered.connect(self._close_current_tab)
+        self.addAction(action_close_tab)
 
         def make_up_folder_icon():
             size = self._toolbar_icon_size
@@ -1009,11 +1025,11 @@ class FileManager(QMainWindow):
         for term in terms:
             for query_text in self._build_plain_keyword_queries(term):
                 max_results = 2000 if query_text.startswith('regex:') or query_text == self._strip_search_term_quotes(term) else 800
-                for path in self.everything.query(query_text, max_results=max_results):
-                    if path in seen or not self._path_matches_plain_keyword(path, term):
+                for item in self.everything.query(query_text, max_results=max_results):
+                    if item.path in seen or not self._path_matches_plain_keyword(item.path, term):
                         continue
-                    seen.add(path)
-                    results.append(path)
+                    seen.add(item.path)
+                    results.append(item)
         return results
 
     def _do_search(self, search_command):
@@ -1040,28 +1056,17 @@ class FileManager(QMainWindow):
             )
         subprocess.Popen('"Everything.exe" -search "' + normalized_command.replace('"', '\\"') + '"', shell=True)
 
-    def _search_result_metadata(self, filepath):
-        """回傳 (is_dir, size, mtime)。優先讀開啟時預載的磁碟快取，
-        未命中（新檔案或尚未掃到）才 fallback 到 os.stat。"""
-        cached = self.file_index.lookup(filepath)
-        if cached is not None:
-            return cached
-        try:
-            stat_result = os.stat(filepath)
-            return os.path.isdir(filepath), stat_result.st_size, stat_result.st_mtime
-        except OSError:
-            return False, 0, 0
-
     def update_search_results(self, results):
+        """results 為 everything_sdk.SearchResult 清單，中繼資料由 Everything
+        查詢直接回傳，不需逐筆 os.stat。"""
         if self.search_model is None:
             return
         # 排除設定啟用時，濾掉落在被排除目錄（及其子路徑）下的結果。
         if self._exclude_norm:
-            results = [p for p in results if not self._is_path_excluded(p)]
+            results = [r for r in results if not self._is_path_excluded(r.path)]
         self._search_model_updating = True
         rows = []
-        for filepath in results:
-            is_dir, size, mtime = self._search_result_metadata(filepath)
+        for filepath, is_dir, size, mtime in results:
 
             name_item = QStandardItem(os.path.basename(filepath))
             name_item.setData(filepath, Qt.UserRole + 1)
@@ -1861,6 +1866,26 @@ class FileManager(QMainWindow):
             # 檔案分頁：資料為空，切換時由 _on_mid_tab_switched 顯示所有磁碟機。
             self.mid_tab_bar.add_tab("", "本機", index=0)
 
+    def _switch_tab(self, delta):
+        """在目前操作焦點所在的面板切換分頁（環狀）。
+
+        delta=+1 下一個（Ctrl+PageDown）、-1 上一個（Ctrl+PageUp）；
+        檔案面板與搜尋面板皆適用，依 _active_panel 決定作用對象。
+        """
+        tab_bar = (self.right_tab_bar if self._active_panel == 'right' else self.mid_tab_bar).tab_bar
+        count = tab_bar.count()
+        if count <= 1:
+            return
+        tab_bar.setCurrentIndex((tab_bar.currentIndex() + delta) % count)
+
+    def _close_current_tab(self):
+        """關閉目前操作焦點所在面板的目前分頁（至少保留一個）。
+
+        檔案面板與搜尋面板皆適用，依 _active_panel 決定作用對象。
+        """
+        tab_widget = self.right_tab_bar if self._active_panel == 'right' else self.mid_tab_bar
+        tab_widget.close_current_tab()
+
     def _set_right_panel_layout(self, orientation):
         if self.right_splitter is None:
             return
@@ -2399,8 +2424,6 @@ class FileManager(QMainWindow):
             cfg.write(f)
 
     def closeEvent(self, event):
-        # 等背景執行緒把索引寫回磁碟（含本次新掃到的部分），下次開啟可快速載入
-        self.file_index.stop(wait_timeout=15)
         self.save_config()
         super().closeEvent(event)
 
