@@ -12,20 +12,20 @@ import unicodedata
 from datetime import datetime
 
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QTreeView, QFileSystemModel, QWidget,
+    QApplication, QMainWindow, QFileSystemModel, QWidget,
     QHBoxLayout, QVBoxLayout, QAction, QMessageBox, QStyle,
     QToolButton, QSplitter, QSizePolicy, QFileIconProvider,
     QAbstractItemView, QMenu, QComboBox,
     QDialog, QCheckBox, QListWidget, QFileDialog, QDialogButtonBox,
-    QPushButton, QLabel, QActionGroup,
+    QPushButton, QLabel, QActionGroup, QShortcut, QFrame,
 )
 from PyQt5.QtCore import QDir, Qt, QSize, QFileInfo, QEvent, QTimer, QFileSystemWatcher, QPoint, QItemSelectionModel, QMimeData, QUrl
 from PyQt5.QtGui import QKeySequence, QIcon, QFont, QPixmap, QPainter, QColor, QStandardItem, QPen, QLinearGradient
 
 from .everything_sdk import EverythingSDK
-from .models import DrivesSortProxyModel, SearchSortProxyModel, SearchResultsModel, FileSystemSortProxyModel
+from .models import SearchSortProxyModel, SearchResultsModel, FileSystemSortProxyModel
 from .views import SearchListView, FileListView
-from .widgets import PathTabBar, TreeComboBox
+from .widgets import PathTabBar, BreadcrumbBar
 
 ref_s = 0
 ref_e = 1
@@ -129,7 +129,7 @@ class FileManager(QMainWindow):
         self._exclude_dirs = []
         self._exclude_norm = ()
         self._search_drag_button = Qt.NoButton
-        self._toolbar_icon_size = QSize(48, 48)
+        self._toolbar_icon_size = QSize(64, 64)
         self._nav_history = []
         self._nav_history_index = -1
         self._search_model_updating = False
@@ -165,23 +165,6 @@ class FileManager(QMainWindow):
     def initUI(self):
         self.setWindowTitle("文件管理器")
         self.setGeometry(100, 100, 800, 600)
-
-        # 目錄樹模型：供位址列的樹狀下拉（path_combo）瀏覽磁碟機與資料夾
-        root_path = ""
-        self.model = QFileSystemModel()
-        self.model.setReadOnly(False)
-        self.model.setRootPath(root_path)
-
-        # 只顯示目錄和磁碟機，不顯示檔案
-        self.model.setFilter(QDir.Dirs | QDir.Drives | QDir.NoDotAndDotDot)
-
-        # 以 proxy model 讓磁碟機依字母排序
-        self.tree_proxy = DrivesSortProxyModel(self)
-        self.tree_proxy.setSourceModel(self.model)
-        self.tree_proxy.setSortCaseSensitivity(Qt.CaseInsensitive)
-        self.tree_proxy.sort(0, Qt.AscendingOrder)
-
-        root_idx = self.tree_proxy.mapFromSource(self.model.index(root_path))
 
         # 保留快捷鍵 action，供 Ctrl +/- 與其他輸入路徑重用
         action_new = QAction("字型放大", self)
@@ -395,6 +378,8 @@ class FileManager(QMainWindow):
             button.setIconSize(self._toolbar_icon_size)
             button.setToolTip(tooltip)
             button.setAutoRaise(True)
+            # 工具列按鈕不搶走清單焦點，_focused_file_view() 才能持續抓到操作面板
+            button.setFocusPolicy(Qt.NoFocus)
             button.clicked.connect(handler)
             return button
 
@@ -432,41 +417,109 @@ class FileManager(QMainWindow):
             (QStyle.StandardPixmap.SP_FileDialogNewFolder, "新增資料夾", self._create_folder_in_current_dir),
         ])
         toolbar_layout = self.mid_panel_toolbar.layout()
-        layout_gap = max(8, self._toolbar_icon_size.width() // 2)
-        toolbar_layout.addSpacing(layout_gap)
+        toolbar_layout.setSpacing(6)  # 加大圖示後放寬按鈕間距，畫面更透氣
+
+        def make_vsep():
+            """群組之間的垂直分隔線（Explorer 風格分區）。"""
+            sep = QFrame(self)
+            sep.setFrameShape(QFrame.VLine)
+            sep.setFrameShadow(QFrame.Plain)
+            sep.setStyleSheet("color: rgba(127, 127, 127, 0.40);")
+            sep.setFixedWidth(2)
+            return sep
+
+        # Phase B：檔案總管風格的操作按鈕（圖示＋文字），作用於目前焦點面板。
+        def make_glyph_icon(kind):
+            size = self._toolbar_icon_size
+            pix = QPixmap(size)
+            pix.fill(Qt.transparent)
+            p = QPainter(pix)
+            p.setRenderHint(QPainter.Antialiasing)
+            w, h = size.width(), size.height()
+            ink = QColor("#4a4a4a")
+            p.setPen(QPen(ink, 2.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            p.setBrush(Qt.NoBrush)
+
+            def pt(fx, fy):
+                return QPoint(int(w * fx), int(h * fy))
+
+            if kind == "copy":
+                p.drawRect(int(w * 0.22), int(h * 0.18), int(w * 0.38), int(h * 0.44))
+                p.setBrush(QColor("#ffffff"))
+                p.drawRect(int(w * 0.38), int(h * 0.34), int(w * 0.38), int(h * 0.44))
+            elif kind == "cut":
+                p.drawLine(pt(0.30, 0.28), pt(0.74, 0.62))
+                p.drawLine(pt(0.74, 0.30), pt(0.30, 0.64))
+                r = int(w * 0.13)
+                p.drawEllipse(int(w * 0.20), int(h * 0.60), r, r)
+                p.drawEllipse(int(w * 0.66), int(h * 0.60), r, r)
+            elif kind == "paste":
+                p.setBrush(QColor("#ffffff"))
+                p.drawRoundedRect(int(w * 0.24), int(h * 0.22), int(w * 0.50), int(h * 0.58), 4, 4)
+                p.setBrush(ink)
+                p.drawRoundedRect(int(w * 0.40), int(h * 0.13), int(w * 0.20), int(h * 0.13), 2, 2)
+                p.setPen(QPen(ink, 1.6, Qt.SolidLine, Qt.RoundCap))
+                p.drawLine(pt(0.33, 0.44), pt(0.65, 0.44))
+                p.drawLine(pt(0.33, 0.56), pt(0.65, 0.56))
+                p.drawLine(pt(0.33, 0.68), pt(0.55, 0.68))
+            elif kind == "rename":
+                p.drawLine(pt(0.24, 0.76), pt(0.68, 0.32))
+                p.setBrush(ink)
+                p.drawPolygon(pt(0.18, 0.82), pt(0.30, 0.78), pt(0.24, 0.70))
+                p.setBrush(Qt.NoBrush)
+                p.drawLine(pt(0.60, 0.24), pt(0.76, 0.40))
+            p.end()
+            return QIcon(pix)
+
+        def make_action_button(icon, text, handler):
+            btn = QToolButton(self)
+            if isinstance(icon, QIcon):
+                btn.setIcon(icon)
+            else:
+                btn.setIcon(QApplication.style().standardIcon(icon))
+            btn.setIconSize(self._toolbar_icon_size)
+            btn.setText(text)
+            btn.setToolTip(text)
+            btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            btn.setAutoRaise(True)
+            btn.setFocusPolicy(Qt.NoFocus)
+            # 文字與加大的圖示等比放大，避免頭大身小
+            f = btn.font()
+            f.setPointSize(14)
+            btn.setFont(f)
+            btn.clicked.connect(handler)
+            return btn
+
+        self.act_cut = make_action_button(make_glyph_icon("cut"), "剪下", self._cut_selected_paths_from_focused_view)
+        self.act_copy = make_action_button(make_glyph_icon("copy"), "複製", self._copy_selected_paths_from_focused_view)
+        self.act_paste = make_action_button(make_glyph_icon("paste"), "貼上", self._paste_from_toolbar)
+        self.act_rename = make_action_button(make_glyph_icon("rename"), "重新命名", self._rename_selected_focused_item)
+        self.act_delete = make_action_button(QStyle.StandardPixmap.SP_TrashIcon, "刪除", self._delete_selected_focused_items)
+        self.act_refresh = make_action_button(QStyle.StandardPixmap.SP_BrowserReload, "重新整理", lambda: self.refresh_mid_panel(force=True))
+        # 上下/左右排列鈕緊接「新增資料夾」，排在操作按鈕左邊
         self.layout_horizontal_button = make_panel_nav_button(horizontal_layout_icon, "左右排列", lambda: self._set_right_panel_layout(Qt.Orientation.Horizontal))
         toolbar_layout.addWidget(self.layout_horizontal_button)
         self.layout_vertical_button = make_panel_nav_button(vertical_layout_icon, "上下排列", lambda: self._set_right_panel_layout(Qt.Orientation.Vertical))
         toolbar_layout.addWidget(self.layout_vertical_button)
-        toolbar_layout.addSpacing(layout_gap)
+        for _btn in (self.act_cut, self.act_copy, self.act_paste, self.act_rename, self.act_delete, self.act_refresh):
+            toolbar_layout.addWidget(_btn)
+        # 麵包屑改到工具列下方獨立一行，這裡以彈性空間讓按鈕維持靠左
+        toolbar_layout.addStretch(1)
+        # 三組分隔線：導覽 ┃ 新增+排列 ┃ 操作
+        toolbar_layout.insertWidget(toolbar_layout.indexOf(self.mid_nav_buttons[3]), make_vsep())
+        toolbar_layout.insertWidget(toolbar_layout.indexOf(self.act_cut), make_vsep())
 
         # 「選項…」等功能改由視窗頂端的功能表列（檔案 選單）提供，不再放漢堡選單。
         self._build_menu_bar()
 
-        self.path_combo = TreeComboBox(self)
-        self.path_combo.setEditable(True)
-        self.path_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.path_combo.lineEdit().setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.path_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.path_combo.setMinimumWidth(0)
-        self.path_combo_view = QTreeView(self.path_combo)
-        self.path_combo_view.setHeaderHidden(True)
-        self.path_combo_view.setItemsExpandable(True)
-        self.path_combo_view.setRootIsDecorated(True)
-        self.path_combo_view.setUniformRowHeights(True)
-        self.path_combo_view.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.path_combo_view.setModel(self.tree_proxy)
-        self.path_combo_view.hideColumn(1)
-        self.path_combo_view.hideColumn(2)
-        self.path_combo_view.hideColumn(3)
-        self.path_combo.setModel(self.tree_proxy)
-        self.path_combo.setModelColumn(0)
-        self.path_combo.setView(self.path_combo_view)
-        self.path_combo.setRootModelIndex(root_idx)
-        self.path_combo_view.viewport().installEventFilter(self)
-        self.path_combo.lineEdit().returnPressed.connect(self._on_path_combo_entered)
-        toolbar_layout.addWidget(self.path_combo, 1)
-        toolbar_layout.setStretch(toolbar_layout.indexOf(self.path_combo), 1)
+        # 檔案總管風格的混合式麵包屑路徑列（取代舊的樹狀下拉 path_combo）
+        # 置於工具列下方獨立一行（加入 mid_vbox），不再擠在工具列裡
+        self.path_bar = BreadcrumbBar(self)
+        self.path_bar.path_selected.connect(self._on_breadcrumb_selected)
+        # Ctrl+L / Alt+D：聚焦到路徑列的可編輯文字框並全選
+        for seq in ("Ctrl+L", "Alt+D"):
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.activated.connect(self.path_bar.focus_edit)
         self.mid_tab_bar = PathTabBar(self)
         self.mid_info_combo = QComboBox()
         self.mid_info_combo.setEditable(True)
@@ -476,7 +529,16 @@ class FileManager(QMainWindow):
         mid_vbox = QVBoxLayout()
         mid_vbox.setContentsMargins(0, 0, 0, 0)
         mid_vbox.setSpacing(0)
+        # 列間極淡水平分隔線 + 麵包屑上下少許留白，讓工具列/位址列/分頁列層次分明。
+        # 位址列上方共有：工具列 + 1px 線 + 3px 留白 + 麵包屑 + 3px 留白 + 1px 線 = 額外 8px，
+        # 右面板 spacer 需補上這 8px 才能與左側分頁列對齊（見 _sync_right_header_spacing）。
+        self._mid_header_extra = 8
         mid_vbox.addWidget(self.mid_panel_toolbar)
+        mid_vbox.addWidget(self._make_hline())
+        mid_vbox.addSpacing(3)
+        mid_vbox.addWidget(self.path_bar)
+        mid_vbox.addSpacing(3)
+        mid_vbox.addWidget(self._make_hline())
         mid_vbox.addWidget(self.mid_tab_bar)
         mid_vbox.addWidget(self.mid_info_combo)
         mid_vbox.addWidget(self.listView, 1)
@@ -599,6 +661,7 @@ class FileManager(QMainWindow):
         self._sync_right_header_spacing()
         self._sync_tab_bar_heights()
         self._update_nav_buttons()
+        self._setup_action_buttons_state()
 
     def on_listView_clicked(self, index):
         """处理中央视窗文件单击事件"""
@@ -769,20 +832,18 @@ class FileManager(QMainWindow):
         else:
             self._navigate_to_path(path)
 
-    def _on_path_combo_tree_activated(self, proxy_index):
-        if not proxy_index.isValid():
-            return
-        path = self.model.filePath(self.tree_proxy.mapToSource(proxy_index)).strip()
-        if path and os.path.isdir(path):
-            self.path_combo.hidePopup()
-            self._navigate_to_path(path)
-
-    def _on_path_combo_entered(self):
-        path = self.path_combo.currentText().strip() if self.path_combo is not None else ""
-        if path and os.path.isdir(path):
+    def _on_breadcrumb_selected(self, path):
+        """麵包屑分段／箭頭下拉／換碟／編輯輸入所選的路徑。
+        空字串代表「本機（所有磁碟機）」；無效路徑則還原顯示。"""
+        self._active_panel = 'mid'
+        path = (path or "").strip()
+        if not path:
+            self._show_all_drives()
+            self._sync_breadcrumb("")
+        elif os.path.isdir(path):
             self._navigate_to_path(path)
         else:
-            self._sync_path_combo(self._current_dir())
+            self._sync_breadcrumb(self._current_dir())
 
     def _on_combo_text_edited(self, text):
         """使用者輸入或貼上時更新關鍵字，停頓後自動搜尋。"""
@@ -830,21 +891,6 @@ class FileManager(QMainWindow):
                 self._active_panel = 'right'
             elif obj is self.listView.viewport():
                 self._active_panel = 'mid'
-
-        if obj is getattr(self, 'path_combo_view', None).viewport():
-            if event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease):
-                proxy_index = self.path_combo_view.indexAt(event.pos())
-                if not proxy_index.isValid():
-                    return False
-                item_rect = self.path_combo_view.visualRect(proxy_index)
-                if event.pos().x() < item_rect.left():
-                    self.path_combo.keep_popup_open_once()
-                    return False
-                if event.type() == QEvent.MouseButtonRelease:
-                    self._on_path_combo_tree_activated(proxy_index)
-                    event.accept()
-                    return True
-            return False
 
         if obj is self.listView.viewport():
             et = event.type()
@@ -1287,11 +1333,16 @@ class FileManager(QMainWindow):
         return self._set_clipboard_file_paths(paths, "move")
 
     def _paste_into_current_dir_from_clipboard(self):
-        view = self._focused_shortcut_view()
-        if view is None:
+        # 鍵盤 Ctrl+V：需有清單取得焦點才貼上（與其他快捷鍵一致）
+        if self._focused_shortcut_view() is None:
             return False
+        return self._paste_clipboard_into_dir(self._current_dir())
 
-        target_dir = self._current_dir()
+    def _paste_from_toolbar(self):
+        # 工具列「貼上」：一律貼到中間面板目前目錄，不要求某個清單有焦點
+        return self._paste_clipboard_into_dir(self._current_dir())
+
+    def _paste_clipboard_into_dir(self, target_dir):
         if not target_dir or not os.path.isdir(target_dir):
             return False
 
@@ -1913,28 +1964,11 @@ class FileManager(QMainWindow):
         if hasattr(self, 'action_layout_vertical'):
             self.action_layout_vertical.setChecked(vertical_active)
 
-    def _sync_path_combo(self, path):
-        if self.path_combo is None:
+    def _sync_breadcrumb(self, path):
+        if getattr(self, 'path_bar', None) is None:
             return
         text = path or self.mid_tab_bar.current_data() or ""
-        self.path_combo.blockSignals(True)
-        self.path_combo.lineEdit().setText(text)
-        self.path_combo.blockSignals(False)
-        self._expand_path_combo_tree(text)
-
-    def _expand_path_combo_tree(self, path):
-        if not path or self.path_combo_view is None:
-            return
-        proxy_index = self.tree_proxy.mapFromSource(self.model.index(path))
-        if not proxy_index.isValid():
-            return
-        parent = proxy_index.parent()
-        while parent.isValid():
-            self.path_combo_view.expand(parent)
-            parent = parent.parent()
-        self.path_combo_view.expand(proxy_index)
-        self.path_combo_view.scrollTo(proxy_index)
-        self.path_combo.setRootModelIndex(self.tree_proxy.mapFromSource(self.model.index("")))
+        self.path_bar.set_path(text)
 
     def _sync_tab_bar_heights(self):
         """兩個頁籤列共用同一高度，避免右側因自身 sizeHint 較大而變高。"""
@@ -1942,12 +1976,27 @@ class FileManager(QMainWindow):
         for tab_container in (self.mid_tab_bar, self.right_tab_bar):
             tab_container.sync_height(base_height)
 
+    def _make_hline(self):
+        """列與列之間的極淡水平分隔線。"""
+        line = QFrame(self)
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Plain)
+        line.setStyleSheet("color: rgba(127, 127, 127, 0.30);")
+        line.setFixedHeight(1)
+        return line
+
     def _sync_right_header_spacing(self):
         """右側沒有工具列，補一段同高留白，讓右側頁籤垂直對齊左側頁籤列。"""
         if self.right_splitter is not None and self.right_splitter.orientation() == Qt.Orientation.Vertical:
             spacer_height = 0
         else:
-            spacer_height = max(self.mid_panel_toolbar.sizeHint().height(), 0)
+            # 左側頁籤列上方有「工具列 + 分隔線 + 麵包屑 + 分隔線」，右側補相同總高才對齊
+            spacer_height = self.mid_panel_toolbar.sizeHint().height()
+            if getattr(self, 'path_bar', None) is not None:
+                # 麵包屑實際高度受 minimumHeight 影響，可能大於 sizeHint
+                spacer_height += max(self.path_bar.sizeHint().height(), self.path_bar.minimumHeight())
+            spacer_height += getattr(self, '_mid_header_extra', 0)
+            spacer_height = max(spacer_height, 0)
         self.right_header_spacer.setFixedHeight(spacer_height)
 
     def _record_history(self, path):
@@ -1979,6 +2028,39 @@ class FileManager(QMainWindow):
             self.action_forward.setEnabled(can_forward)
             self.action_up.setEnabled(can_up)
             self.action_new_folder.setEnabled(can_new_folder)
+        # 導覽後目前目錄改變，貼上目標也跟著變 → 一併刷新操作按鈕灰階
+        self._update_action_buttons_state()
+
+    def _setup_action_buttons_state(self):
+        """掛上會影響操作按鈕可用性的訊號：焦點切換、兩面板選取變化、剪貼簿內容變化。"""
+        app = QApplication.instance()
+        if app is not None:
+            app.focusChanged.connect(lambda *_: self._update_action_buttons_state())
+        for view in (self.listView, self.listView2):
+            sel = view.selectionModel() if view is not None else None
+            if sel is not None:
+                sel.selectionChanged.connect(lambda *_: self._update_action_buttons_state())
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.dataChanged.connect(self._update_action_buttons_state)
+        self._update_action_buttons_state()
+
+    def _update_action_buttons_state(self):
+        """依目前焦點面板的選取與剪貼簿內容，更新操作按鈕的灰階狀態（重新整理永遠可用）。"""
+        if not hasattr(self, 'act_cut'):
+            return
+        view = self._focused_file_view()
+        paths = self._get_selected_paths_for_view(view) if view is not None else []
+        has_selection = bool(paths)
+        single_selection = len(paths) == 1
+        clipboard = QApplication.clipboard()
+        mime = clipboard.mimeData() if clipboard is not None else None
+        can_paste = bool(mime and mime.hasUrls()) and bool(self._current_dir())
+        self.act_cut.setEnabled(has_selection)
+        self.act_copy.setEnabled(has_selection)
+        self.act_rename.setEnabled(single_selection)
+        self.act_delete.setEnabled(has_selection)
+        self.act_paste.setEnabled(can_paste)
 
     def _show_all_drives(self):
         """在檔案清單顯示所有磁碟機（本機根目錄），供空白檔案分頁預設呈現。"""
@@ -2005,7 +2087,7 @@ class FileManager(QMainWindow):
 
         self.mid_tab_bar.set_current_data(path, path)
         self.mid_info_combo.lineEdit().setText(path)
-        self._sync_path_combo(path)
+        self._sync_breadcrumb(path)
 
         if record_history:
             self._record_history(path)
@@ -2141,10 +2223,11 @@ class FileManager(QMainWindow):
             current_font = combo.font()
             f = QFont(current_font.family(), new_size)
             combo.setFont(f)
-        if self.path_combo is not None:
-            current_font = self.path_combo.font()
+        if getattr(self, 'path_bar', None) is not None:
+            current_font = self.path_bar.font()
             f = QFont(current_font.family(), new_size)
-            self.path_combo.setFont(f)
+            self.path_bar.setFont(f)
+            self.path_bar.set_path(self._current_dir())
 
     def on_font_increase(self):
         # 放大字型，各增加 1pt（限制最大 72pt）
@@ -2311,7 +2394,7 @@ class FileManager(QMainWindow):
             self.right_info_combo.lineEdit().setText(initial_keyword)
             QTimer.singleShot(0, lambda kw=initial_keyword: self._do_search(kw))
 
-        self._sync_path_combo(self.mid_tab_bar.current_data())
+        self._sync_breadcrumb(self.mid_tab_bar.current_data())
 
         # 載入搜尋歷史至右側 combobox
         raw_history = cfg.get('General', 'search_history', fallback='')
