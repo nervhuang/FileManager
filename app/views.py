@@ -183,7 +183,44 @@ class _ShellDropMixin:
             QTimer.singleShot(600, wnd.refresh_mid_panel)
 
 
-class SearchListView(_ShellDropMixin, QTreeView):
+class _NameColumnSelectionMixin:
+    """左鍵只在「檔名」欄選取項目；壓在其他欄位一律視同壓在空白處。
+
+    欄位總寬超過畫面時，清單裡沒有任何空白區可供起始框選，只用滑鼠就拖不出多選。
+    把檔名以外的欄位（目錄／大小／時間／類型）變成「空白區」後，在那裡按住左鍵
+    拖曳即可框選多列。
+
+    作法：壓下時暫時讓 selectionCommand() 回傳 Clear，其餘完全走 QAbstractItemView
+    原本的流程——它照常記下 pressedPosition（框選的錨點），但不選中任何項目。選取
+    被清空後 selectedDraggableIndexes() 為空，滑鼠移動時 Qt 便不會進入 DraggingState
+    去啟動拖曳，而是進入 DragSelectingState 開始框選。
+
+    只攔左鍵：右鍵（選取該項並開啟選單）與雙擊（開啟檔案／進入資料夾）不受影響。
+    Shift/Ctrl 也一併視同空白區，規則單一好預測。"""
+
+    NAME_COLUMN = 0
+
+    def _press_is_blank_zone(self, event):
+        if event.button() != Qt.LeftButton:
+            return False
+        index = self.indexAt(event.pos())
+        return index.isValid() and index.column() != self.NAME_COLUMN
+
+    def _press_as_blank(self, event):
+        """以「不選取任何項目」的方式跑完 Qt 原本的 mousePressEvent。"""
+        self._suppress_press_selection = True
+        try:
+            QTreeView.mousePressEvent(self, event)
+        finally:
+            self._suppress_press_selection = False
+
+    def selectionCommand(self, index, event=None):
+        if getattr(self, '_suppress_press_selection', False):
+            return QItemSelectionModel.Clear
+        return super().selectionCommand(index, event)
+
+
+class SearchListView(_ShellDropMixin, _NameColumnSelectionMixin, QTreeView):
     """QTreeView 子類別，支援鍵盤創點定錨點的 Shift 區間選取和 Ctrl 切換選取。
     Shift+點擊從第一次按下的項目開始延伸，不會因後續 Shift+點擊而變更錨點。"""
 
@@ -225,6 +262,12 @@ class SearchListView(_ShellDropMixin, QTreeView):
         if not index.isValid() or sel is None:
             self._anchor = None
             super().mousePressEvent(event)
+            return
+
+        if index.column() != self.NAME_COLUMN:
+            # 檔名以外的欄位視同空白區：清空選取、不設錨點，讓 Qt 從這裡起始框選
+            self._anchor = None
+            self._press_as_blank(event)
             return
 
         if modifiers & Qt.ShiftModifier:
@@ -574,7 +617,7 @@ class SearchListView(_ShellDropMixin, QTreeView):
         return "move" if src_drive and src_drive == dst_drive else "copy"
 
 
-class FileListView(_ShellDropMixin, QTreeView):
+class FileListView(_ShellDropMixin, _NameColumnSelectionMixin, QTreeView):
     """QTreeView for the middle file panel with Shell right-click context menu and right-drag support."""
 
     def __init__(self, parent=None):
@@ -587,6 +630,10 @@ class FileListView(_ShellDropMixin, QTreeView):
     def mousePressEvent(self, event):
         self._press_pos = event.pos()
         self._press_button = event.button()
+        if self._press_is_blank_zone(event):
+            # 檔名以外的欄位視同空白區：清空選取，讓 Qt 從這裡起始框選
+            self._press_as_blank(event)
+            return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
