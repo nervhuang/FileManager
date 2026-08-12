@@ -30,9 +30,19 @@ class FileSystemSortProxyModel(QSortFilterProxyModel):
     另支援「排除目錄」：set_excluded_dirs() 設定一組已正規化的絕對路徑後，
     凡是落在這些目錄（或其子路徑）下的項目都不列出（filterAcceptsRow）。"""
 
+    # QFileSystemModel 的表頭取自 Qt 內建翻譯，本專案未載入中文語系而顯示為
+    # Name/Size/Type/Date Modified，與搜尋面板的中文表頭不一致，故在代理層改寫。
+    COLUMN_LABELS = ("檔名", "大小", "類型", "修改時間")
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._excluded_dirs = ()
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if (orientation == Qt.Horizontal and role == Qt.DisplayRole
+                and 0 <= section < len(self.COLUMN_LABELS)):
+            return self.COLUMN_LABELS[section]
+        return super().headerData(section, orientation, role)
 
     def set_excluded_dirs(self, dirs):
         """設定要排除的目錄（已正規化的絕對路徑序列）；空序列代表不排除。"""

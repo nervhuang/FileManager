@@ -622,3 +622,56 @@ class BreadcrumbBar(QWidget):
                 self._show_crumbs()
                 return True
         return super().eventFilter(obj, event)
+
+
+class KeepOpenMenu(QMenu):
+    """勾選 checkable 項目後不關閉的選單，可一次連續切換多個選項。
+
+    QMenu 預設觸發任何動作即關閉。此處攔截滑鼠放開與 Enter/Space：若當前項目是
+    啟用中的 checkable 動作，就自行 trigger() 並吞掉事件，選單保持開啟；其餘情形
+    （點在分隔線、停用項目或選單外）一律交回原生處理，Esc 與點外面仍可關閉。"""
+
+    def _toggle_active(self):
+        action = self.activeAction()
+        if action is not None and action.isEnabled() and action.isCheckable():
+            action.trigger()
+            return True
+        return False
+
+    def mouseReleaseEvent(self, event):
+        if self._toggle_active():
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space) and self._toggle_active():
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+def build_column_visibility_menu(view, locked_columns=(), on_toggled=None, parent=None):
+    """建立「欄位顯示」切換選單：每個欄位一個 checkbox，勾選狀態即該欄目前是否顯示。
+
+    項目依表頭的視覺順序排列，與畫面上看到的欄位順序一致。locked_columns 內的欄位
+    以已勾選但停用的樣子呈現（恆顯示、點不動）。實際的顯示/隱藏動作交由 on_toggled
+    (column, visible) 執行，讓呼叫端得以一併處理欄寬記憶。"""
+    menu = KeepOpenMenu(parent if parent is not None else view)
+    model = view.model()
+    header = view.header()
+    if model is None or header is None:
+        return menu
+
+    for visual in range(header.count()):
+        logical = header.logicalIndex(visual)
+        label = model.headerData(logical, Qt.Horizontal, Qt.DisplayRole)
+        action = menu.addAction(str(label) if label else str(logical))
+        action.setCheckable(True)
+        action.setChecked(not view.isColumnHidden(logical))
+        if logical in locked_columns:
+            action.setEnabled(False)
+        elif on_toggled is not None:
+            action.toggled.connect(
+                lambda checked, col=logical: on_toggled(col, checked))
+    return menu

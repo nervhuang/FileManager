@@ -25,7 +25,7 @@ from PyQt5.QtGui import QKeySequence, QIcon, QFont, QPixmap, QPainter, QColor, Q
 from .everything_sdk import EverythingSDK
 from .models import SearchSortProxyModel, SearchResultsModel, FileSystemSortProxyModel
 from .views import SearchListView, FileListView
-from .widgets import PathTabBar, BreadcrumbBar
+from .widgets import PathTabBar, BreadcrumbBar, build_column_visibility_menu
 
 ref_s = 0
 ref_e = 1
@@ -110,6 +110,15 @@ class ExcludeSettingsDialog(QDialog):
 
 
 class FileManager(QMainWindow):
+    # 欄位顯示切換相關設定（見 _setup_column_visibility_menus）
+    DEFAULT_COLUMN_WIDTH = 120
+    # 第 0 欄是樹狀縮排、圖示與重新命名編輯所在的欄位，隱藏它會讓面板無法操作，
+    # 故在選單中恆為已勾選且停用。
+    LOCKED_COLUMNS = (0,)
+    # 首次啟動（config.ini 尚無 *_col_hidden 鍵）時預設隱藏的欄位：
+    # 中間面板的「類型」欄向來不顯示，保持升級前後畫面一致。
+    DEFAULT_HIDDEN_COLUMNS = {'mid': (2,), 'right': ()}
+
     def __init__(self):
         super().__init__()
 
@@ -624,11 +633,15 @@ class FileManager(QMainWindow):
         header = self.listView.header()
         if header is not None:
             header.moveSection(3, 1)
-        self.listView.hideColumn(2)
 
         header2 = self.listView2.header()
         if header2 is not None:
             header2.setStretchLastSection(True)
+
+        # 欄位顯示切換：記錄各欄最後一次的可見寬度，隱藏欄的 columnWidth() 恆為 0，
+        # 靠這份快取才能在勾回來與寫入 config 時給出正確寬度。
+        self._col_width_cache = {'mid': {}, 'right': {}}
+        self._setup_column_visibility_menus()
         # 顯示初始字型資訊
         self.update_status_bar()
         # 根據選取啟用/停用刪除與屬性按鈕
@@ -2251,6 +2264,115 @@ class FileManager(QMainWindow):
         font = self.listView.font()
         return font.pointSize() if font.pointSize() > 0 else 10
 
+    # ---- 欄位顯示切換 -------------------------------------------------------
+    def _column_views(self):
+        """設定檔鍵名前綴 → 對應面板；兩面板的欄位顯示設定彼此獨立。"""
+        return (('mid', self.listView), ('right', self.listView2))
+
+    def _setup_column_visibility_menus(self):
+        """兩個面板的表頭掛上右鍵選單，整條表頭（含右側空白區）皆可觸發。"""
+        for key, view in self._column_views():
+            header = view.header()
+            if header is None:
+                continue
+            header.setContextMenuPolicy(Qt.CustomContextMenu)
+            header.customContextMenuRequested.connect(
+                lambda pos, k=key, v=view: self._show_column_menu(k, v, pos))
+
+    def _show_column_menu(self, key, view, pos):
+        menu = build_column_visibility_menu(
+            view,
+            locked_columns=self.LOCKED_COLUMNS,
+            on_toggled=lambda col, visible, k=key, v=view: self._set_column_visible(k, v, col, visible),
+            parent=self,
+        )
+        header = view.header()
+        if header is not None:
+            menu.exec_(header.mapToGlobal(pos))
+
+    def _set_column_visible(self, key, view, column, visible):
+        """切換單一欄位的顯示狀態，並維護欄寬快取。
+
+        隱藏欄位前先記下當下寬度；勾回來時若寬度為 0（例如舊版 config 對隱藏欄存下
+        的 0），就補上記憶中的寬度或預設寬度，避免欄位「顯示了卻看不見」。
+        排序不受影響：setColumnHidden 不會改動排序指示器，隱藏目前的排序欄只是箭頭
+        暫時看不見，勾回來仍在原處。"""
+        cache = self._col_width_cache.setdefault(key, {})
+        if not visible:
+            width = view.columnWidth(column)
+            if width > 0:
+                cache[column] = width
+            view.setColumnHidden(column, True)
+            return
+        view.setColumnHidden(column, False)
+        if view.columnWidth(column) <= 0:
+            view.setColumnWidth(column, cache.get(column, self.DEFAULT_COLUMN_WIDTH))
+
+    def _restore_columns(self, cfg, key, view):
+        """還原單一面板的欄寬、隱藏欄與欄序。
+
+        順序固定為「寬度 → 隱藏 → 欄序」：先把寬度套到所有欄位（含隨後要隱藏的），
+        QHeaderView 才會記住隱藏欄的原始寬度，使用者日後勾回來時寬度才正確。"""
+        header = view.header()
+        if header is None:
+            return
+        cache = self._col_width_cache.setdefault(key, {})
+
+        raw_widths = cfg.get('Columns', f'{key}_col_widths', fallback='')
+        if raw_widths:
+            try:
+                for i, w in enumerate(raw_widths.split(',')):
+                    # 舊版 config 把隱藏欄的寬度存成 0，直接沿用會讓欄位勾回來仍是 0 寬。
+                    width = int(w) or self.DEFAULT_COLUMN_WIDTH
+                    cache[i] = width
+                    view.setColumnWidth(i, width)
+            except Exception:
+                pass
+
+        raw_hidden = cfg.get('Columns', f'{key}_col_hidden', fallback=None)
+        hidden = set(self.DEFAULT_HIDDEN_COLUMNS.get(key, ()))
+        if raw_hidden is not None:
+            # 鍵存在但為空字串代表「全部顯示」，與鍵不存在（採用預設值）不同。
+            try:
+                hidden = {int(x) for x in raw_hidden.split(',') if x.strip()}
+            except Exception:
+                pass
+        hidden -= set(self.LOCKED_COLUMNS)
+        for i in range(header.count()):
+            view.setColumnHidden(i, i in hidden)
+
+        raw_order = cfg.get('Columns', f'{key}_col_order', fallback='')
+        if raw_order:
+            try:
+                for vi, li in enumerate(int(x) for x in raw_order.split(',')):
+                    cur = header.visualIndex(li)
+                    if cur != vi:
+                        header.moveSection(cur, vi)
+            except Exception:
+                pass
+
+    def _save_columns(self, cfg, key, view):
+        """寫出單一面板的欄寬、欄序與隱藏欄。隱藏欄的 columnWidth() 恆為 0，
+        改寫入快取中最後一次的可見寬度，下次啟動勾回來才有合理寬度。"""
+        header = view.header()
+        if header is None:
+            return
+        cache = self._col_width_cache.setdefault(key, {})
+        widths = []
+        hidden = []
+        for i in range(header.count()):
+            if view.isColumnHidden(i):
+                hidden.append(str(i))
+                width = cache.get(i, self.DEFAULT_COLUMN_WIDTH)
+            else:
+                width = view.columnWidth(i) or cache.get(i, self.DEFAULT_COLUMN_WIDTH)
+                cache[i] = width
+            widths.append(str(width))
+        cfg.set('Columns', f'{key}_col_widths', ','.join(widths))
+        cfg.set('Columns', f'{key}_col_order',
+                ','.join(str(header.logicalIndex(i)) for i in range(header.count())))
+        cfg.set('Columns', f'{key}_col_hidden', ','.join(hidden))
+
     def _config_path(self):
         return os.path.join(_runtime_root(), 'config.ini')
 
@@ -2305,47 +2427,9 @@ class FileManager(QMainWindow):
         right_splitter_orientation = cfg.get('Layout', 'right_splitter_orientation', fallback='horizontal').lower()
         self._set_right_panel_layout(Qt.Orientation.Vertical if right_splitter_orientation == 'vertical' else Qt.Orientation.Horizontal)
 
-        # 還原中間 listView 欄位寬度與順序
-        mid_header = self.listView.header()
-        if mid_header is not None:
-            mid_col_widths = cfg.get('Columns', 'mid_col_widths', fallback='')
-            if mid_col_widths:
-                try:
-                    for i, w in enumerate(mid_col_widths.split(',')):
-                        self.listView.setColumnWidth(i, int(w))
-                except Exception:
-                    pass
-            mid_col_order = cfg.get('Columns', 'mid_col_order', fallback='')
-            if mid_col_order:
-                try:
-                    order = [int(x) for x in mid_col_order.split(',')]
-                    for vi, li in enumerate(order):
-                        cur = mid_header.visualIndex(li)
-                        if cur != vi:
-                            mid_header.moveSection(cur, vi)
-                except Exception:
-                    pass
-
-        # 還原右側 listView2 欄位寬度與順序
-        right_header = self.listView2.header()
-        if right_header is not None:
-            right_col_widths = cfg.get('Columns', 'right_col_widths', fallback='')
-            if right_col_widths:
-                try:
-                    for i, w in enumerate(right_col_widths.split(',')):
-                        self.listView2.setColumnWidth(i, int(w))
-                except Exception:
-                    pass
-            right_col_order = cfg.get('Columns', 'right_col_order', fallback='')
-            if right_col_order:
-                try:
-                    order = [int(x) for x in right_col_order.split(',')]
-                    for vi, li in enumerate(order):
-                        cur = right_header.visualIndex(li)
-                        if cur != vi:
-                            right_header.moveSection(cur, vi)
-                except Exception:
-                    pass
+        # 還原兩個面板的欄位寬度、顯示與否，以及欄序
+        for key, view in self._column_views():
+            self._restore_columns(cfg, key, view)
 
         # 還原中間 listView 排序方式
         mid_sort_col = cfg.get('Sort', 'mid_sort_column', fallback='')
@@ -2452,27 +2536,9 @@ class FileManager(QMainWindow):
         cfg.set('Layout', 'right_splitter_sizes', ','.join(str(s) for s in self._right_splitter_sizes_by_orientation.get(Qt.Orientation.Horizontal, [])))
         cfg.set('Layout', 'right_splitter_vertical_sizes', ','.join(str(s) for s in self._right_splitter_sizes_by_orientation.get(Qt.Orientation.Vertical, [])))
 
-        # 儲存中間 listView 欄位寬度與順序
-        mid_header = self.listView.header()
-        if mid_header is not None:
-            mid_widths = []
-            mid_order = []
-            for i in range(mid_header.count()):
-                mid_widths.append(str(self.listView.columnWidth(i)))
-                mid_order.append(str(mid_header.logicalIndex(i)))
-            cfg.set('Columns', 'mid_col_widths', ','.join(mid_widths))
-            cfg.set('Columns', 'mid_col_order', ','.join(mid_order))
-
-        # 儲存右側 listView2 欄位寬度與順序
-        right_header = self.listView2.header()
-        if right_header is not None:
-            right_widths = []
-            right_order = []
-            for i in range(right_header.count()):
-                right_widths.append(str(self.listView2.columnWidth(i)))
-                right_order.append(str(right_header.logicalIndex(i)))
-            cfg.set('Columns', 'right_col_widths', ','.join(right_widths))
-            cfg.set('Columns', 'right_col_order', ','.join(right_order))
+        # 儲存兩個面板的欄位寬度、顯示與否，以及欄序
+        for key, view in self._column_views():
+            self._save_columns(cfg, key, view)
 
         # 儲存中間 listView 排序方式
         mid_header = self.listView.header()
