@@ -183,91 +183,7 @@ class _ShellDropMixin:
             QTimer.singleShot(600, wnd.refresh_mid_panel)
 
 
-class _NameColumnSelectionMixin:
-    """左鍵只在「檔名」欄選取項目；壓在其他欄位一律視同壓在空白處。
-
-    欄位總寬超過畫面時，清單裡沒有任何空白區可供起始框選，只用滑鼠就拖不出多選。
-    把檔名以外的欄位（目錄／大小／時間／類型）變成「空白區」後，在那裡按住左鍵
-    拖曳即可框選多列。
-
-    作法：壓下時暫時讓 selectionCommand() 回傳 Clear，其餘完全走 QAbstractItemView
-    原本的流程——它照常記下 pressedPosition（框選的錨點），但不選中任何項目。選取
-    被清空後 selectedDraggableIndexes() 為空，滑鼠移動時 Qt 便不會進入 DraggingState
-    去啟動拖曳，而是進入 DragSelectingState 開始框選。
-
-    唯一的例外是「壓在多選之一的非檔名欄上」：那幾乎都是要把整批選取拖走，若照樣
-    清空選取，使用者就再也拖不動剛框選好的檔案。此時先原封不動保留選取等待後續
-    （見 _handle_name_column_move / _handle_name_column_release）。
-
-    只攔左鍵：右鍵（選取該項並開啟選單）與雙擊（開啟檔案／進入資料夾）不受影響。
-    Shift/Ctrl 也一併視同空白區，規則單一好預測。"""
-
-    NAME_COLUMN = 0
-    # Shift 區間選取的錨點；本混入在「視同空白處」時一併清掉（僅 SearchListView 使用）
-    _anchor = None
-
-    def _handle_name_column_press(self, event):
-        """左鍵壓下時的欄位分流。回傳 True 表示本次事件已由本混入處理完畢。"""
-        if event.button() != Qt.LeftButton:
-            return False
-        index = self.indexAt(event.pos())
-        if not index.isValid() or index.column() == self.NAME_COLUMN:
-            return False
-
-        sel = self.selectionModel()
-        if sel is not None and sel.isSelected(index) and len(sel.selectedRows(0)) > 1:
-            # 壓在「多選之一」的非檔名欄上：先什麼都不動，等 mouseMoveEvent 判斷
-            # 是要拖曳整批選取，還是只是點一下（放開時再依空白處語意清空選取）。
-            self._hold_press = QPersistentModelIndex(index)
-            return True
-
-        self._press_as_blank(event)
-        return True
-
-    def _handle_name_column_move(self, event):
-        """壓住多選後的移動門檻判定。回傳 True 表示事件已處理完畢。"""
-        if getattr(self, '_hold_press', None) is None:
-            return False
-        if (self._press_pos is None
-                or (event.pos() - self._press_pos).manhattanLength() < QApplication.startDragDistance()):
-            # 尚未達到拖曳門檻：維持選取不變，也不讓 Qt 把移動當成框選
-            return True
-        self._hold_press = None
-        self.startDrag(Qt.CopyAction | Qt.MoveAction | Qt.LinkAction)
-        self._press_pos = None
-        self._press_button = Qt.NoButton
-        return True
-
-    def _handle_name_column_release(self, event):
-        """壓住多選卻沒拖曳就放開：回歸空白處語意，清空選取。
-        回傳 True 表示事件已處理完畢。"""
-        if getattr(self, '_hold_press', None) is None:
-            return False
-        self._hold_press = None
-        self._press_pos = None
-        self._press_button = Qt.NoButton
-        sel = self.selectionModel()
-        if sel is not None:
-            sel.clear()
-        self._anchor = None
-        return True
-
-    def _press_as_blank(self, event):
-        """以「不選取任何項目」的方式跑完 Qt 原本的 mousePressEvent。"""
-        self._anchor = None
-        self._suppress_press_selection = True
-        try:
-            QTreeView.mousePressEvent(self, event)
-        finally:
-            self._suppress_press_selection = False
-
-    def selectionCommand(self, index, event=None):
-        if getattr(self, '_suppress_press_selection', False):
-            return QItemSelectionModel.Clear
-        return super().selectionCommand(index, event)
-
-
-class SearchListView(_ShellDropMixin, _NameColumnSelectionMixin, QTreeView):
+class SearchListView(_ShellDropMixin, QTreeView):
     """QTreeView 子類別，支援鍵盤創點定錨點的 Shift 區間選取和 Ctrl 切換選取。
     Shift+點擊從第一次按下的項目開始延伸，不會因後續 Shift+點擊而變更錨點。"""
 
@@ -286,7 +202,6 @@ class SearchListView(_ShellDropMixin, _NameColumnSelectionMixin, QTreeView):
         self._press_pos = event.pos()
         self._press_button = event.button()
         self._press_on_selected = None
-        self._hold_press = None
 
         if event.button() == Qt.RightButton:
             index = self.indexAt(event.pos())
@@ -310,9 +225,6 @@ class SearchListView(_ShellDropMixin, _NameColumnSelectionMixin, QTreeView):
         if not index.isValid() or sel is None:
             self._anchor = None
             super().mousePressEvent(event)
-            return
-
-        if self._handle_name_column_press(event):
             return
 
         if modifiers & Qt.ShiftModifier:
@@ -377,9 +289,6 @@ class SearchListView(_ShellDropMixin, _NameColumnSelectionMixin, QTreeView):
             self._notify_search_refresh_delayed(dragged_paths)
 
     def mouseMoveEvent(self, event):
-        # 壓在「多選之一」的非檔名欄上：達門檻即拖曳整批選取，未達門檻則不動選取
-        if self._handle_name_column_move(event):
-            return
         # 多選左鍵拖曳：press 落在「多選之一」時，Qt 因留在 NoState 會把移動當成
         # 框選（rubber band）而改寫選取，只剩游標下的項目被拖。故此處自行偵測門檻
         # 並啟動拖曳，startDrag 會讀取完整選取，確保一次拖曳所有選取的檔案。
@@ -565,8 +474,6 @@ class SearchListView(_ShellDropMixin, _NameColumnSelectionMixin, QTreeView):
         return pix
 
     def mouseReleaseEvent(self, event):
-        if self._handle_name_column_release(event):
-            return
         # 在「多選之一」上按下後直接放開（沒有拖曳）：比照一般檔案總管行為，
         # 收斂為僅選取被點的那一項。若期間已啟動拖曳，_press_on_selected 已於
         # mouseMoveEvent 清空，不會進入此分支。
@@ -667,7 +574,7 @@ class SearchListView(_ShellDropMixin, _NameColumnSelectionMixin, QTreeView):
         return "move" if src_drive and src_drive == dst_drive else "copy"
 
 
-class FileListView(_ShellDropMixin, _NameColumnSelectionMixin, QTreeView):
+class FileListView(_ShellDropMixin, QTreeView):
     """QTreeView for the middle file panel with Shell right-click context menu and right-drag support."""
 
     def __init__(self, parent=None):
@@ -676,20 +583,13 @@ class FileListView(_ShellDropMixin, _NameColumnSelectionMixin, QTreeView):
         self._press_button = Qt.NoButton
         self._suppress_next_context_menu = False
         self._drag_in_progress = False
-        self._hold_press = None
 
     def mousePressEvent(self, event):
         self._press_pos = event.pos()
         self._press_button = event.button()
-        self._hold_press = None
-        if self._handle_name_column_press(event):
-            return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        # 壓在「多選之一」的非檔名欄上：達門檻即拖曳整批選取，未達門檻則不動選取
-        if self._handle_name_column_move(event):
-            return
         if (self._press_pos is not None
                 and self._press_button == Qt.RightButton
                 and (event.pos() - self._press_pos).manhattanLength() >= QApplication.startDragDistance()):
@@ -719,8 +619,6 @@ class FileListView(_ShellDropMixin, _NameColumnSelectionMixin, QTreeView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if self._handle_name_column_release(event):
-            return
         super().mouseReleaseEvent(event)
         self._press_pos = None
         self._press_button = Qt.NoButton
