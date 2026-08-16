@@ -159,7 +159,7 @@ class FileManager(QMainWindow):
         # 左側作者／團體面板：可隨時切換回原本的雙面板版面，狀態存 config.ini。
         # 這兩個值必須在 initUI 之前就位（initUI 會直接套用）。
         self._authors_panel_visible = True
-        self._authors_panel_width = 260
+        self._authors_panel_width = 500
         self.authors_panel = None
         self.main_splitter = None
         self._bridge_server = None
@@ -587,6 +587,8 @@ class FileManager(QMainWindow):
         # 作者／團體面板放在「外層」分割器，而非 right_splitter 內：後者會在橫/直
         # 版面切換時改變方向，若把左面板放進去，切成垂直時它會跑到最上方。
         self.authors_panel = AuthorsPanel(self)
+        # 工具列圖示與中間檔案面板同尺寸（面板可獨立關閉，故不併入主工具列）
+        self.authors_panel.set_toolbar_icon_size(self._toolbar_icon_size)
         self.authors_panel.search_requested.connect(self._on_authors_search_requested)
 
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -2436,7 +2438,7 @@ class FileManager(QMainWindow):
         self._set_right_panel_layout(Qt.Orientation.Vertical if right_splitter_orientation == 'vertical' else Qt.Orientation.Horizontal)
 
         # 還原左側作者清單面板的顯示狀態與寬度
-        self._authors_panel_width = max(cfg.getint('Layout', 'authors_panel_width', fallback=260), 80)
+        self._authors_panel_width = max(cfg.getint('Layout', 'authors_panel_width', fallback=500), 80)
         self._set_authors_panel_visible(cfg.getboolean('Layout', 'authors_panel_visible', fallback=True))
 
         # 還原兩個面板的欄位寬度、顯示與否，以及欄序

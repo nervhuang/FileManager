@@ -20,7 +20,10 @@
   - Extract runtime path resolution into `app/paths.py` (no Qt dependency)
 - Add an icon toolbar above the authors panel's filter box
   - Add author / add circle / edit / delete / refresh / recent changes, grouped by separators, replacing the text buttons at the bottom
-  - Edit and delete are disabled until something is selected; icons scale with the application font size
+  - Icons are the same 64px size as the file panel's toolbar, but the bar stays separate because the panel can be closed on its own
+  - Built on `QToolBar` so a narrowed panel folds the buttons into an overflow menu instead of forcing a wide minimum width (panel minimum stays 101px)
+  - Edit and delete are disabled until something is selected
+  - Default panel width is now 500px, the width at which all six icons fit
 - Make it harder to end up with an author and its circle as two unrelated entries
   - New `fm_authors_link` tool links (or unlinks) an author and a circle on its own, creating either side if missing — `fm_authors_upsert` previously required resending the whole record just to add a relation
   - `fm_authors_upsert` now states explicitly that a known author/circle pair must be sent with `linked_names`

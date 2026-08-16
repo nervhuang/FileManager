@@ -6,7 +6,7 @@
 
 from PyQt5.QtCore import QPoint, QSize, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeView, QToolButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeView, QToolBar,
     QDialog, QDialogButtonBox, QLabel, QComboBox, QListWidget, QPushButton,
     QMessageBox, QMenu, QTableWidget, QTableWidgetItem, QAbstractItemView,
     QHeaderView, QFrame,
@@ -35,7 +35,7 @@ def _make_glyph_icon(kind):
     painter = QPainter(pix)
     painter.setRenderHint(QPainter.Antialiasing)
     ink = QColor("#4a4a4a")
-    painter.setPen(QPen(ink, 3.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    painter.setPen(QPen(ink, 2.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
     painter.setBrush(Qt.NoBrush)
 
     def pt(fx, fy):
@@ -306,7 +306,12 @@ class AuthorsPanel(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
-        layout.addWidget(self._build_toolbar())
+        # 預設與 FileManager 的 _toolbar_icon_size 相同；主視窗建立面板後會再
+        # 呼叫 set_toolbar_icon_size 覆寫，確保兩邊永遠一致。
+        self._toolbar_icon_size = QSize(64, 64)
+        self.toolbar = None
+        self.toolbar = self._build_toolbar()
+        layout.addWidget(self.toolbar)
         layout.addWidget(self._make_hline())
 
         self.filter_edit = QLineEdit(self)
@@ -338,14 +343,21 @@ class AuthorsPanel(QWidget):
         return line
 
     def _build_toolbar(self):
-        """面板頂端的圖示工具列（與中間面板的工具列同一種視覺語彙）。"""
-        bar = QWidget(self)
-        row = QHBoxLayout(bar)
-        row.setContentsMargins(2, 2, 2, 2)
-        row.setSpacing(2)
+        """面板頂端的圖示工具列，尺寸與中間檔案面板的工具列一致。
 
-        self._buttons = []
-        self._selection_buttons = []
+        用 QToolBar 而非自排的 QHBoxLayout：面板可以被拉窄（也可整個關閉），
+        大圖示排不下時 QToolBar 會自動收成溢位選單，不會把面板的最小寬度撐開。
+        """
+        bar = QToolBar(self)
+        bar.setIconSize(self._toolbar_icon_size)
+        bar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        bar.setFloatable(False)
+        bar.setMovable(False)
+        # 不搶走樹的焦點，否則按下編輯/刪除時 currentIndex 會失去視覺提示
+        bar.setFocusPolicy(Qt.NoFocus)
+
+        self._actions = []
+        self._selection_actions = []
         specs = (
             ('add_author', '新增作者', lambda: self._add_entity(authors_db.AUTHOR), False),
             ('add_circle', '新增團體', lambda: self._add_entity(authors_db.CIRCLE), False),
@@ -356,35 +368,29 @@ class AuthorsPanel(QWidget):
             ('refresh', '重新整理', self.reload, False),
             ('history', '最近變更／還原', self._open_changes, False),
         )
-        for kind, tooltip, slot, needs_selection in specs:
+        for kind, text, slot, needs_selection in specs:
             if kind is None:
-                separator = QFrame(bar)
-                separator.setFrameShape(QFrame.VLine)
-                separator.setFrameShadow(QFrame.Plain)
-                separator.setStyleSheet("color: rgba(127, 127, 127, 0.40);")
-                separator.setFixedWidth(2)
-                row.addWidget(separator)
+                bar.addSeparator()
                 continue
-            button = QToolButton(bar)
-            button.setIcon(_make_glyph_icon(kind))
-            button.setIconSize(QSize(20, 20))
-            button.setToolTip(tooltip)
-            button.setAutoRaise(True)
-            # 不搶走樹的焦點，否則按下編輯/刪除時 currentIndex 會失去視覺提示
-            button.setFocusPolicy(Qt.NoFocus)
-            button.clicked.connect(slot)
-            row.addWidget(button)
-            self._buttons.append(button)
+            action = bar.addAction(_make_glyph_icon(kind), text)
+            action.setToolTip(text)
+            action.triggered.connect(slot)
+            self._actions.append(action)
             if needs_selection:
-                self._selection_buttons.append(button)
-        row.addStretch(1)
+                self._selection_actions.append(action)
         return bar
 
+    def set_toolbar_icon_size(self, size):
+        """與主視窗共用同一個工具列圖示尺寸，不必在兩處各寫一份數字。"""
+        self._toolbar_icon_size = size
+        if self.toolbar is not None:
+            self.toolbar.setIconSize(size)
+
     def _update_toolbar_state(self):
-        """沒選到任何實體時，編輯與刪除按鈕停用。"""
+        """沒選到任何實體時，編輯與刪除停用。"""
         has_selection = self._selected_entity_id() is not None
-        for button in self._selection_buttons:
-            button.setEnabled(has_selection)
+        for action in self._selection_actions:
+            action.setEnabled(has_selection)
 
     def apply_font_size(self, size):
         """跟隨主視窗的字型大小（Ctrl+= / Ctrl+-）。
@@ -396,11 +402,7 @@ class AuthorsPanel(QWidget):
         self.setFont(font)
         for widget in (self.filter_edit, self.tree):
             widget.setFont(font)
-        # 圖示跟著字型一起縮放，字放大時工具列才不會顯得過小
-        icon_size = QSize(max(14, int(size * 1.6)), max(14, int(size * 1.6)))
-        for button in self._buttons:
-            button.setFont(font)
-            button.setIconSize(icon_size)
+        # 工具列圖示不跟著字型縮放，與中間檔案面板的工具列保持同一尺寸
         self.tree.doItemsLayout()
 
     # ── 資料 ────────────────────────────────────────────────────────────
