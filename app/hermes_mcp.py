@@ -29,6 +29,10 @@ server = MCPServer(
         '本機 FileManager 的作者／團體清單與檔案搜尋。清單是這台電腦上同人檔案的'
         '權威名單，包含作者、團體、各自的別名，以及作者與團體的關聯。'
         '搜尋透過 Everything 索引，只涵蓋 FileManager 排除設定允許的路徑。'
+        # 明寫實際用到的檔案位置：本 server 與 GUI 是兩個進程，若兩邊解析到不同
+        # 的資料夾就會各讀各的資料庫，這行讓那種情況一眼看得出來。
+        f'\n資料目錄：{paths.runtime_root()}'
+        f'（清單 {authors_db.db_path()}，排除設定 {paths.config_path()}）'
     ),
 )
 

@@ -25,6 +25,10 @@
   - Built on `QToolBar` so a narrowed panel folds the buttons into an overflow menu instead of forcing a wide minimum width (panel minimum stays 151px)
   - Edit and delete are disabled until something is selected
   - Default panel width is now 660px, the width at which all six buttons fit
+- Let `FILEMANAGER_HOME` override the runtime directory
+  - The MCP server runs from the project venv (not frozen) and resolved its data directory to the project folder, while the packaged exe resolves to its own folder — so the two processes each read and wrote a separate `authors.db` and `config.ini`, and anything Hermes stored was invisible in the app
+  - Point the variable at the installed exe's folder in Hermes's `mcp_servers` entry and both sides use the same files
+  - The MCP server's instructions now state the resolved data directory, so a mismatch is visible rather than silent
 - Add an "all tabs" list to both panels' tab bars
   - Opened by right-clicking the ＋ button, right-clicking blank space on the tab bar, or clicking the new ˅ button next to ＋; right-clicking a tab itself does nothing
   - Each row shows the tab's full path or search keyword rather than the 10-character label the tab itself can fit, elided in the middle so the drive and the last folder both stay visible, with the full text in a tooltip
