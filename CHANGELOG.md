@@ -25,6 +25,10 @@
   - Built on `QToolBar` so a narrowed panel folds the buttons into an overflow menu instead of forcing a wide minimum width (panel minimum stays 151px)
   - Edit and delete are disabled until something is selected
   - Default panel width is now 660px, the width at which all six buttons fit
+- Scale the tab close button with the application font size
+  - Tabs already grew with the font, but the close button's size comes from the style's `PM_TabCloseIndicator*` metric, so the ✕ shrank in relative terms as the font grew. The button is now sized from the tab bar's font metrics and resized again whenever a tab is added or the font changes
+  - Resizing the button alone was not enough: the native style paints a fixed-size ✕ centred in whatever rect it is given. A proxy style now paints the ✕ scaled to the button, along with its own hover and pressed feedback
+  - The proxy style is attached to the buttons rather than the tab bar because `QWidget::setStyle` does not reach children — the close buttons were using the application style, not the tab bar's
 - Make the breadcrumb address bar follow the application font size
   - Setting the font on `BreadcrumbBar` was not enough: the bar, its crumb buttons and its edit box each carry a stylesheet, and Qt treats a styled widget's font as explicitly set, so the parent's font stopped propagating. Every child is now assigned the font directly, and crumbs rebuilt on navigation inherit it too
   - The bar's height now grows with the font instead of staying at its 30px minimum

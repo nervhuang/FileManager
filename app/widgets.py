@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (QTabBar, QWidget, QHBoxLayout, QToolButton, QStyle,
                              QProxyStyle, QLineEdit, QMenu, QStackedLayout, QSizePolicy)
 from PyQt5.QtCore import Qt, QRect, QRectF, QSize, QTimer, QEvent, QDir, QPoint, QPointF, pyqtSignal
 from PyQt5.QtGui import (QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath,
-                         QPen, QPixmap)
+                         QPalette, QPen, QPixmap)
 
 
 def make_refresh_icon(size=64):
@@ -87,6 +87,41 @@ class _LeftAlignTabStyle(QProxyStyle):
         super().drawControl(element, opt, painter, widget)
 
 
+class _ScaledTabCloseStyle(QProxyStyle):
+    """把頁籤關閉鈕的 X 改為隨按鈕大小縮放。
+
+    原生樣式的 PE_IndicatorTabClose 只會在按鈕矩形中央畫一個固定尺寸的 X，
+    把按鈕放大也不會跟著變，字型一放大 X 就顯得越來越小。這裡整個接手繪製，
+    連帶自行處理滑過與按下的回饋（原本那份是由原生樣式一起畫的）。
+    """
+
+    def drawPrimitive(self, element, option, painter, widget=None):
+        if element != QStyle.PE_IndicatorTabClose:
+            super().drawPrimitive(element, option, painter, widget)
+            return
+
+        rect = option.rect
+        hovered = bool(option.state & (QStyle.State_MouseOver | QStyle.State_Raised))
+        pressed = bool(option.state & QStyle.State_Sunken)
+
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        if pressed or hovered:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(196, 43, 28) if pressed else QColor(127, 127, 127, 64))
+            radius = rect.width() * 0.2
+            painter.drawRoundedRect(QRectF(rect), radius, radius)
+
+        inset = max(2.0, rect.width() * 0.30)
+        cross = QRectF(rect).adjusted(inset, inset, -inset, -inset)
+        colour = QColor("#ffffff") if pressed else option.palette.color(QPalette.WindowText)
+        painter.setPen(QPen(colour, max(1.1, rect.width() * 0.10),
+                            Qt.SolidLine, Qt.RoundCap))
+        painter.drawLine(cross.topLeft(), cross.bottomRight())
+        painter.drawLine(cross.topRight(), cross.bottomLeft())
+        painter.restore()
+
+
 class FixedWidthTabBar(QTabBar):
     """每個頁籤寬度固定為 10 個字元大小（依字型度量計算），文字靠左對齊。
 
@@ -115,6 +150,8 @@ class FixedWidthTabBar(QTabBar):
         self._scroll_timer = QTimer(self)
         self._scroll_timer.setInterval(self.SCROLL_INTERVAL)
         self._scroll_timer.timeout.connect(self._advance_dragged_tab)
+        # 需保留參考：QWidget.setStyle 不接手所有權，物件被回收會導致繪製時崩潰
+        self._close_style = _ScaledTabCloseStyle()
 
     def tabSizeHint(self, index):
         hint = super().tabSizeHint(index)
@@ -125,6 +162,39 @@ class FixedWidthTabBar(QTabBar):
 
     def minimumTabSizeHint(self, index):
         return self.tabSizeHint(index)
+
+    # ---- 關閉鈕尺寸 ----------------------------------------------------
+    #
+    # 頁籤本身會隨字型變大（tabSizeHint 依 fontMetrics 計算），但關閉鈕的大小
+    # 來自樣式的 PM_TabCloseIndicator*，與字型無關，因此字放大後 X 會顯得越來越
+    # 小。關閉鈕是 QTabBar 自建的子元件，且它取用的 style 物件與本 tab bar 的
+    # proxy style 並非同一個，覆寫 pixelMetric 影響不到它，只能直接設定尺寸。
+
+    def _close_button_size(self):
+        return max(16, round(self.fontMetrics().height() * 0.78))
+
+    def _sync_close_button_sizes(self):
+        size = QSize(self._close_button_size(), self._close_button_size())
+        for index in range(self.count()):
+            for side in (QTabBar.RightSide, QTabBar.LeftSide):
+                btn = self.tabButton(index, side)
+                if btn is None:
+                    continue
+                # 光是放大按鈕不夠：原生樣式畫的 X 是固定尺寸，只會置中在放大後
+                # 的框裡。改掛自訂 style，X 才會跟著按鈕一起長大。
+                if btn.style() is not self._close_style:
+                    btn.setStyle(self._close_style)
+                if btn.size() != size:
+                    btn.setFixedSize(size)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.FontChange:
+            self._sync_close_button_sizes()
+
+    def tabInserted(self, index):
+        super().tabInserted(index)
+        self._sync_close_button_sizes()
 
     # ---- 拖曳：按下／移動／放開 ----------------------------------------
 
