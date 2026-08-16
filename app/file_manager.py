@@ -25,7 +25,7 @@ from .authors_panel import AuthorsPanel
 from .everything_sdk import EverythingSDK
 from .models import SearchSortProxyModel, SearchResultsModel, FileSystemSortProxyModel
 from .views import SearchListView, FileListView
-from .widgets import PathTabBar, BreadcrumbBar, build_column_visibility_menu
+from .widgets import PathTabBar, BreadcrumbBar, build_column_visibility_menu, make_refresh_icon
 
 ref_s = 0
 ref_e = 1
@@ -508,7 +508,9 @@ class FileManager(QMainWindow):
         self.act_paste = make_action_button(make_glyph_icon("paste"), "貼上", self._paste_from_toolbar)
         self.act_rename = make_action_button(make_glyph_icon("rename"), "重新命名", self._rename_selected_focused_item)
         self.act_delete = make_action_button(QStyle.StandardPixmap.SP_TrashIcon, "刪除", self._delete_selected_focused_items)
-        self.act_refresh = make_action_button(QStyle.StandardPixmap.SP_BrowserReload, "重新整理", lambda: self.refresh_mid_panel(force=True))
+        # 重新整理自行繪製：SP_BrowserReload 只有 24/32px，在 64px 工具列裡不會
+        # 放大，會比其他圖示小一半（見 widgets.make_refresh_icon）。
+        self.act_refresh = make_action_button(make_refresh_icon(self._toolbar_icon_size.width()), "重新整理", lambda: self.refresh_mid_panel(force=True))
         # 上下/左右排列鈕緊接「新增資料夾」，排在操作按鈕左邊
         self.layout_horizontal_button = make_panel_nav_button(horizontal_layout_icon, "左右排列", lambda: self._set_right_panel_layout(Qt.Orientation.Horizontal))
         self.mid_panel_toolbar.addWidget(self.layout_horizontal_button)

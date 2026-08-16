@@ -25,6 +25,10 @@
   - Built on `QToolBar` so a narrowed panel folds the buttons into an overflow menu instead of forcing a wide minimum width (panel minimum stays 151px)
   - Edit and delete are disabled until something is selected
   - Default panel width is now 660px, the width at which all six buttons fit
+- Draw the refresh icon instead of using `QStyle`'s
+  - `SP_BrowserReload` only ships 24×24 and 32×32, and Qt does not upscale it, so in the 64px toolbars it rendered at half the size of every neighbouring icon — in both toolbars
+  - New `widgets.make_refresh_icon()` draws it at the requested size; all 18 toolbar icons now report 64×64
+  - Other system icons in use (trash, folder, arrows) ship 128×128 and were never affected
 - Rebuild the file panel toolbar on `QToolBar` and enlarge it to match the authors panel toolbar
   - Its fixed `QHBoxLayout` had a 1506px minimum width, which propagated to the middle panel and made the authors panel's splitter handle undraggable below a 1657px window — both sides sat at their minimum. The minimum is now 94px and the handle moves freely
   - Buttons switched to text-under-icon so both toolbars are the same shape, and both are pinned to the same height so they cannot drift apart

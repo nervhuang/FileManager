@@ -3,7 +3,48 @@ import os
 from PyQt5.QtWidgets import (QTabBar, QWidget, QHBoxLayout, QToolButton, QStyle,
                              QStyleOptionTab, QStylePainter, QApplication,
                              QProxyStyle, QLineEdit, QMenu, QStackedLayout, QSizePolicy)
-from PyQt5.QtCore import Qt, QRect, QSize, QTimer, QEvent, QDir, pyqtSignal
+from PyQt5.QtCore import Qt, QRect, QSize, QTimer, QEvent, QDir, QPoint, pyqtSignal
+from PyQt5.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+
+
+def make_refresh_icon(size=64):
+    """自行繪製「重新整理」圖示。
+
+    不能沿用 QStyle 的 SP_BrowserReload：它只提供 24×24 與 32×32 兩種尺寸，
+    在 64px 的工具列裡 Qt 不會放大，只會把 32px 置中，看起來只有其他圖示的
+    一半大。其餘系統圖示（垃圾桶、資料夾、方向箭頭）都有 128×128，不受影響。
+    """
+    pix = QPixmap(size, size)
+    pix.fill(Qt.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.Antialiasing)
+
+    def pt(fx, fy):
+        return QPoint(int(size * fx), int(size * fy))
+
+    blue = QColor("#2f7bd8")
+    blue_dark = QColor("#1c4f95")
+    margin = int(size * 0.16)
+    span = size - margin * 2
+
+    # 主體：留一個缺口的粗圓弧，缺口處接箭頭
+    p.setBrush(Qt.NoBrush)
+    p.setPen(QPen(blue_dark, size * 0.175, Qt.SolidLine, Qt.FlatCap))
+    p.drawArc(margin, margin, span, span, 55 * 16, 265 * 16)
+    p.setPen(QPen(blue, size * 0.125, Qt.SolidLine, Qt.FlatCap))
+    p.drawArc(margin, margin, span, span, 55 * 16, 265 * 16)
+    # 高光讓圓弧有厚度，與資料夾類圖示同樣的立體感
+    p.setPen(QPen(blue.lighter(155), size * 0.045, Qt.SolidLine, Qt.FlatCap))
+    p.drawArc(int(margin + size * 0.045), int(margin + size * 0.045),
+              int(span - size * 0.09), int(span - size * 0.09), 120 * 16, 120 * 16)
+
+    # 箭頭：指向順時針方向，接在圓弧右上端的缺口上
+    p.setPen(QPen(blue_dark, 1.4, Qt.SolidLine, Qt.FlatCap, Qt.RoundJoin))
+    p.setBrush(blue)
+    p.drawPolygon(pt(0.60, 0.02), pt(0.99, 0.20), pt(0.60, 0.40))
+
+    p.end()
+    return QIcon(pix)
 
 
 class _LeftAlignTabStyle(QProxyStyle):
