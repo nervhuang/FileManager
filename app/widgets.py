@@ -416,8 +416,10 @@ class PathTabBar(QWidget):
 
     def _show_tab_list_menu(self, global_pos):
         menu = self.build_tab_list_menu()
-        if menu is not None:
-            menu.exec_(global_pos)
+        if menu is None:
+            return
+        menu.exec_(global_pos)
+        menu.deleteLater()   # 否則每開一次就多留一個 QMenu 掛在本元件底下
 
     def build_tab_list_menu(self):
         """建立「所有分頁」選單（不顯示）。分開建構與顯示以便測試。"""
@@ -448,11 +450,21 @@ class PathTabBar(QWidget):
         return menu
 
     def _activate_tab(self, index):
-        """切換到指定分頁。setCurrentIndex 會觸發既有的 _on_current_changed
-        並發出 tab_switched，面板內容照原本的流程更新。"""
+        """切換到指定分頁並讓面板顯示它的內容。
+
+        一般情況下 setCurrentIndex 會觸發既有的 _on_current_changed 發出
+        tab_switched；但點到的若已經是目前分頁，setCurrentIndex 不會發出
+        currentChanged，面板就不會更新。面板內容本來就可能與分頁存的資料不同步
+        （例如面板已導覽到別的目錄、分頁資料卻還是舊的），使用者從清單點選時的
+        期待是「顯示這個分頁的內容」，因此這種情況補發一次。
+        """
         if not (0 <= index < self.tab_bar.count()):
             return
-        self.tab_bar.setCurrentIndex(index)
+        if index == self.tab_bar.currentIndex():
+            if self._emit_on_change and index < len(self._tab_data):
+                self.tab_switched.emit(self._tab_data[index])
+        else:
+            self.tab_bar.setCurrentIndex(index)
         self.tab_bar.scroll_index_into_view(index)
 
     def _internal_add(self, data, label, index=None):
