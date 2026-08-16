@@ -25,6 +25,10 @@
   - Built on `QToolBar` so a narrowed panel folds the buttons into an overflow menu instead of forcing a wide minimum width (panel minimum stays 151px)
   - Edit and delete are disabled until something is selected
   - Default panel width is now 660px, the width at which all six buttons fit
+- Make the breadcrumb address bar follow the application font size
+  - Setting the font on `BreadcrumbBar` was not enough: the bar, its crumb buttons and its edit box each carry a stylesheet, and Qt treats a styled widget's font as explicitly set, so the parent's font stopped propagating. Every child is now assigned the font directly, and crumbs rebuilt on navigation inherit it too
+  - The bar's height now grows with the font instead of staying at its 30px minimum
+  - `_sync_right_header_spacing` is recomputed after the bar resizes; it previously ran before the new font was applied, leaving the search panel's tab bar 2px out of line at larger sizes
 - Draw the refresh icon instead of using `QStyle`'s
   - `SP_BrowserReload` only ships 24×24 and 32×32, and Qt does not upscale it, so in the 64px toolbars it rendered at half the size of every neighbouring icon — in both toolbars
   - New `widgets.make_refresh_icon()` draws it at the requested size; all 18 toolbar icons now report 64×64

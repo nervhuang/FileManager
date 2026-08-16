@@ -5,7 +5,8 @@ from PyQt5.QtWidgets import (QTabBar, QWidget, QHBoxLayout, QToolButton, QStyle,
                              QStyleOptionTab, QStylePainter, QApplication,
                              QProxyStyle, QLineEdit, QMenu, QStackedLayout, QSizePolicy)
 from PyQt5.QtCore import Qt, QRect, QRectF, QSize, QTimer, QEvent, QDir, QPoint, QPointF, pyqtSignal
-from PyQt5.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PyQt5.QtGui import (QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath,
+                         QPen, QPixmap)
 
 
 def make_refresh_icon(size=64):
@@ -486,9 +487,13 @@ class BreadcrumbBar(QWidget):
             "#breadcrumbBar{border:1px solid rgba(127,127,127,0.45);"
             "border-radius:4px;background:palette(base);}"
         )
-        self.setMinimumHeight(30)
+        self._base_height = 30
+        self.setMinimumHeight(self._base_height)
         self._current_path = ""
         self._pairs = []  # [(crumb_btn, chevron_btn, label, path), ...]
+        # 目前套用的字型。Qt 對設過 stylesheet 的元件會把字型視為「已明確設定」，
+        # 父層字型不再往下傳，因此每個子元件都得自己設一次（含之後重建的麵包屑）。
+        self._crumb_font = None
 
         self._stack = QStackedLayout(self)
         self._stack.setContentsMargins(0, 0, 0, 0)
@@ -524,6 +529,26 @@ class BreadcrumbBar(QWidget):
         self._current_path = path or ""
         self._rebuild()
 
+    def apply_font(self, font):
+        """套用字型到位址列的每一個子元件，並依字高調整列高。
+
+        不能只 setFont(self)：本列與其中的按鈕、編輯框都各自設了 stylesheet，
+        Qt 會把這些元件的字型視為已明確設定，父層字型無法傳下去。
+        """
+        self._crumb_font = QFont(font)
+        self.setFont(font)
+        self._area.setFont(font)
+        self._edit.setFont(font)
+        for btn in self.findChildren(QToolButton):
+            btn.setFont(font)
+        self.setMinimumHeight(max(self._base_height, QFontMetrics(font).height() + 12))
+        self._rebuild()   # 重建的麵包屑要拿到新字型
+
+    def _apply_crumb_font(self, btn):
+        if self._crumb_font is not None:
+            btn.setFont(self._crumb_font)
+        return btn
+
     def focus_edit(self):
         """切換成可編輯文字框並全選（Ctrl+L / Alt+D / 點空白區）。"""
         self._edit.setText(self._current_path)
@@ -539,7 +564,7 @@ class BreadcrumbBar(QWidget):
         btn.setStyleSheet(self._CRUMB_QSS)
         btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
         btn.clicked.connect(lambda _=False, p=path: self.path_selected.emit(p))
-        return btn
+        return self._apply_crumb_font(btn)
 
     def _make_chevron(self, path):
         """分段之間的下拉箭頭。path=完整路徑時列出其子資料夾；path=None 時列出磁碟機。"""
@@ -551,7 +576,7 @@ class BreadcrumbBar(QWidget):
         menu = QMenu(btn)
         menu.aboutToShow.connect(lambda m=menu, p=path: self._populate_dir_menu(m, p))
         btn.setMenu(menu)
-        return btn
+        return self._apply_crumb_font(btn)
 
     def _make_overflow_btn(self):
         btn = QToolButton(self._area)
@@ -563,7 +588,7 @@ class BreadcrumbBar(QWidget):
         self._overflow_menu = QMenu(btn)
         btn.setMenu(self._overflow_menu)
         btn.hide()
-        return btn
+        return self._apply_crumb_font(btn)
 
     def _populate_dir_menu(self, menu, path):
         menu.clear()

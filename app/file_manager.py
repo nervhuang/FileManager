@@ -2259,11 +2259,16 @@ class FileManager(QMainWindow):
         if getattr(self, 'path_bar', None) is not None:
             current_font = self.path_bar.font()
             f = QFont(current_font.family(), new_size)
-            self.path_bar.setFont(f)
+            # 位址列與其中的按鈕、編輯框各自設了 stylesheet，字型不會從父層傳下去，
+            # 必須由它自己逐一套用（見 BreadcrumbBar.apply_font）。
+            self.path_bar.apply_font(f)
             self.path_bar.set_path(self._current_dir())
         # 左側作者／團體面板（含其過濾框、樹與按鈕列）
         if getattr(self, 'authors_panel', None) is not None:
             self.authors_panel.apply_font_size(new_size)
+        # 位址列高度隨字型改變，須在它更新後再算一次右側留白，否則右側頁籤列
+        # 會沿用舊高度而與左側錯開幾個像素。
+        self._sync_right_header_spacing()
 
     def on_font_increase(self):
         # 放大字型，各增加 1pt（限制最大 72pt）
