@@ -159,7 +159,7 @@ class FileManager(QMainWindow):
         # 左側作者／團體面板：可隨時切換回原本的雙面板版面，狀態存 config.ini。
         # 這兩個值必須在 initUI 之前就位（initUI 會直接套用）。
         self._authors_panel_visible = True
-        self._authors_panel_width = 500
+        self._authors_panel_width = 660
         self.authors_panel = None
         self.main_splitter = None
         self._bridge_server = None
@@ -1851,7 +1851,9 @@ class FileManager(QMainWindow):
         self.action_authors_panel = view_menu.addAction("顯示作者清單面板(&A)")
         self.action_authors_panel.setCheckable(True)
         self.action_authors_panel.setChecked(self._authors_panel_visible)
-        self.action_authors_panel.setShortcut(QKeySequence("Ctrl+L"))
+        # Ctrl+L 已被麵包屑的 focus_edit 佔用（見 path_bar 的快捷鍵註冊），
+        # 兩者同綁會變成模稜兩可的快捷鍵而互相失效。
+        self.action_authors_panel.setShortcut(QKeySequence("Ctrl+Shift+A"))
         self.action_authors_panel.toggled.connect(self._set_authors_panel_visible)
 
         # 「選項」為頂層選單，排在「檢視」右邊，底下提供「排除設定」項目。
@@ -2438,7 +2440,7 @@ class FileManager(QMainWindow):
         self._set_right_panel_layout(Qt.Orientation.Vertical if right_splitter_orientation == 'vertical' else Qt.Orientation.Horizontal)
 
         # 還原左側作者清單面板的顯示狀態與寬度
-        self._authors_panel_width = max(cfg.getint('Layout', 'authors_panel_width', fallback=500), 80)
+        self._authors_panel_width = max(cfg.getint('Layout', 'authors_panel_width', fallback=660), 80)
         self._set_authors_panel_visible(cfg.getboolean('Layout', 'authors_panel_visible', fallback=True))
 
         # 還原兩個面板的欄位寬度、顯示與否，以及欄序
