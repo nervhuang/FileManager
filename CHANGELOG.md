@@ -18,6 +18,9 @@
     - The GUI answers the pipe before running a search, so slow queries no longer look like timeouts to the caller
   - Extract search-keyword parsing into `app/search_query.py` so the GUI and the MCP server produce identical results (verified against the previous implementation over every keyword in `config.ini`)
   - Extract runtime path resolution into `app/paths.py` (no Qt dependency)
+- Stop bundling `config.ini` into the packaged build
+  - It landed in `_internal/`, but the app reads `config.ini` next to the executable, so the bundled copy was never loaded — it only shipped the build machine's search history and private paths
+  - First launch with no `config.ini` was already supported: the app runs on built-in defaults and writes the file on exit
 
 ## 2026-06-17
 - Fix file-operation stalls and full-width-bracket search handling
