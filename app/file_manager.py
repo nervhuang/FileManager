@@ -12,7 +12,7 @@ from datetime import datetime
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QFileSystemModel, QWidget,
     QHBoxLayout, QVBoxLayout, QAction, QMessageBox, QStyle,
-    QToolButton, QSplitter, QSizePolicy, QFileIconProvider,
+    QToolButton, QToolBar, QSplitter, QSizePolicy, QFileIconProvider,
     QAbstractItemView, QMenu, QComboBox,
     QDialog, QCheckBox, QListWidget, QFileDialog, QDialogButtonBox,
     QPushButton, QLabel, QActionGroup, QShortcut, QFrame,
@@ -393,16 +393,29 @@ class FileManager(QMainWindow):
             return button
 
         def build_panel_toolbar(button_specs):
-            bar = QWidget(self)
-            layout = QHBoxLayout()
-            layout.setContentsMargins(2, 2, 2, 2)
-            layout.setSpacing(2)
+            """建立面板工具列。
+
+            用 QToolBar 而非固定的 QHBoxLayout：後者的最小寬度等於所有按鈕寬度
+            總和（加大圖示與文字後高達 1500px），會把中間面板的最小寬度一起撐到
+            那麼寬，導致左側作者面板的分隔線在一般視窗寬度下根本拖不動。QToolBar
+            在寬度不足時會把排不下的按鈕收進溢位選單，最小寬度僅一顆按鈕。
+            """
+            bar = QToolBar(self)
+            bar.setFloatable(False)
+            bar.setMovable(False)
+            bar.setFocusPolicy(Qt.NoFocus)
+            bar.setIconSize(self._toolbar_icon_size)
+            bar.setContentsMargins(2, 2, 2, 2)
+            bar.setStyleSheet("QToolBar { spacing: 6px; }")  # 加大圖示後放寬按鈕間距
             buttons = []
-            for icon, tooltip, handler in button_specs:
+            for spec in button_specs:
+                if spec is None:  # 群組之間的分隔線
+                    bar.addSeparator()
+                    continue
+                icon, tooltip, handler = spec
                 btn = make_panel_nav_button(icon, tooltip, handler)
-                layout.addWidget(btn)
+                bar.addWidget(btn)
                 buttons.append(btn)
-            bar.setLayout(layout)
             return bar, buttons
 
         # 使用 QToolButton 並將其明確命名（以便後續啟用/停用）
@@ -423,19 +436,9 @@ class FileManager(QMainWindow):
             (QStyle.StandardPixmap.SP_ArrowBack, "前一頁", self._navigate_back),
             (QStyle.StandardPixmap.SP_ArrowForward, "後一頁", self._navigate_forward),
             (up_folder_icon, "回到上一層目錄", self._navigate_up),
+            None,  # 導覽 ┃ 新增+排列
             (QStyle.StandardPixmap.SP_FileDialogNewFolder, "新增資料夾", self._create_folder_in_current_dir),
         ])
-        toolbar_layout = self.mid_panel_toolbar.layout()
-        toolbar_layout.setSpacing(6)  # 加大圖示後放寬按鈕間距，畫面更透氣
-
-        def make_vsep():
-            """群組之間的垂直分隔線（Explorer 風格分區）。"""
-            sep = QFrame(self)
-            sep.setFrameShape(QFrame.VLine)
-            sep.setFrameShadow(QFrame.Plain)
-            sep.setStyleSheet("color: rgba(127, 127, 127, 0.40);")
-            sep.setFixedWidth(2)
-            return sep
 
         # Phase B：檔案總管風格的操作按鈕（圖示＋文字），作用於目前焦點面板。
         def make_glyph_icon(kind):
@@ -489,7 +492,8 @@ class FileManager(QMainWindow):
             btn.setIconSize(self._toolbar_icon_size)
             btn.setText(text)
             btn.setToolTip(text)
-            btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            # 文字置於圖示下方，與左側作者面板工具列同一種排法與高度
+            btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
             btn.setAutoRaise(True)
             btn.setFocusPolicy(Qt.NoFocus)
             # 文字與加大的圖示等比放大，避免頭大身小
@@ -507,16 +511,13 @@ class FileManager(QMainWindow):
         self.act_refresh = make_action_button(QStyle.StandardPixmap.SP_BrowserReload, "重新整理", lambda: self.refresh_mid_panel(force=True))
         # 上下/左右排列鈕緊接「新增資料夾」，排在操作按鈕左邊
         self.layout_horizontal_button = make_panel_nav_button(horizontal_layout_icon, "左右排列", lambda: self._set_right_panel_layout(Qt.Orientation.Horizontal))
-        toolbar_layout.addWidget(self.layout_horizontal_button)
+        self.mid_panel_toolbar.addWidget(self.layout_horizontal_button)
         self.layout_vertical_button = make_panel_nav_button(vertical_layout_icon, "上下排列", lambda: self._set_right_panel_layout(Qt.Orientation.Vertical))
-        toolbar_layout.addWidget(self.layout_vertical_button)
+        self.mid_panel_toolbar.addWidget(self.layout_vertical_button)
+        # 新增+排列 ┃ 操作
+        self.mid_panel_toolbar.addSeparator()
         for _btn in (self.act_cut, self.act_copy, self.act_paste, self.act_rename, self.act_delete, self.act_refresh):
-            toolbar_layout.addWidget(_btn)
-        # 麵包屑改到工具列下方獨立一行，這裡以彈性空間讓按鈕維持靠左
-        toolbar_layout.addStretch(1)
-        # 三組分隔線：導覽 ┃ 新增+排列 ┃ 操作
-        toolbar_layout.insertWidget(toolbar_layout.indexOf(self.mid_nav_buttons[3]), make_vsep())
-        toolbar_layout.insertWidget(toolbar_layout.indexOf(self.act_cut), make_vsep())
+            self.mid_panel_toolbar.addWidget(_btn)
 
         # 「選項…」等功能改由視窗頂端的功能表列（檔案 選單）提供，不再放漢堡選單。
         self._build_menu_bar()
@@ -589,6 +590,11 @@ class FileManager(QMainWindow):
         self.authors_panel = AuthorsPanel(self)
         # 工具列圖示與中間檔案面板同尺寸（面板可獨立關閉，故不併入主工具列）
         self.authors_panel.set_toolbar_icon_size(self._toolbar_icon_size)
+        # 兩條工具列雖然各自獨立，但左右並排，高度必須一致才不會錯開一階
+        toolbar_height = max(self.mid_panel_toolbar.sizeHint().height(),
+                             self.authors_panel.toolbar.sizeHint().height())
+        self.mid_panel_toolbar.setFixedHeight(toolbar_height)
+        self.authors_panel.toolbar.setFixedHeight(toolbar_height)
         self.authors_panel.search_requested.connect(self._on_authors_search_requested)
 
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -2013,7 +2019,10 @@ class FileManager(QMainWindow):
             spacer_height = 0
         else:
             # 左側頁籤列上方有「工具列 + 分隔線 + 麵包屑 + 分隔線」，右側補相同總高才對齊
-            spacer_height = self.mid_panel_toolbar.sizeHint().height()
+            # 工具列已固定高度（與左側作者面板工具列對齊），此時 sizeHint 會小於
+            # 實際高度，只看 sizeHint 會讓右側頁籤列短一截而對不齊。
+            spacer_height = max(self.mid_panel_toolbar.sizeHint().height(),
+                                self.mid_panel_toolbar.minimumHeight())
             if getattr(self, 'path_bar', None) is not None:
                 # 麵包屑實際高度受 minimumHeight 影響，可能大於 sizeHint
                 spacer_height += max(self.path_bar.sizeHint().height(), self.path_bar.minimumHeight())

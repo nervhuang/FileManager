@@ -25,6 +25,10 @@
   - Built on `QToolBar` so a narrowed panel folds the buttons into an overflow menu instead of forcing a wide minimum width (panel minimum stays 151px)
   - Edit and delete are disabled until something is selected
   - Default panel width is now 660px, the width at which all six buttons fit
+- Rebuild the file panel toolbar on `QToolBar` and enlarge it to match the authors panel toolbar
+  - Its fixed `QHBoxLayout` had a 1506px minimum width, which propagated to the middle panel and made the authors panel's splitter handle undraggable below a 1657px window — both sides sat at their minimum. The minimum is now 94px and the handle moves freely
+  - Buttons switched to text-under-icon so both toolbars are the same shape, and both are pinned to the same height so they cannot drift apart
+  - `_sync_right_header_spacing` now measures the toolbar's fixed height rather than its `sizeHint`, which is 4px smaller and would misalign the search panel's tab bar
 - Move the authors panel toggle off `Ctrl+L`, which the breadcrumb bar already uses to focus its path editor — two actions on one sequence made it an ambiguous shortcut. It is now `Ctrl+Shift+A`
 - Make it harder to end up with an author and its circle as two unrelated entries
   - New `fm_authors_link` tool links (or unlinks) an author and a circle on its own, creating either side if missing — `fm_authors_upsert` previously required resending the whole record just to add a relation
