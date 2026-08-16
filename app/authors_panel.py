@@ -4,14 +4,16 @@
 單擊清單項目即以「名稱＋所有別名」組成 OR 查詢，在右側面板開一個搜尋分頁。
 """
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import QPoint, QSize, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeView, QToolButton,
     QDialog, QDialogButtonBox, QLabel, QComboBox, QListWidget, QPushButton,
     QMessageBox, QMenu, QTableWidget, QTableWidgetItem, QAbstractItemView,
-    QHeaderView,
+    QHeaderView, QFrame,
 )
-from PyQt5.QtGui import QFont, QStandardItem, QStandardItemModel
+from PyQt5.QtGui import (
+    QColor, QFont, QIcon, QPainter, QPen, QPixmap, QStandardItem, QStandardItemModel,
+)
 
 from . import authors_db
 
@@ -19,6 +21,73 @@ ENTITY_ID_ROLE = Qt.UserRole + 1
 ENTITY_TYPE_ROLE = Qt.UserRole + 2
 
 _TYPE_LABEL = {authors_db.AUTHOR: '作者', authors_db.CIRCLE: '團體'}
+
+
+def _make_glyph_icon(kind):
+    """畫出工具列圖示。
+
+    一律畫在 64×64 的畫布上再由 QToolButton 縮到實際大小，高 DPI 下才不會糊。
+    筆觸與主工具列的 make_glyph_icon 一致（同樣的墨色與線寬）。
+    """
+    canvas = 64
+    pix = QPixmap(canvas, canvas)
+    pix.fill(Qt.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.Antialiasing)
+    ink = QColor("#4a4a4a")
+    painter.setPen(QPen(ink, 3.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    painter.setBrush(Qt.NoBrush)
+
+    def pt(fx, fy):
+        return QPoint(int(canvas * fx), int(canvas * fy))
+
+    def person(cx, scale=1.0):
+        """一個人：頭加肩線。"""
+        head = int(canvas * 0.15 * scale)
+        painter.drawEllipse(int(canvas * cx) - head // 2, int(canvas * (0.30 - 0.07 * scale)),
+                            head, head)
+        painter.drawArc(int(canvas * (cx - 0.17 * scale)), int(canvas * 0.50),
+                        int(canvas * 0.34 * scale), int(canvas * 0.40 * scale), 0, 180 * 16)
+
+    def plus(cx, cy, half=0.11):
+        painter.drawLine(pt(cx - half, cy), pt(cx + half, cy))
+        painter.drawLine(pt(cx, cy - half), pt(cx, cy + half))
+
+    if kind == 'add_author':
+        person(0.40)
+        plus(0.78, 0.30)
+    elif kind == 'add_circle':
+        person(0.30, 0.85)
+        person(0.55, 0.85)
+        plus(0.82, 0.30, 0.10)
+    elif kind == 'edit':
+        painter.drawLine(pt(0.22, 0.78), pt(0.68, 0.32))
+        painter.setBrush(ink)
+        painter.drawPolygon(pt(0.15, 0.85), pt(0.31, 0.79), pt(0.23, 0.68))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawLine(pt(0.60, 0.22), pt(0.78, 0.40))
+    elif kind == 'delete':
+        painter.drawLine(pt(0.18, 0.30), pt(0.82, 0.30))
+        painter.drawLine(pt(0.40, 0.30), pt(0.42, 0.20))
+        painter.drawLine(pt(0.60, 0.30), pt(0.58, 0.20))
+        painter.drawLine(pt(0.42, 0.20), pt(0.58, 0.20))
+        painter.drawLine(pt(0.26, 0.30), pt(0.32, 0.84))
+        painter.drawLine(pt(0.74, 0.30), pt(0.68, 0.84))
+        painter.drawLine(pt(0.32, 0.84), pt(0.68, 0.84))
+    elif kind == 'refresh':
+        rect_margin = int(canvas * 0.22)
+        painter.drawArc(rect_margin, rect_margin, canvas - 2 * rect_margin,
+                        canvas - 2 * rect_margin, 40 * 16, 280 * 16)
+        painter.setBrush(ink)
+        painter.drawPolygon(pt(0.70, 0.16), pt(0.86, 0.30), pt(0.66, 0.36))
+    elif kind == 'history':
+        margin = int(canvas * 0.18)
+        painter.drawEllipse(margin, margin, canvas - 2 * margin, canvas - 2 * margin)
+        painter.drawLine(pt(0.50, 0.50), pt(0.50, 0.30))
+        painter.drawLine(pt(0.50, 0.50), pt(0.66, 0.58))
+
+    painter.end()
+    return QIcon(pix)
 
 
 def _inherit_font(dialog, parent):
@@ -40,6 +109,9 @@ class EntityEditDialog(QDialog):
         self._entity = entity
         self.setWindowTitle('編輯項目' if entity else '新增項目')
         self.resize(520, 480)
+
+        # 每個「清單＋輸入框」欄位的提交函式，按確定時一併沖出未按 Enter 的殘留文字
+        self._list_committers = []
 
         layout = QVBoxLayout(self)
 
@@ -116,6 +188,7 @@ class EntityEditDialog(QDialog):
 
         line.returnPressed.connect(_add)
         remove_button.clicked.connect(_remove)
+        self._list_committers.append(_add)
         return list_widget, line, container
 
     def _refresh_link_hint(self):
@@ -125,6 +198,10 @@ class EntityEditDialog(QDialog):
             self.link_label.setText('旗下作者：')
 
     def _on_accept(self):
+        # 使用者常在別名／關聯欄打完字就直接按確定，沒按 Enter。先把殘留文字
+        # 收進清單，否則那行字會被無聲丟掉（關聯漏掉時，項目就會變成孤立實體）。
+        for commit in self._list_committers:
+            commit()
         if not self.name_edit.text().strip():
             QMessageBox.warning(self, '名稱不可空白', '請輸入名稱。')
             return
@@ -229,6 +306,9 @@ class AuthorsPanel(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
+        layout.addWidget(self._build_toolbar())
+        layout.addWidget(self._make_hline())
+
         self.filter_edit = QLineEdit(self)
         self.filter_edit.setPlaceholderText('過濾名稱或別名…')
         self.filter_edit.setClearButtonEnabled(True)
@@ -243,29 +323,68 @@ class AuthorsPanel(QWidget):
         self.tree.clicked.connect(self._on_clicked)
         self.model = QStandardItemModel(self)
         self.tree.setModel(self.model)
+        self.tree.selectionModel().selectionChanged.connect(
+            lambda *args: self._update_toolbar_state())
         layout.addWidget(self.tree, 1)
 
-        button_row = QHBoxLayout()
-        button_row.setSpacing(2)
-        self._buttons = []
-        for text, tooltip, slot in (
-            ('＋作者', '新增作者', lambda: self._add_entity(authors_db.AUTHOR)),
-            ('＋團體', '新增團體', lambda: self._add_entity(authors_db.CIRCLE)),
-            ('編輯', '編輯選取項目', self._edit_selected),
-            ('刪除', '刪除選取項目（可還原）', self._delete_selected),
-            ('⟳', '重新整理', self.reload),
-            ('紀錄', '最近變更／還原', self._open_changes),
-        ):
-            button = QToolButton(self)
-            button.setText(text)
-            button.setToolTip(tooltip)
-            button.clicked.connect(slot)
-            button_row.addWidget(button)
-            self._buttons.append(button)
-        button_row.addStretch(1)
-        layout.addLayout(button_row)
-
         self.reload()
+
+    def _make_hline(self):
+        line = QFrame(self)
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Plain)
+        line.setStyleSheet("color: rgba(127, 127, 127, 0.30);")
+        line.setFixedHeight(1)
+        return line
+
+    def _build_toolbar(self):
+        """面板頂端的圖示工具列（與中間面板的工具列同一種視覺語彙）。"""
+        bar = QWidget(self)
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(2, 2, 2, 2)
+        row.setSpacing(2)
+
+        self._buttons = []
+        self._selection_buttons = []
+        specs = (
+            ('add_author', '新增作者', lambda: self._add_entity(authors_db.AUTHOR), False),
+            ('add_circle', '新增團體', lambda: self._add_entity(authors_db.CIRCLE), False),
+            (None, None, None, None),
+            ('edit', '編輯選取項目', self._edit_selected, True),
+            ('delete', '刪除選取項目（可還原）', self._delete_selected, True),
+            (None, None, None, None),
+            ('refresh', '重新整理', self.reload, False),
+            ('history', '最近變更／還原', self._open_changes, False),
+        )
+        for kind, tooltip, slot, needs_selection in specs:
+            if kind is None:
+                separator = QFrame(bar)
+                separator.setFrameShape(QFrame.VLine)
+                separator.setFrameShadow(QFrame.Plain)
+                separator.setStyleSheet("color: rgba(127, 127, 127, 0.40);")
+                separator.setFixedWidth(2)
+                row.addWidget(separator)
+                continue
+            button = QToolButton(bar)
+            button.setIcon(_make_glyph_icon(kind))
+            button.setIconSize(QSize(20, 20))
+            button.setToolTip(tooltip)
+            button.setAutoRaise(True)
+            # 不搶走樹的焦點，否則按下編輯/刪除時 currentIndex 會失去視覺提示
+            button.setFocusPolicy(Qt.NoFocus)
+            button.clicked.connect(slot)
+            row.addWidget(button)
+            self._buttons.append(button)
+            if needs_selection:
+                self._selection_buttons.append(button)
+        row.addStretch(1)
+        return bar
+
+    def _update_toolbar_state(self):
+        """沒選到任何實體時，編輯與刪除按鈕停用。"""
+        has_selection = self._selected_entity_id() is not None
+        for button in self._selection_buttons:
+            button.setEnabled(has_selection)
 
     def apply_font_size(self, size):
         """跟隨主視窗的字型大小（Ctrl+= / Ctrl+-）。
@@ -275,8 +394,13 @@ class AuthorsPanel(QWidget):
         """
         font = QFont(self.font().family(), size)
         self.setFont(font)
-        for widget in [self.filter_edit, self.tree] + self._buttons:
+        for widget in (self.filter_edit, self.tree):
             widget.setFont(font)
+        # 圖示跟著字型一起縮放，字放大時工具列才不會顯得過小
+        icon_size = QSize(max(14, int(size * 1.6)), max(14, int(size * 1.6)))
+        for button in self._buttons:
+            button.setFont(font)
+            button.setIconSize(icon_size)
         self.tree.doItemsLayout()
 
     # ── 資料 ────────────────────────────────────────────────────────────
@@ -289,7 +413,6 @@ class AuthorsPanel(QWidget):
         entities = authors_db.list_entities(self._conn, keyword=keyword)
         circles = [e for e in entities if e['type'] == authors_db.CIRCLE]
         authors = [e for e in entities if e['type'] == authors_db.AUTHOR]
-        linked_author_ids = {item['id'] for c in circles for item in c['linked']}
 
         self.model.clear()
         root = self.model.invisibleRootItem()
@@ -306,9 +429,10 @@ class AuthorsPanel(QWidget):
             circle_group.appendRow(circle_item)
         root.appendRow(circle_group)
 
-        loose = [a for a in authors if a['id'] not in linked_author_ids]
+        # 作者一律全列（含已歸屬團體者），標題數字才與實際列出的筆數相符，
+        # 也讓任何作者都能不展開團體就直接找到。已歸屬者同時出現在團體底下。
         author_group = self._make_group_item(f'作者（{len(authors)}）')
-        for author in (loose if not keyword else authors):
+        for author in authors:
             author_group.appendRow(self._make_entity_item(author))
         root.appendRow(author_group)
 
@@ -317,6 +441,7 @@ class AuthorsPanel(QWidget):
             self.tree.expandAll()
         else:
             self.tree.expandToDepth(0)
+        self._update_toolbar_state()
 
     def _make_group_item(self, text):
         item = QStandardItem(text)

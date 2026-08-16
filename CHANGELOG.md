@@ -18,6 +18,14 @@
     - The GUI answers the pipe before running a search, so slow queries no longer look like timeouts to the caller
   - Extract search-keyword parsing into `app/search_query.py` so the GUI and the MCP server produce identical results (verified against the previous implementation over every keyword in `config.ini`)
   - Extract runtime path resolution into `app/paths.py` (no Qt dependency)
+- Add an icon toolbar above the authors panel's filter box
+  - Add author / add circle / edit / delete / refresh / recent changes, grouped by separators, replacing the text buttons at the bottom
+  - Edit and delete are disabled until something is selected; icons scale with the application font size
+- Make it harder to end up with an author and its circle as two unrelated entries
+  - New `fm_authors_link` tool links (or unlinks) an author and a circle on its own, creating either side if missing — `fm_authors_upsert` previously required resending the whole record just to add a relation
+  - `fm_authors_upsert` now states explicitly that a known author/circle pair must be sent with `linked_names`
+  - The edit dialog dropped whatever was typed into the alias/link boxes when OK was pressed without Enter; pending text is now committed first
+- List every author under the 作者 group, not only those with no circle, so the group's count matches what it shows
 - Make the authors panel follow the application font size
   - `_apply_font_size` never touched the panel, so its tree, filter box and buttons stayed at the default size and ignored Ctrl+= / Ctrl+- (and the size restored from `config.ini` at startup)
   - Its dialogs did not inherit either: Qt stops font propagation at top-level window boundaries, so they always opened at the application default regardless of the panel's size

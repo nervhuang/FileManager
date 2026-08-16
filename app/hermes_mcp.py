@@ -172,6 +172,13 @@ def fm_authors_upsert(entries: list) -> dict:
                     對方不存在會自動建檔)、note。
     以 (type, name) 找得到現有項目時會更新它，不會重複新增。
     所有變更都會寫入變更紀錄，使用者可在 GUI 一鍵還原。
+
+    重要：當你同時知道某個作者與其所屬團體時，**必須**用 linked_names 把兩者
+    關聯起來，不要送成兩筆彼此無關的 entry。少了關聯，它們在使用者的清單裡會
+    變成兩個孤立項目，而不是團體底下掛著作者。
+    只送一筆帶 linked_names 的 entry 即可，另一邊會自動建檔並雙向關聯：
+        [{"name": "南浜屋", "type": "circle", "linked_names": ["南浜よりこ"]}]
+    若兩者已經各自存在、只是還沒關聯，改用 fm_authors_link 補上就好。
     """
     if not isinstance(entries, list) or not entries:
         return {'ok': False, 'error': 'entries 必須是非空陣列'}
@@ -185,6 +192,36 @@ def fm_authors_upsert(entries: list) -> dict:
     gui_bridge.notify_authors_changed()
     return {'ok': True, 'created': result['created'], 'updated': result['updated'],
             'entities': entities}
+
+
+@server.tool()
+def fm_authors_link(author: str, circle: str, unlink: bool = False) -> dict:
+    """把一個作者掛到一個團體底下，或解除該關聯。
+
+    作者與團體是多對多：一個作者可屬於多個團體，一個團體可有多個作者，
+    重複呼叫同一組不會產生重複資料。任一邊不存在時會自動建檔，因此這也是
+    「發現某作者屬於某團體」時最省事的寫法。
+    unlink=true 則是解除關聯（兩個項目本身都保留）。
+    """
+    try:
+        with closing(authors_db.connect()) as conn:
+            if unlink:
+                author_entity = _resolve_entity(conn, author, authors_db.AUTHOR, 0)
+                circle_entity = _resolve_entity(conn, circle, authors_db.CIRCLE, 0)
+                if author_entity is None or circle_entity is None:
+                    return {'ok': False, 'reason': 'not_found',
+                            'error': f'清單中找不到 {author!r} 或 {circle!r}'}
+                result = authors_db.unlink(conn, author_entity['id'], circle_entity['id'],
+                                           source=authors_db.SOURCE_HERMES)
+                payload = {'author': result}
+            else:
+                author_entity, circle_entity = authors_db.link(
+                    conn, author, circle, source=authors_db.SOURCE_HERMES)
+                payload = {'author': author_entity, 'circle': circle_entity}
+    except authors_db.AuthorsDbError as exc:
+        return {'ok': False, 'error': str(exc)}
+    gui_bridge.notify_authors_changed()
+    return {'ok': True, **payload}
 
 
 @server.tool()

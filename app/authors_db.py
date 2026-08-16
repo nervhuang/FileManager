@@ -302,6 +302,42 @@ def upsert(conn, entries, source=SOURCE_LOCAL):
     return {'created': created, 'updated': updated}
 
 
+def link(conn, author_name, circle_name, source=SOURCE_LOCAL):
+    """建立作者⇄團體關聯；任一邊不存在就自動建檔。
+
+    upsert 需要整筆資料才能帶關聯，很容易在分兩次寫入時漏掉；這個入口只做
+    關聯本身，補救成本低。
+    """
+    author_name = (author_name or '').strip()
+    circle_name = (circle_name or '').strip()
+    if not author_name or not circle_name:
+        raise AuthorsDbError('作者與團體名稱都不可空白')
+
+    now = _now()
+    with conn:
+        author_id = _ensure_entity(conn, author_name, AUTHOR, source, now)
+        circle_id = _ensure_entity(conn, circle_name, CIRCLE, source, now)
+        before = get_entity(conn, author_id)
+        _link(conn, author_id, circle_id)
+        conn.execute('UPDATE entities SET updated_at = ? WHERE id = ?', (now, author_id))
+        _log_change(conn, source, 'update', author_id, before, get_entity(conn, author_id))
+    return get_entity(conn, author_id), get_entity(conn, circle_id)
+
+
+def unlink(conn, author_id, circle_id, source=SOURCE_LOCAL):
+    """解除一組作者⇄團體關聯（兩個實體本身都保留）。"""
+    now = _now()
+    with conn:
+        before = get_entity(conn, author_id)
+        if before is None:
+            raise AuthorsDbError(f'找不到 id={author_id} 的作者')
+        conn.execute('DELETE FROM links WHERE author_id = ? AND circle_id = ?',
+                     (author_id, circle_id))
+        conn.execute('UPDATE entities SET updated_at = ? WHERE id = ?', (now, author_id))
+        _log_change(conn, source, 'update', author_id, before, get_entity(conn, author_id))
+    return get_entity(conn, author_id)
+
+
 def soft_delete(conn, ids, source=SOURCE_LOCAL):
     """軟刪除：標記 deleted=1，保留別名與關聯，可從變更紀錄還原。"""
     deleted = []
