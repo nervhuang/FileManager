@@ -364,9 +364,28 @@ class PathTabBar(QWidget):
         self._add_btn.setToolTip("新增頁籤")
         self._add_btn.setFixedSize(22, 22)
         self._add_btn.clicked.connect(lambda: self.add_tab(""))
+        # 「＋」上按右鍵＝列出所有分頁
+        self._add_btn.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._add_btn.customContextMenuRequested.connect(
+            lambda pos: self._show_tab_list_menu(self._add_btn.mapToGlobal(pos)))
+
+        # 分頁清單鈕：頁籤只有 10 個字寬且會被截斷，分頁一多就認不出誰是誰，
+        # 這顆鈕列出每個分頁的完整路徑／關鍵字，點一下直接跳過去。
+        self._list_btn = QToolButton(self)
+        self._list_btn.setArrowType(Qt.DownArrow)
+        self._list_btn.setToolTip("所有分頁")
+        self._list_btn.setFixedSize(22, 22)
+        self._list_btn.clicked.connect(
+            lambda: self._show_tab_list_menu(
+                self._list_btn.mapToGlobal(QPoint(0, self._list_btn.height()))))
+
+        # 頁籤列的空白處按右鍵也叫得出來；按在頁籤本身則不反應
+        self.tab_bar.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tab_bar.customContextMenuRequested.connect(self._on_tab_bar_context_menu)
 
         layout.addWidget(self.tab_bar, 1)
         layout.addWidget(self._add_btn, 0)
+        layout.addWidget(self._list_btn, 0)
         self.setLayout(layout)
 
         self._tab_data = []
@@ -379,8 +398,62 @@ class PathTabBar(QWidget):
     def sync_height(self, target_height=None):
         bar_height = max(target_height if target_height is not None else self.tab_bar.sizeHint().height(), 22)
         self.tab_bar.setFixedHeight(bar_height)
-        self._add_btn.setFixedSize(bar_height, bar_height)
+        for btn in (self._add_btn, self._list_btn):
+            btn.setFixedSize(bar_height, bar_height)
         self.setFixedHeight(bar_height)
+
+    # ---- 所有分頁清單 --------------------------------------------------
+
+    def _on_tab_bar_context_menu(self, pos):
+        """只在頁籤列的空白處回應右鍵；按在頁籤上不動作。"""
+        if self.tab_bar.tabAt(pos) < 0:
+            self._show_tab_list_menu(self.tab_bar.mapToGlobal(pos))
+
+    def _tab_list_label(self, index):
+        """清單上要顯示的文字：優先用完整資料，沒有資料才退回頁籤標籤。"""
+        data = self._tab_data[index] if index < len(self._tab_data) else ""
+        return data or self.tab_bar.tabText(index)
+
+    def _show_tab_list_menu(self, global_pos):
+        menu = self.build_tab_list_menu()
+        if menu is not None:
+            menu.exec_(global_pos)
+
+    def build_tab_list_menu(self):
+        """建立「所有分頁」選單（不顯示）。分開建構與顯示以便測試。"""
+        if self.tab_bar.count() == 0:
+            return None
+        menu = QMenu(self)
+        # QMenu 不會從父層繼承已放大的字型，必須明確指定，否則字型放大後清單仍是預設大小
+        menu.setFont(self.tab_bar.font())
+        menu.setToolTipsVisible(True)
+
+        metrics = QFontMetrics(menu.font())
+        max_width = metrics.averageCharWidth() * 48   # 超過此寬度才省略，約 48 個字
+        current = self.tab_bar.currentIndex()
+        bold = QFont(menu.font())
+        bold.setBold(True)
+
+        for index in range(self.tab_bar.count()):
+            full = self._tab_list_label(index)
+            # 中間省略：路徑的磁碟機與最後一層資料夾都是辨識關鍵，頭尾都要保留
+            action = menu.addAction(metrics.elidedText(full, Qt.ElideMiddle, max_width))
+            action.setToolTip(full)
+            if index == current:
+                action.setCheckable(True)
+                action.setChecked(True)
+                action.setFont(bold)
+            action.triggered.connect(lambda _=False, i=index: self._activate_tab(i))
+
+        return menu
+
+    def _activate_tab(self, index):
+        """切換到指定分頁。setCurrentIndex 會觸發既有的 _on_current_changed
+        並發出 tab_switched，面板內容照原本的流程更新。"""
+        if not (0 <= index < self.tab_bar.count()):
+            return
+        self.tab_bar.setCurrentIndex(index)
+        self.tab_bar.scroll_index_into_view(index)
 
     def _internal_add(self, data, label, index=None):
         prev = self._emit_on_change

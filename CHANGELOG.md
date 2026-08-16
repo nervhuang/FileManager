@@ -25,6 +25,11 @@
   - Built on `QToolBar` so a narrowed panel folds the buttons into an overflow menu instead of forcing a wide minimum width (panel minimum stays 151px)
   - Edit and delete are disabled until something is selected
   - Default panel width is now 660px, the width at which all six buttons fit
+- Add an "all tabs" list to both panels' tab bars
+  - Opened by right-clicking the ＋ button, right-clicking blank space on the tab bar, or clicking the new ˅ button next to ＋; right-clicking a tab itself does nothing
+  - Each row shows the tab's full path or search keyword rather than the 10-character label the tab itself can fit, elided in the middle so the drive and the last folder both stay visible, with the full text in a tooltip
+  - The current tab is check-marked and bold; clicking a row switches to that tab and scrolls it into view
+  - Tabs with no data fall back to their label (本機 / 新頁籤)
 - Scale the tab close button with the application font size
   - Tabs already grew with the font, but the close button's size comes from the style's `PM_TabCloseIndicator*` metric, so the ✕ shrank in relative terms as the font grew. The button is now sized from the tab bar's font metrics and resized again whenever a tab is added or the font changes
   - Resizing the button alone was not enough: the native style paints a fixed-size ✕ centred in whatever rect it is given. A proxy style now paints the ✕ scaled to the button, along with its own hover and pressed feedback
