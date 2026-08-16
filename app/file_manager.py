@@ -2246,6 +2246,9 @@ class FileManager(QMainWindow):
             f = QFont(current_font.family(), new_size)
             self.path_bar.setFont(f)
             self.path_bar.set_path(self._current_dir())
+        # 左側作者／團體面板（含其過濾框、樹與按鈕列）
+        if getattr(self, 'authors_panel', None) is not None:
+            self.authors_panel.apply_font_size(new_size)
 
     def on_font_increase(self):
         # 放大字型，各增加 1pt（限制最大 72pt）

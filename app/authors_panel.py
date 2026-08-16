@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QMessageBox, QMenu, QTableWidget, QTableWidgetItem, QAbstractItemView,
     QHeaderView,
 )
-from PyQt5.QtGui import QStandardItem, QStandardItemModel
+from PyQt5.QtGui import QFont, QStandardItem, QStandardItemModel
 
 from . import authors_db
 
@@ -21,11 +21,21 @@ ENTITY_TYPE_ROLE = Qt.UserRole + 2
 _TYPE_LABEL = {authors_db.AUTHOR: '作者', authors_db.CIRCLE: '團體'}
 
 
+def _inherit_font(dialog, parent):
+    """讓對話框沿用開啟它的面板字型。
+
+    Qt 的字型傳遞在頂層視窗邊界就停了：對話框即使有 parent，也只會拿到應用程式
+    預設字型，不會跟著使用者 Ctrl+= 調整過的大小走。"""
+    if parent is not None:
+        dialog.setFont(parent.font())
+
+
 class EntityEditDialog(QDialog):
     """新增／編輯單一作者或團體：名稱、類型、別名、關聯對象、備註。"""
 
     def __init__(self, conn, entity=None, default_type=authors_db.AUTHOR, parent=None):
         super().__init__(parent)
+        _inherit_font(self, parent)
         self._conn = conn
         self._entity = entity
         self.setWindowTitle('編輯項目' if entity else '新增項目')
@@ -143,6 +153,7 @@ class RecentChangesDialog(QDialog):
 
     def __init__(self, conn, parent=None):
         super().__init__(parent)
+        _inherit_font(self, parent)
         self._conn = conn
         self.setWindowTitle('最近變更')
         self.resize(760, 460)
@@ -236,6 +247,7 @@ class AuthorsPanel(QWidget):
 
         button_row = QHBoxLayout()
         button_row.setSpacing(2)
+        self._buttons = []
         for text, tooltip, slot in (
             ('＋作者', '新增作者', lambda: self._add_entity(authors_db.AUTHOR)),
             ('＋團體', '新增團體', lambda: self._add_entity(authors_db.CIRCLE)),
@@ -249,10 +261,23 @@ class AuthorsPanel(QWidget):
             button.setToolTip(tooltip)
             button.clicked.connect(slot)
             button_row.addWidget(button)
+            self._buttons.append(button)
         button_row.addStretch(1)
         layout.addLayout(button_row)
 
         self.reload()
+
+    def apply_font_size(self, size):
+        """跟隨主視窗的字型大小（Ctrl+= / Ctrl+-）。
+
+        子元件都沒有自己設過字型，理論上會從面板繼承；但明確設一次才能保證
+        QTreeView 立刻重算列高、QToolButton 重算寬度，不會等到下次重繪。
+        """
+        font = QFont(self.font().family(), size)
+        self.setFont(font)
+        for widget in [self.filter_edit, self.tree] + self._buttons:
+            widget.setFont(font)
+        self.tree.doItemsLayout()
 
     # ── 資料 ────────────────────────────────────────────────────────────
 

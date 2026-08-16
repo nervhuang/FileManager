@@ -18,6 +18,9 @@
     - The GUI answers the pipe before running a search, so slow queries no longer look like timeouts to the caller
   - Extract search-keyword parsing into `app/search_query.py` so the GUI and the MCP server produce identical results (verified against the previous implementation over every keyword in `config.ini`)
   - Extract runtime path resolution into `app/paths.py` (no Qt dependency)
+- Make the authors panel follow the application font size
+  - `_apply_font_size` never touched the panel, so its tree, filter box and buttons stayed at the default size and ignored Ctrl+= / Ctrl+- (and the size restored from `config.ini` at startup)
+  - Its dialogs did not inherit either: Qt stops font propagation at top-level window boundaries, so they always opened at the application default regardless of the panel's size
 - Stop bundling `config.ini` into the packaged build
   - It landed in `_internal/`, but the app reads `config.ini` next to the executable, so the bundled copy was never loaded — it only shipped the build machine's search history and private paths
   - First launch with no `config.ini` was already supported: the app runs on built-in defaults and writes the file on exit
