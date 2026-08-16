@@ -1,10 +1,11 @@
+import math
 import os
 
 from PyQt5.QtWidgets import (QTabBar, QWidget, QHBoxLayout, QToolButton, QStyle,
                              QStyleOptionTab, QStylePainter, QApplication,
                              QProxyStyle, QLineEdit, QMenu, QStackedLayout, QSizePolicy)
-from PyQt5.QtCore import Qt, QRect, QSize, QTimer, QEvent, QDir, QPoint, pyqtSignal
-from PyQt5.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from PyQt5.QtCore import Qt, QRect, QRectF, QSize, QTimer, QEvent, QDir, QPoint, QPointF, pyqtSignal
+from PyQt5.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 
 
 def make_refresh_icon(size=64):
@@ -19,29 +20,47 @@ def make_refresh_icon(size=64):
     p = QPainter(pix)
     p.setRenderHint(QPainter.Antialiasing)
 
-    def pt(fx, fy):
-        return QPoint(int(size * fx), int(size * fy))
+    # 綠色沿用「回到上一層」資料夾圖示的箭頭綠，兩條工具列色調一致
+    green = QColor("#2fb24a")
+    green_dark = QColor("#1d7a33")
+    green_light = QColor("#8be28d")
 
-    blue = QColor("#2f7bd8")
-    blue_dark = QColor("#1c4f95")
-    margin = int(size * 0.16)
-    span = size - margin * 2
+    centre = size / 2.0
+    mid_r = size * 0.315          # 環的中心線半徑
+    band = size * 0.052           # 環的半寬
+    arrow_half = band * 1.7       # 箭頭底邊半寬（比環寬才看得出是箭頭）
+    start_deg = 62                # 箭頭所在角度
+    span_deg = 296                # 環由此逆時針延伸的角度
+    tip_deg = 40                  # 箭尖沿圓弧再前進的角度（順時針）
 
-    # 主體：留一個缺口的粗圓弧，缺口處接箭頭
+    def polar(r, deg):
+        rad = math.radians(deg)
+        return QPointF(centre + r * math.cos(rad), centre - r * math.sin(rad))
+
+    def square(r):
+        return QRectF(centre - r, centre - r, r * 2, r * 2)
+
+    # 環與箭頭畫成同一條封閉路徑，兩者之間才不會有接縫或錯位；
+    # 箭尖落在環的中心線上，因此整個箭頭都在圓弧範圍內，不會往外突出。
+    outer_r, inner_r = mid_r + band, mid_r - band
+    end_deg = start_deg + span_deg
+    path = QPainterPath()
+    path.moveTo(polar(mid_r - arrow_half, start_deg))      # 箭頭內角
+    path.lineTo(polar(mid_r, start_deg - tip_deg))         # 箭尖
+    path.lineTo(polar(mid_r + arrow_half, start_deg))      # 箭頭外角
+    path.arcTo(square(outer_r), start_deg, span_deg)       # 外緣
+    path.lineTo(polar(inner_r, end_deg))                   # 尾端切平
+    path.arcTo(square(inner_r), end_deg, -span_deg)        # 內緣繞回
+    path.closeSubpath()
+
+    p.setPen(QPen(green_dark, max(1.0, size * 0.030), Qt.SolidLine, Qt.FlatCap, Qt.RoundJoin))
+    p.setBrush(green)
+    p.drawPath(path)
+
+    # 內側高光，做出與資料夾圖示相同的厚度感
     p.setBrush(Qt.NoBrush)
-    p.setPen(QPen(blue_dark, size * 0.175, Qt.SolidLine, Qt.FlatCap))
-    p.drawArc(margin, margin, span, span, 55 * 16, 265 * 16)
-    p.setPen(QPen(blue, size * 0.125, Qt.SolidLine, Qt.FlatCap))
-    p.drawArc(margin, margin, span, span, 55 * 16, 265 * 16)
-    # 高光讓圓弧有厚度，與資料夾類圖示同樣的立體感
-    p.setPen(QPen(blue.lighter(155), size * 0.045, Qt.SolidLine, Qt.FlatCap))
-    p.drawArc(int(margin + size * 0.045), int(margin + size * 0.045),
-              int(span - size * 0.09), int(span - size * 0.09), 120 * 16, 120 * 16)
-
-    # 箭頭：指向順時針方向，接在圓弧右上端的缺口上
-    p.setPen(QPen(blue_dark, 1.4, Qt.SolidLine, Qt.FlatCap, Qt.RoundJoin))
-    p.setBrush(blue)
-    p.drawPolygon(pt(0.60, 0.02), pt(0.99, 0.20), pt(0.60, 0.40))
+    p.setPen(QPen(green_light, band * 0.55, Qt.SolidLine, Qt.FlatCap))
+    p.drawArc(square(mid_r - band * 0.35).toRect(), (start_deg + 120) * 16, 95 * 16)
 
     p.end()
     return QIcon(pix)

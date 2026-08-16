@@ -28,6 +28,7 @@
 - Draw the refresh icon instead of using `QStyle`'s
   - `SP_BrowserReload` only ships 24×24 and 32×32, and Qt does not upscale it, so in the 64px toolbars it rendered at half the size of every neighbouring icon — in both toolbars
   - New `widgets.make_refresh_icon()` draws it at the requested size; all 18 toolbar icons now report 64×64
+  - Drawn in the folder icon's green, as a single closed path covering both the ring and the arrowhead — drawing them as separate shapes left a visible seam at the join no matter how they were aligned — with the tip landing on the ring's centre line so the arrowhead stays inside the circle
   - Other system icons in use (trash, folder, arrows) ship 128×128 and were never affected
 - Rebuild the file panel toolbar on `QToolBar` and enlarge it to match the authors panel toolbar
   - Its fixed `QHBoxLayout` had a 1506px minimum width, which propagated to the middle panel and made the authors panel's splitter handle undraggable below a 1657px window — both sides sat at their minimum. The minimum is now 94px and the handle moves freely
