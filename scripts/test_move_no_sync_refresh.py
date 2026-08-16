@@ -25,7 +25,7 @@ class FakeFM(QWidget):
     def refresh_current_search_results(self):
         self.sync_refresh_calls.append('search')
 
-    def _schedule_panel_refreshes(self, delays_ms):
+    def _schedule_panel_refreshes(self, delays_ms, full_search=False):
         self.scheduled_refreshes.append(tuple(delays_ms))
 
 

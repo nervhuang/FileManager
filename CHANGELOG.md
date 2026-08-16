@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-08-16
+- Add Hermes integration: shared author/circle list and remote file search
+  - New `authors.db` (SQLite, WAL) as the single source of truth for authors and circles
+    - One entity table with `type` (author/circle), aliases, and many-to-many author⇄circle links
+    - Every write is journaled to a `changes` table with before/after snapshots; deletes are soft, so any Hermes mistake can be reverted from the GUI
+  - New left-hand authors panel (`app/authors_panel.py`), toggleable via 檢視 → 顯示作者清單面板 (Ctrl+L) to return to the previous two-panel layout
+    - Tree of circles with their authors; clicking an entry opens a search tab built from its name plus every alias
+    - Add/edit/delete entries, manage aliases and links, and revert Hermes changes from the 最近變更 dialog
+    - Panel visibility and width persist in `config.ini` under `[Layout]`
+  - New MCP stdio server (`app/hermes_mcp.py`) exposing seven tools to Hermes
+    - `fm_search`, `fm_match_author`, `fm_authors_stats` for file search; `fm_authors_list` / `_upsert` / `_delete` for the list; `fm_open_search_tab` to drive the GUI
+    - Runs as its own process, so list access and search work whether or not the GUI is open; it applies the same `[Exclude]` settings the GUI uses
+    - `fm_open_search_tab` returns `gui_not_running` when the GUI is closed, and only launches it when `launch_if_needed` is set
+  - New local pipe between GUI and MCP server (`app/gui_bridge.py`, `QLocalServer`)
+    - Hermes writes to the list are pushed to the GUI, which refreshes the panel immediately
+    - The GUI answers the pipe before running a search, so slow queries no longer look like timeouts to the caller
+  - Extract search-keyword parsing into `app/search_query.py` so the GUI and the MCP server produce identical results (verified against the previous implementation over every keyword in `config.ini`)
+  - Extract runtime path resolution into `app/paths.py` (no Qt dependency)
+
 ## 2026-06-17
 - Fix file-operation stalls and full-width-bracket search handling
   - Eliminate the 2–3s UI freeze after create/delete/rename/move

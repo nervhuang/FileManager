@@ -6,9 +6,7 @@ import ctypes.wintypes as wt
 import base64
 import configparser
 import json
-import re
 import traceback
-import unicodedata
 from datetime import datetime
 
 from PyQt5.QtWidgets import (
@@ -22,6 +20,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QDir, Qt, QSize, QFileInfo, QEvent, QTimer, QFileSystemWatcher, QPoint, QItemSelectionModel, QMimeData, QUrl
 from PyQt5.QtGui import QKeySequence, QIcon, QFont, QPixmap, QPainter, QColor, QStandardItem, QPen, QLinearGradient
 
+from . import gui_bridge, paths, search_query
+from .authors_panel import AuthorsPanel
 from .everything_sdk import EverythingSDK
 from .models import SearchSortProxyModel, SearchResultsModel, FileSystemSortProxyModel
 from .views import SearchListView, FileListView
@@ -32,16 +32,9 @@ ref_e = 1
 global_keywords = []
 
 
-def _bundle_root():
-    if getattr(sys, 'frozen', False):
-        return getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-
-
-def _runtime_root():
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+# 路徑解析實作已移至 app/paths.py（不依賴 Qt，MCP server 也用同一份）。
+_bundle_root = paths.bundle_root
+_runtime_root = paths.runtime_root
 
 
 class ExcludeSettingsDialog(QDialog):
@@ -163,6 +156,13 @@ class FileManager(QMainWindow):
             Qt.Orientation.Horizontal: [600, 600],
             Qt.Orientation.Vertical: [600, 600],
         }
+        # 左側作者／團體面板：可隨時切換回原本的雙面板版面，狀態存 config.ini。
+        # 這兩個值必須在 initUI 之前就位（initUI 會直接套用）。
+        self._authors_panel_visible = True
+        self._authors_panel_width = 260
+        self.authors_panel = None
+        self.main_splitter = None
+        self._bridge_server = None
         # 監控中間面板目前目錄，任何外部檔案異動皆可即時刷新
         self._mid_fs_watcher = QFileSystemWatcher(self)
         self._mid_fs_watcher.directoryChanged.connect(self._on_mid_dir_changed)
@@ -584,13 +584,26 @@ class FileManager(QMainWindow):
         self.right_splitter.setSizes([600, 600])
         self._set_right_panel_layout(Qt.Orientation.Horizontal)
 
+        # 作者／團體面板放在「外層」分割器，而非 right_splitter 內：後者會在橫/直
+        # 版面切換時改變方向，若把左面板放進去，切成垂直時它會跑到最上方。
+        self.authors_panel = AuthorsPanel(self)
+        self.authors_panel.search_requested.connect(self._on_authors_search_requested)
+
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter.addWidget(self.authors_panel)
+        self.main_splitter.addWidget(self.right_splitter)
+        self.main_splitter.setStretchFactor(0, 0)
+        self.main_splitter.setStretchFactor(1, 1)
+        self.main_splitter.setSizes([self._authors_panel_width, 1200])
+        self.authors_panel.setVisible(self._authors_panel_visible)
+
         right_container = QWidget()
         right_vbox = QVBoxLayout()
         right_vbox.setContentsMargins(0, 0, 0, 0)
-        right_vbox.addWidget(self.right_splitter)
+        right_vbox.addWidget(self.main_splitter)
         right_container.setLayout(right_vbox)
 
-        # 主畫面即檔案（中）/搜尋（右）兩面板的對稱分割
+        # 主畫面：作者清單（左，可隱藏）＋ 檔案（中）/搜尋（右）兩面板的對稱分割
         self.setCentralWidget(right_container)
 
         # 初始化狀態列並顯示目前字型大小
@@ -675,6 +688,7 @@ class FileManager(QMainWindow):
         self._sync_tab_bar_heights()
         self._update_nav_buttons()
         self._setup_action_buttons_state()
+        self._start_bridge_server()
 
     def on_listView_clicked(self, index):
         """处理中央视窗文件单击事件"""
@@ -814,9 +828,7 @@ class FileManager(QMainWindow):
     def _apply_exclude_settings(self):
         """依目前排除設定更新比對用路徑，並重整檔案面板與搜尋結果。"""
         if self._exclude_enabled:
-            self._exclude_norm = tuple(
-                os.path.normcase(os.path.normpath(d)) for d in self._exclude_dirs if d
-            )
+            self._exclude_norm = search_query.normalize_exclude_dirs(self._exclude_dirs)
         else:
             self._exclude_norm = ()
         if self.file_proxy is not None:
@@ -824,17 +836,7 @@ class FileManager(QMainWindow):
         self.refresh_current_search_results()
 
     def _is_path_excluded(self, path):
-        if not self._exclude_norm:
-            return False
-        norm = os.path.normcase(os.path.normpath(path))
-        for ex in self._exclude_norm:
-            if norm == ex:
-                return True
-            # 磁碟根目錄（如 C:\）normpath 後已帶尾端分隔符，避免補成雙分隔符。
-            base = ex if ex.endswith(os.sep) else ex + os.sep
-            if norm.startswith(base):
-                return True
-        return False
+        return search_query.is_path_excluded(path, self._exclude_norm)
 
     def _on_mid_tab_switched(self, path):
         """切換中間頁籤：更新檔案列表至儲存的路徑，並同步左側目錄樹。
@@ -994,113 +996,43 @@ class FileManager(QMainWindow):
         # 3. 執行實際查詢
         self._do_search(search_command)
 
+    # 以下搜尋解析邏輯的實作已移至 app/search_query.py，供 GUI 與 Hermes MCP
+    # server（獨立進程、無 Qt）共用；這裡保留同名薄包裝，呼叫點不需改動。
+
     def _normalize_search_command(self, search_command):
-        """將以 | 分隔的關鍵詞個別正規化，避免含空白詞組被 Everything 拆散。"""
-        normalized_terms = []
-        for raw_term in search_command.split('|'):
-            term = raw_term.strip()
-            if not term:
-                continue
-            if any(ch.isspace() for ch in term) and not (term.startswith('"') and term.endswith('"')):
-                term = f'"{term}"'
-            normalized_terms.append(term)
-        return '|'.join(normalized_terms)
+        return search_query.normalize_search_command(search_command)
 
     def _split_search_terms(self, search_command):
-        return [term.strip() for term in search_command.split('|') if term.strip()]
+        return search_query.split_terms(search_command)
 
     def _strip_search_term_quotes(self, term):
-        candidate = term.strip()
-        if candidate.startswith('"') and candidate.endswith('"') and len(candidate) >= 2:
-            return candidate[1:-1]
-        return candidate
+        return search_query.strip_term_quotes(term)
 
     def _normalize_plain_keyword_text(self, text):
-        normalized = unicodedata.normalize('NFKC', text or '').casefold()
-        # 連字號（-）與點（.）不視為分隔符：像「A-10」「ver.2」「a.b.c」這類關鍵字
-        # 需整體保留，不可被拆開。NFKC 已把全形 －／．正規化為半形 -／.。
-        collapsed = re.sub(r'[^\w.-]+', ' ', normalized, flags=re.UNICODE)
-        return ' '.join(collapsed.split())
+        return search_query.normalize_text(text)
 
     def _plain_keyword_tokens(self, term):
-        normalized = self._normalize_plain_keyword_text(self._strip_search_term_quotes(term))
-        # 過濾只剩連字號／點的孤立 token（如「tsf - saeki」中間的 -），避免污染查詢。
-        return [token for token in normalized.split(' ') if token.strip('.-')]
+        return search_query.keyword_tokens(term)
 
     def _build_plain_keyword_queries(self, term):
-        raw_term = self._strip_search_term_quotes(term)
-        queries = []
-        seen = set()
-
-        def add_query(query_text, normalize=True):
-            query_text = query_text.strip()
-            if not query_text or query_text in seen:
-                return
-            seen.add(query_text)
-            # normalize=False：保留原樣送出（用於空白分隔的 AND 查詢，
-            # 不可被 _normalize_search_command 加引號變成片語比對）。
-            queries.append(self._normalize_search_command(query_text) if normalize else query_text)
-
-        add_query(raw_term)
-        add_query(f'[{raw_term}]')
-
-        # 全形括弧等符號（（）【】「」『』〔〕…）與連字號在檔名/關鍵字中通常只是
-        # 標註或分隔，使用者真正想搜的是「符號之間的文字」。但原本只把含符號的原字串
-        # 交給 Everything，實際檔名不含那些符號時就查無結果（如搜「（重要）」找不到
-        # 「重要.txt」、搜「【tsf-saeki】」找不到「tsf-saeki」）。這裡改以去符號後的
-        # tokens（NFKC 正規化＋去標點，已涵蓋全形/半形括弧與連字號）組查詢：
-        #   單一詞 → 直接查該詞；
-        #   多個詞 → 以空白分隔（Everything 原生 AND，不加引號、不需開 regex 旗標、
-        #            也不要求詞序）查詢，最穩健；另保留 regex 依序串接作為輔助。
-        tokens = self._plain_keyword_tokens(term)
-        if len(tokens) == 1:
-            add_query(tokens[0])
-        elif len(tokens) >= 2:
-            add_query(' '.join(tokens), normalize=False)
-            add_query('regex:' + '.*'.join(re.escape(token) for token in tokens))
-
-        return queries
+        return search_query.build_queries(term)
 
     def _path_matches_plain_keyword(self, path, term):
-        tokens = self._plain_keyword_tokens(term)
-        if not tokens:
-            return False
-
-        normalized_path = self._normalize_plain_keyword_text(os.path.basename(path))
-        # 以「去符號後的各詞是否都出現在檔名」為準，與查詢端一致：括弧會被正規化成
-        # 空白，若仍要求整個 normalized_term 為連續子字串，會因括弧造成的空白差異
-        # （如關鍵字「重要（報告）」對檔名「重要報告」）而誤判不符。改為各詞皆需命中。
-        return all(token in normalized_path for token in tokens)
+        return search_query.path_matches(path, term)
 
     def _is_plain_keyword_term(self, term):
-        candidate = self._strip_search_term_quotes(term)
-        if not candidate:
-            return False
-        return not any(token in candidate for token in (':', '<', '>', '!', '*', '?'))
+        return search_query.is_plain_keyword_term(term)
 
     def _search_plain_keyword_terms(self, terms):
-        results = []
-        seen = set()
-        for term in terms:
-            for query_text in self._build_plain_keyword_queries(term):
-                max_results = 2000 if query_text.startswith('regex:') or query_text == self._strip_search_term_quotes(term) else 800
-                for item in self.everything.query(query_text, max_results=max_results):
-                    if item.path in seen or not self._path_matches_plain_keyword(item.path, term):
-                        continue
-                    seen.add(item.path)
-                    results.append(item)
-        return results
+        return search_query.search_plain_keyword_terms(self.everything, terms)
 
     def _do_search(self, search_command):
         """只執行 Everything 查詢並更新展示，不修改頁籤資料或 combobox 歷史。復原搜尋用。"""
-        terms = self._split_search_terms(search_command)
         normalized_command = self._normalize_search_command(search_command)
         if self.everything.is_available():
-            if terms and all(self._is_plain_keyword_term(term) for term in terms):
-                results = self._search_plain_keyword_terms(terms)
-            else:
-                results = self.everything.query(normalized_command)
-            self.update_search_results(results)
+            self.update_search_results(
+                search_query.query_everything(self.everything, search_command)
+            )
             return
 
         if not self.sdk_warned:
@@ -1913,6 +1845,13 @@ class FileManager(QMainWindow):
         self._layout_action_group.addAction(self.action_layout_vertical)
         self.action_layout_vertical.triggered.connect(lambda: self._set_right_panel_layout(Qt.Orientation.Vertical))
 
+        view_menu.addSeparator()
+        self.action_authors_panel = view_menu.addAction("顯示作者清單面板(&A)")
+        self.action_authors_panel.setCheckable(True)
+        self.action_authors_panel.setChecked(self._authors_panel_visible)
+        self.action_authors_panel.setShortcut(QKeySequence("Ctrl+L"))
+        self.action_authors_panel.toggled.connect(self._set_authors_panel_visible)
+
         # 「選項」為頂層選單，排在「檢視」右邊，底下提供「排除設定」項目。
         option_menu = menu_bar.addMenu("選項(&O)")
         self.action_exclude_settings = option_menu.addAction("排除設定(&E)…")
@@ -1976,6 +1915,72 @@ class FileManager(QMainWindow):
             self.action_layout_horizontal.setChecked(horizontal_active)
         if hasattr(self, 'action_layout_vertical'):
             self.action_layout_vertical.setChecked(vertical_active)
+
+    # ── 作者／團體面板與 Hermes 橋接 ────────────────────────────────────
+
+    def _set_authors_panel_visible(self, visible):
+        """切換左側作者清單面板；隱藏時即回復原本的雙面板版面。"""
+        visible = bool(visible)
+        if self.authors_panel is None or self.main_splitter is None:
+            self._authors_panel_visible = visible
+            return
+        if not visible and self.authors_panel.isVisible():
+            # 記住目前寬度，下次顯示時回到同樣位置。
+            width = self.main_splitter.sizes()[0]
+            if width > 0:
+                self._authors_panel_width = width
+        self._authors_panel_visible = visible
+        self.authors_panel.setVisible(visible)
+        if visible:
+            sizes = self.main_splitter.sizes()
+            self.main_splitter.setSizes([self._authors_panel_width, max(sum(sizes) - self._authors_panel_width, 1)])
+        if hasattr(self, 'action_authors_panel'):
+            self.action_authors_panel.setChecked(visible)
+
+    def _on_authors_search_requested(self, query):
+        """點左面板的項目：在搜尋面板開一個新分頁並執行查詢。"""
+        self._open_search_in_new_tab(query)
+
+    def _open_search_in_new_tab(self, query):
+        query = (query or '').strip()
+        if not query:
+            return False
+        self._active_panel = 'right'
+        self.right_tab_bar.add_tab(query, query, index=0)
+        self.execute_search_command(query)
+        return True
+
+    def _open_search_tab_from_bridge(self, query):
+        self._open_search_in_new_tab(query)
+        self.raise_()
+        self.activateWindow()
+
+    def _start_bridge_server(self):
+        """開啟給 Hermes MCP server 用的本機管道。
+
+        多開時只有第一個實例佔得到管道名稱，其餘實例靜默略過（不搶）。
+        """
+        self._bridge_server = gui_bridge.create_server(self._handle_bridge_command, self)
+
+    def _handle_bridge_command(self, request):
+        """處理管道指令。在 Qt 主執行緒被呼叫，可直接操作 UI。"""
+        command = (request or {}).get('cmd')
+        if command == 'ping':
+            return {'ok': True, 'pid': os.getpid()}
+        if command == 'open_search_tab':
+            query = (request.get('query') or '').strip()
+            if not query:
+                return {'ok': False, 'reason': 'empty_query'}
+            # 搜尋是同步的（Everything 查詢加上結果模型重建可達數秒），若在這裡
+            # 跑完才回應，呼叫端會先撞到逾時。改為排程到下一次事件迴圈再執行，
+            # 立刻回覆「已接受」。
+            QTimer.singleShot(0, lambda: self._open_search_tab_from_bridge(query))
+            return {'ok': True, 'query': query}
+        if command == 'authors_changed':
+            if self.authors_panel is not None:
+                self.authors_panel.reload()
+            return {'ok': True}
+        return {'ok': False, 'reason': 'unknown_command', 'cmd': command}
 
     def _sync_breadcrumb(self, path):
         if getattr(self, 'path_bar', None) is None:
@@ -2427,6 +2432,10 @@ class FileManager(QMainWindow):
         right_splitter_orientation = cfg.get('Layout', 'right_splitter_orientation', fallback='horizontal').lower()
         self._set_right_panel_layout(Qt.Orientation.Vertical if right_splitter_orientation == 'vertical' else Qt.Orientation.Horizontal)
 
+        # 還原左側作者清單面板的顯示狀態與寬度
+        self._authors_panel_width = max(cfg.getint('Layout', 'authors_panel_width', fallback=260), 80)
+        self._set_authors_panel_visible(cfg.getboolean('Layout', 'authors_panel_visible', fallback=True))
+
         # 還原兩個面板的欄位寬度、顯示與否，以及欄序
         for key, view in self._column_views():
             self._restore_columns(cfg, key, view)
@@ -2536,6 +2545,14 @@ class FileManager(QMainWindow):
         cfg.set('Layout', 'right_splitter_sizes', ','.join(str(s) for s in self._right_splitter_sizes_by_orientation.get(Qt.Orientation.Horizontal, [])))
         cfg.set('Layout', 'right_splitter_vertical_sizes', ','.join(str(s) for s in self._right_splitter_sizes_by_orientation.get(Qt.Orientation.Vertical, [])))
 
+        # 左側作者清單面板：隱藏時 sizes()[0] 為 0，沿用先前記住的寬度
+        if self.main_splitter is not None and self._authors_panel_visible:
+            current_width = self.main_splitter.sizes()[0]
+            if current_width > 0:
+                self._authors_panel_width = current_width
+        cfg.set('Layout', 'authors_panel_visible', 'true' if self._authors_panel_visible else 'false')
+        cfg.set('Layout', 'authors_panel_width', str(self._authors_panel_width))
+
         # 儲存兩個面板的欄位寬度、顯示與否，以及欄序
         for key, view in self._column_views():
             self._save_columns(cfg, key, view)
@@ -2574,6 +2591,11 @@ class FileManager(QMainWindow):
 
     def closeEvent(self, event):
         self.save_config()
+        if self._bridge_server is not None:
+            self._bridge_server.close()
+            self._bridge_server = None
+        if self.authors_panel is not None:
+            self.authors_panel.close_db()
         super().closeEvent(event)
 
 

@@ -1,0 +1,407 @@
+"""左側「作者／團體」面板與其編輯對話框。
+
+清單資料存在 authors.db（見 app/authors_db.py），與 Hermes MCP server 共用同一份。
+單擊清單項目即以「名稱＋所有別名」組成 OR 查詢，在右側面板開一個搜尋分頁。
+"""
+
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeView, QToolButton,
+    QDialog, QDialogButtonBox, QLabel, QComboBox, QListWidget, QPushButton,
+    QMessageBox, QMenu, QTableWidget, QTableWidgetItem, QAbstractItemView,
+    QHeaderView,
+)
+from PyQt5.QtGui import QStandardItem, QStandardItemModel
+
+from . import authors_db
+
+ENTITY_ID_ROLE = Qt.UserRole + 1
+ENTITY_TYPE_ROLE = Qt.UserRole + 2
+
+_TYPE_LABEL = {authors_db.AUTHOR: '作者', authors_db.CIRCLE: '團體'}
+
+
+class EntityEditDialog(QDialog):
+    """新增／編輯單一作者或團體：名稱、類型、別名、關聯對象、備註。"""
+
+    def __init__(self, conn, entity=None, default_type=authors_db.AUTHOR, parent=None):
+        super().__init__(parent)
+        self._conn = conn
+        self._entity = entity
+        self.setWindowTitle('編輯項目' if entity else '新增項目')
+        self.resize(520, 480)
+
+        layout = QVBoxLayout(self)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel('名稱：', self))
+        self.name_edit = QLineEdit(entity['name'] if entity else '', self)
+        row.addWidget(self.name_edit, 1)
+        row.addWidget(QLabel('類型：', self))
+        self.type_combo = QComboBox(self)
+        self.type_combo.addItem(_TYPE_LABEL[authors_db.AUTHOR], authors_db.AUTHOR)
+        self.type_combo.addItem(_TYPE_LABEL[authors_db.CIRCLE], authors_db.CIRCLE)
+        current_type = entity['type'] if entity else default_type
+        self.type_combo.setCurrentIndex(self.type_combo.findData(current_type))
+        self.type_combo.currentIndexChanged.connect(self._refresh_link_hint)
+        row.addWidget(self.type_combo)
+        layout.addLayout(row)
+
+        layout.addWidget(QLabel('別名（搜尋時會與名稱一起以 OR 查詢）：', self))
+        self.alias_list, alias_input, alias_row = self._make_list_editor('新增別名後按 Enter')
+        if entity:
+            self.alias_list.addItems(entity['aliases'])
+        layout.addLayout(alias_row)
+
+        self.link_label = QLabel('', self)
+        layout.addWidget(self.link_label)
+        self.link_list, link_input, link_row = self._make_list_editor('輸入名稱後按 Enter；不存在會自動建立')
+        if entity:
+            self.link_list.addItems([item['name'] for item in entity['linked']])
+        layout.addLayout(link_row)
+        self._refresh_link_hint()
+
+        note_row = QHBoxLayout()
+        note_row.addWidget(QLabel('備註：', self))
+        self.note_edit = QLineEdit(entity['note'] if entity else '', self)
+        note_row.addWidget(self.note_edit, 1)
+        layout.addLayout(note_row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.name_edit.setFocus()
+
+    def _make_list_editor(self, placeholder):
+        """回傳 (清單, 輸入框, 版面)：輸入框按 Enter 加入，右側按鈕移除選取項。"""
+        container = QVBoxLayout()
+        list_widget = QListWidget(self)
+
+        body = QHBoxLayout()
+        body.addWidget(list_widget, 1)
+        remove_button = QPushButton('移除', self)
+        column = QVBoxLayout()
+        column.addWidget(remove_button)
+        column.addStretch(1)
+        body.addLayout(column)
+        container.addLayout(body)
+
+        line = QLineEdit(self)
+        line.setPlaceholderText(placeholder)
+        container.addWidget(line)
+
+        def _add():
+            text = line.text().strip()
+            existing = {list_widget.item(i).text() for i in range(list_widget.count())}
+            if text and text not in existing:
+                list_widget.addItem(text)
+            line.clear()
+
+        def _remove():
+            row = list_widget.currentRow()
+            if row >= 0:
+                list_widget.takeItem(row)
+
+        line.returnPressed.connect(_add)
+        remove_button.clicked.connect(_remove)
+        return list_widget, line, container
+
+    def _refresh_link_hint(self):
+        if self.type_combo.currentData() == authors_db.AUTHOR:
+            self.link_label.setText('所屬團體：')
+        else:
+            self.link_label.setText('旗下作者：')
+
+    def _on_accept(self):
+        if not self.name_edit.text().strip():
+            QMessageBox.warning(self, '名稱不可空白', '請輸入名稱。')
+            return
+        self.accept()
+
+    def result_entry(self):
+        def _items(widget):
+            return [widget.item(i).text() for i in range(widget.count())]
+
+        entry = {
+            'name': self.name_edit.text().strip(),
+            'type': self.type_combo.currentData(),
+            'aliases': _items(self.alias_list),
+            'linked_names': _items(self.link_list),
+            'note': self.note_edit.text().strip(),
+        }
+        if self._entity:
+            entry['id'] = self._entity['id']
+        return entry
+
+
+class RecentChangesDialog(QDialog):
+    """變更紀錄：列出誰在什麼時候改了什麼，選一列可還原。"""
+
+    _HEADERS = ('時間', '來源', '動作', '項目', '變更後')
+
+    def __init__(self, conn, parent=None):
+        super().__init__(parent)
+        self._conn = conn
+        self.setWindowTitle('最近變更')
+        self.resize(760, 460)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel('選一列按「還原」，即可把該筆變更退回到它發生前的狀態。', self))
+
+        self.table = QTableWidget(0, len(self._HEADERS), self)
+        self.table.setHorizontalHeaderLabels(self._HEADERS)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        layout.addWidget(self.table, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close, self)
+        self.revert_button = QPushButton('還原', self)
+        buttons.addButton(self.revert_button, QDialogButtonBox.ActionRole)
+        self.revert_button.clicked.connect(self._on_revert)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.reverted = False
+        self.reload()
+
+    def reload(self):
+        changes = authors_db.recent_changes(self._conn, 200)
+        self.table.setRowCount(len(changes))
+        for row, change in enumerate(changes):
+            after = change['after'] or {}
+            before = change['before'] or {}
+            name = after.get('name') or before.get('name') or ''
+            summary = ''
+            if after:
+                summary = f"{name}（{_TYPE_LABEL.get(after.get('type'), '')}）"
+                if after.get('aliases'):
+                    summary += ' 別名：' + '、'.join(after['aliases'])
+                if after.get('deleted'):
+                    summary += ' [已刪除]'
+            values = (change['ts'], change['source'], change['op'], name, summary)
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                if col == 0:
+                    item.setData(Qt.UserRole, change['id'])
+                self.table.setItem(row, col, item)
+        self.table.resizeColumnsToContents()
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+
+    def _on_revert(self):
+        row = self.table.currentRow()
+        if row < 0:
+            return
+        change_id = self.table.item(row, 0).data(Qt.UserRole)
+        try:
+            authors_db.revert_change(self._conn, change_id)
+        except authors_db.AuthorsDbError as exc:
+            QMessageBox.warning(self, '還原失敗', str(exc))
+            return
+        self.reverted = True
+        self.reload()
+
+
+class AuthorsPanel(QWidget):
+    """左側常駐面板：樹狀顯示團體與作者，單擊即開搜尋分頁。"""
+
+    search_requested = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._conn = authors_db.connect()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        self.filter_edit = QLineEdit(self)
+        self.filter_edit.setPlaceholderText('過濾名稱或別名…')
+        self.filter_edit.setClearButtonEnabled(True)
+        self.filter_edit.textChanged.connect(self.reload)
+        layout.addWidget(self.filter_edit)
+
+        self.tree = QTreeView(self)
+        self.tree.setHeaderHidden(True)
+        self.tree.setEditTriggers(QTreeView.NoEditTriggers)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._show_context_menu)
+        self.tree.clicked.connect(self._on_clicked)
+        self.model = QStandardItemModel(self)
+        self.tree.setModel(self.model)
+        layout.addWidget(self.tree, 1)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(2)
+        for text, tooltip, slot in (
+            ('＋作者', '新增作者', lambda: self._add_entity(authors_db.AUTHOR)),
+            ('＋團體', '新增團體', lambda: self._add_entity(authors_db.CIRCLE)),
+            ('編輯', '編輯選取項目', self._edit_selected),
+            ('刪除', '刪除選取項目（可還原）', self._delete_selected),
+            ('⟳', '重新整理', self.reload),
+            ('紀錄', '最近變更／還原', self._open_changes),
+        ):
+            button = QToolButton(self)
+            button.setText(text)
+            button.setToolTip(tooltip)
+            button.clicked.connect(slot)
+            button_row.addWidget(button)
+        button_row.addStretch(1)
+        layout.addLayout(button_row)
+
+        self.reload()
+
+    # ── 資料 ────────────────────────────────────────────────────────────
+
+    def reload(self, *args):
+        """從資料庫重建樹。Hermes 寫入後也是走這裡刷新。"""
+        keyword = self.filter_edit.text().strip() or None
+        expanded_before = self.model.rowCount() > 0
+
+        entities = authors_db.list_entities(self._conn, keyword=keyword)
+        circles = [e for e in entities if e['type'] == authors_db.CIRCLE]
+        authors = [e for e in entities if e['type'] == authors_db.AUTHOR]
+        linked_author_ids = {item['id'] for c in circles for item in c['linked']}
+
+        self.model.clear()
+        root = self.model.invisibleRootItem()
+
+        circle_group = self._make_group_item(f'團體（{len(circles)}）')
+        for circle in circles:
+            circle_item = self._make_entity_item(circle)
+            for author in circle['linked']:
+                child = QStandardItem(author['name'])
+                child.setEditable(False)
+                child.setData(author['id'], ENTITY_ID_ROLE)
+                child.setData(author['type'], ENTITY_TYPE_ROLE)
+                circle_item.appendRow(child)
+            circle_group.appendRow(circle_item)
+        root.appendRow(circle_group)
+
+        loose = [a for a in authors if a['id'] not in linked_author_ids]
+        author_group = self._make_group_item(f'作者（{len(authors)}）')
+        for author in (loose if not keyword else authors):
+            author_group.appendRow(self._make_entity_item(author))
+        root.appendRow(author_group)
+
+        # 有過濾字串時全展開，方便直接看到命中的項目。
+        if keyword or not expanded_before:
+            self.tree.expandAll()
+        else:
+            self.tree.expandToDepth(0)
+
+    def _make_group_item(self, text):
+        item = QStandardItem(text)
+        item.setEditable(False)
+        item.setSelectable(False)
+        return item
+
+    def _make_entity_item(self, entity):
+        label = entity['name']
+        if entity['aliases']:
+            label += f"  ({len(entity['aliases'])} 別名)"
+        item = QStandardItem(label)
+        item.setEditable(False)
+        item.setData(entity['id'], ENTITY_ID_ROLE)
+        item.setData(entity['type'], ENTITY_TYPE_ROLE)
+        tooltip = [f"{_TYPE_LABEL[entity['type']]}：{entity['name']}"]
+        if entity['aliases']:
+            tooltip.append('別名：' + '、'.join(entity['aliases']))
+        if entity['note']:
+            tooltip.append('備註：' + entity['note'])
+        tooltip.append('來源：' + entity['source'])
+        item.setToolTip('\n'.join(tooltip))
+        return item
+
+    def _selected_entity_id(self):
+        index = self.tree.currentIndex()
+        if not index.isValid():
+            return None
+        return self.model.itemFromIndex(index).data(ENTITY_ID_ROLE)
+
+    # ── 互動 ────────────────────────────────────────────────────────────
+
+    def _on_clicked(self, index):
+        item = self.model.itemFromIndex(index)
+        entity_id = item.data(ENTITY_ID_ROLE) if item else None
+        if entity_id is None:
+            return
+        entity = authors_db.get_entity(self._conn, entity_id)
+        if entity:
+            self.search_requested.emit(authors_db.search_terms_for(entity))
+
+    def _show_context_menu(self, pos):
+        index = self.tree.indexAt(pos)
+        if index.isValid():
+            self.tree.setCurrentIndex(index)
+        entity_id = self._selected_entity_id()
+
+        menu = QMenu(self)
+        menu.addAction('新增作者', lambda: self._add_entity(authors_db.AUTHOR))
+        menu.addAction('新增團體', lambda: self._add_entity(authors_db.CIRCLE))
+        if entity_id is not None:
+            menu.addSeparator()
+            menu.addAction('在搜尋面板開分頁', lambda: self._on_clicked(self.tree.currentIndex()))
+            menu.addAction('編輯…', self._edit_selected)
+            menu.addAction('刪除', self._delete_selected)
+        menu.addSeparator()
+        menu.addAction('最近變更…', self._open_changes)
+        menu.exec_(self.tree.viewport().mapToGlobal(pos))
+
+    def _add_entity(self, type_):
+        dialog = EntityEditDialog(self._conn, None, type_, self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        self._apply_upsert([dialog.result_entry()])
+
+    def _edit_selected(self):
+        entity_id = self._selected_entity_id()
+        if entity_id is None:
+            return
+        entity = authors_db.get_entity(self._conn, entity_id)
+        if entity is None:
+            return
+        dialog = EntityEditDialog(self._conn, entity, entity['type'], self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        self._apply_upsert([dialog.result_entry()])
+
+    def _apply_upsert(self, entries):
+        try:
+            authors_db.upsert(self._conn, entries, source=authors_db.SOURCE_LOCAL)
+        except authors_db.AuthorsDbError as exc:
+            QMessageBox.warning(self, '儲存失敗', str(exc))
+            return
+        self.reload()
+
+    def _delete_selected(self):
+        entity_id = self._selected_entity_id()
+        if entity_id is None:
+            return
+        entity = authors_db.get_entity(self._conn, entity_id)
+        if entity is None:
+            return
+        answer = QMessageBox.question(
+            self, '刪除項目',
+            f"要刪除「{entity['name']}」嗎？\n（軟刪除，可從「最近變更」還原）",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        authors_db.soft_delete(self._conn, [entity_id], source=authors_db.SOURCE_LOCAL)
+        self.reload()
+
+    def _open_changes(self):
+        dialog = RecentChangesDialog(self._conn, self)
+        dialog.exec_()
+        if dialog.reverted:
+            self.reload()
+
+    def close_db(self):
+        try:
+            self._conn.close()
+        except Exception:
+            pass

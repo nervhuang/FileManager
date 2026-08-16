@@ -12,4 +12,7 @@ crash.log
 perf.log
 file_index_cache.dat
 config.ini
+authors.db
+authors.db-wal
+authors.db-shm
 .codegraph/
