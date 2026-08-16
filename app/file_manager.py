@@ -1034,15 +1034,15 @@ class FileManager(QMainWindow):
         return search_query.is_plain_keyword_term(term)
 
     def _search_plain_keyword_terms(self, terms):
-        return search_query.search_plain_keyword_terms(self.everything, terms)
+        # 第二個回傳值是「Everything 端是否撈滿上限」，GUI 不使用
+        return search_query.search_plain_keyword_terms(self.everything, terms)[0]
 
     def _do_search(self, search_command):
         """只執行 Everything 查詢並更新展示，不修改頁籤資料或 combobox 歷史。復原搜尋用。"""
         normalized_command = self._normalize_search_command(search_command)
         if self.everything.is_available():
-            self.update_search_results(
-                search_query.query_everything(self.everything, search_command)
-            )
+            results, _capped = search_query.query_everything(self.everything, search_command)
+            self.update_search_results(results)
             return
 
         if not self.sdk_warned:

@@ -25,6 +25,16 @@
   - Built on `QToolBar` so a narrowed panel folds the buttons into an overflow menu instead of forcing a wide minimum width (panel minimum stays 151px)
   - Edit and delete are disabled until something is selected
   - Default panel width is now 660px, the width at which all six buttons fit
+- Require the FileManager app to be running before any MCP tool responds
+  - Opening the app is how the user grants access; with it closed every tool returns `gui_not_running` and nothing on disk or in the list can be read
+  - The gate covers all nine tools, not just the ones that touch the disk — gating a subset only invites the model to reach for another tool
+  - `fm_open_search_tab` lost its `launch_if_needed` option: a tool that can start the app could grant itself the access the gate exists to withhold
+- Add `fm_search_all`, a paginated bulk form of `fm_search`
+  - Same fields as `fm_search`, plus `total`, `offset` and `has_more`; page through with `offset` until `has_more` is false. Page size defaults to 200, capped at 2000 (~560KB)
+  - `fm_search` could not see past the per-query ceiling Everything is asked for, so a keyword matching 6989 files reported 2000. The bulk tool raises that ceiling for its own calls only, leaving the app's search untouched
+  - New `capped` field reports that Everything's own ceiling was reached, meaning `total` itself may be an undercount — distinct from `has_more`, which only says this page was partial
+- Report search truncation honestly
+  - `truncated` only reflected the caller's `limit`, so a search cut short by the internal per-query ceiling claimed it was complete
 - Let `FILEMANAGER_HOME` override the runtime directory
   - The MCP server runs from the project venv (not frozen) and resolved its data directory to the project folder, while the packaged exe resolves to its own folder — so the two processes each read and wrote a separate `authors.db` and `config.ini`, and anything Hermes stored was invisible in the app
   - Point the variable at the installed exe's folder in Hermes's `mcp_servers` entry and both sides use the same files

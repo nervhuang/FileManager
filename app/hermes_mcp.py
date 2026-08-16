@@ -1,8 +1,11 @@
 """Hermes 用的 MCP stdio server。
 
-以獨立進程執行（不需要 FileManager GUI 開著）：清單讀寫直接對 authors.db，
-檔案搜尋直接走 Everything IPC。只有「叫 GUI 開搜尋分頁」這件事需要 GUI，
-會透過 app/gui_bridge.py 的本機管道轉發，GUI 沒開就回 gui_not_running。
+以獨立進程執行：清單讀寫直接對 authors.db，檔案搜尋直接走 Everything IPC。
+
+全部工具都要求 FileManager 主程式正在執行，否則一律回 gui_not_running。這是
+使用者的授權機制——「把主程式打開」就是允許存取的信號，關著就什麼都查不到。
+閘門套用在每一個工具而不只是搜尋類：只擋一部分的話，模型改叫另一個工具就繞
+過去了。判定方式是本機管道是否存在（見 app/gui_bridge.py）。
 
 啟動方式（寫進 Hermes 設定檔的 mcp_servers；Windows 上實際位置是
 %LOCALAPPDATA%\\hermes\\config.yaml，不是文件寫的 ~/.hermes/config.yaml）：
@@ -13,9 +16,6 @@
 import configparser
 import json
 import os
-import subprocess
-import sys
-import time
 from contextlib import closing
 
 from mcp.server import MCPServer
@@ -71,34 +71,63 @@ def _serialize(result):
     }
 
 
-def _run_search(query, match='any', limit=200, under_dir=None, ext=None):
+def _require_gui():
+    """同意閘：主程式沒開就不讓 Hermes 動任何東西。
+
+    使用者的授權方式就是「把 FileManager 打開」。閘門套用在全部工具上而非只有
+    搜尋類——只擋一部分的話，模型改叫另一個工具就繞過去了，形同虛設。
+    判定用命名管道是否存在（見 gui_bridge.gui_is_running），不需連線。
+    """
+    if gui_bridge.gui_is_running():
+        return None
+    return {
+        'ok': False,
+        'reason': 'gui_not_running',
+        'error': ('FileManager 主程式沒有在執行。這是使用者的授權機制：'
+                  '請先請使用者開啟 FileManager，本工具組才會回應。'),
+    }
+
+
+def _run_search(query, match='any', limit=200, under_dir=None, ext=None,
+                offset=0, limit_scale=1):
     everything = _get_everything()
     if not everything.is_available():
         return {'ok': False, 'reason': 'everything_unavailable',
                 'error': 'Everything 沒有在執行，或找不到它的 IPC 視窗。'}
 
+    exclude = _exclude_norm()
     terms = search_query.split_terms(query)
     if match == 'all' and len(terms) > 1:
         # | 在搜尋管線裡是 OR；要 AND 就逐詞搜完取交集。
-        sets = []
+        sets, capped = [], False
         for term in terms:
-            partial, _ = search_query.run_search(
-                everything, term, _exclude_norm(), under_dir=under_dir, ext=ext)
+            partial, part_info = search_query.run_search(
+                everything, term, exclude, under_dir=under_dir, ext=ext,
+                limit_scale=limit_scale)
+            capped = capped or part_info['capped']
             sets.append({r.path: r for r in partial})
         common = set.intersection(*[set(s) for s in sets]) if sets else set()
-        merged = [sets[0][p] for p in common]
-        merged.sort(key=lambda r: r.path)
-        truncated = bool(limit) and len(merged) > limit
-        results = merged[:limit] if truncated else merged
+        merged = sorted((sets[0][p] for p in common), key=lambda r: r.path)
+        offset = max(0, int(offset or 0))
+        page = merged[offset:offset + limit] if limit else merged[offset:]
+        info = {'total': len(merged), 'offset': offset, 'returned': len(page),
+                'has_more': offset + len(page) < len(merged), 'capped': capped}
+        results = page
     else:
-        results, truncated = search_query.run_search(
-            everything, query, _exclude_norm(), under_dir=under_dir, ext=ext, limit=limit)
+        results, info = search_query.run_search(
+            everything, query, exclude, under_dir=under_dir, ext=ext,
+            limit=limit, offset=offset, limit_scale=limit_scale)
 
     return {
         'ok': True,
         'query': query,
-        'count': len(results),
-        'truncated': truncated,
+        'count': info['returned'],
+        'total': info['total'],
+        'offset': info['offset'],
+        'has_more': info['has_more'],
+        # capped：Everything 端撈滿了索取上限，代表 total 本身可能仍是低估。
+        # 與 has_more（本次分頁沒給完）是不同的兩件事。
+        'capped': info['capped'],
         'results': [_serialize(r) for r in results],
     }
 
@@ -116,36 +145,54 @@ def fm_search(query: str, match: str = 'any', limit: int = 200,
     limit: 最多回傳幾筆，預設 200。
     under_dir: 只回傳此目錄底下的結果（可留空）。
     ext: 只回傳此副檔名的檔案，例如 "zip"（可留空）。
+
+    需要 FileManager 主程式正在執行，否則回 gui_not_running。
+    結果超過 limit 時請改用 fm_search_all 分頁取得完整清單。
     """
-    return _run_search(query, match, limit, under_dir or None, ext or None)
+    return _require_gui() or _run_search(query, match, limit, under_dir or None, ext or None)
 
 
 @server.tool()
-def fm_open_search_tab(query: str, launch_if_needed: bool = False) -> dict:
+def fm_search_all(query: str, match: str = 'any', limit: int = 200, offset: int = 0,
+                  under_dir: str = '', ext: str = '') -> dict:
+    """大量版的 fm_search：可分頁取回全部符合的檔案，欄位與 fm_search 完全相同。
+
+    fm_search 一次最多給幾百筆就沒了；這個工具會先取得完整結果集，回報真實的
+    total，再依 offset/limit 切一頁給你。要拿完就把 offset 往後推，直到
+    has_more 為 false。
+
+    limit: 單頁筆數，預設 200，上限 2000（每筆約 0.28 KB，2000 筆約 560 KB）。
+    offset: 從第幾筆開始，預設 0。
+    其餘參數與 fm_search 相同。
+
+    回傳欄位與 fm_search 相同：
+      count     本頁筆數（等於 len(results)）
+      total     符合的總筆數（不受 limit/offset 影響）
+      offset    本頁起始位置
+      has_more  是否還有下一頁；要拿完就把 offset 加上 count 再呼叫一次
+      capped    Everything 索引端撈滿了上限，代表 total 仍可能低估
+                （與 has_more 不同：那是本次分頁沒給完）
+
+    需要 FileManager 主程式正在執行，否則回 gui_not_running。
+    """
+    blocked = _require_gui()
+    if blocked:
+        return blocked
+    limit = max(1, min(int(limit or 200), 2000))
+    # 放大向 Everything 索取的筆數，否則 total 會被 GUI 用的預設上限先砍掉
+    return _run_search(query, match, limit, under_dir or None, ext or None,
+                       offset=offset, limit_scale=100)
+
+
+@server.tool()
+def fm_open_search_tab(query: str) -> dict:
     """在 FileManager GUI 的右面板開一個新分頁顯示這個關鍵字的搜尋結果。
 
-    GUI 沒開著時回 {"ok": false, "reason": "gui_not_running"}；
-    launch_if_needed=true 才會自動把 GUI 啟動起來再送指令。
+    需要 FileManager 主程式正在執行，否則回 gui_not_running。
+    本工具不會、也不應該自行啟動 FileManager：開啟主程式是使用者授予存取權的
+    動作，若讓這裡自動啟動，等於工具自己給自己授權。
     """
-    response = gui_bridge.send_command({'cmd': 'open_search_tab', 'query': query})
-    if response.get('reason') != 'gui_not_running' or not launch_if_needed:
-        return response
-
-    exe = os.path.join(paths.runtime_root(), 'FileManager.exe')
-    if os.path.exists(exe):
-        command = [exe]
-    else:
-        command = [sys.executable, os.path.join(paths.runtime_root(), 'main.py')]
-    try:
-        subprocess.Popen(command, cwd=paths.runtime_root())
-    except Exception as exc:
-        return {'ok': False, 'reason': 'launch_failed', 'error': str(exc)}
-
-    for _ in range(30):  # 最多等 15 秒讓 GUI 起來並開好管道
-        time.sleep(0.5)
-        if gui_bridge.gui_is_running():
-            return gui_bridge.send_command({'cmd': 'open_search_tab', 'query': query})
-    return {'ok': False, 'reason': 'launch_timeout'}
+    return _require_gui() or gui_bridge.send_command({'cmd': 'open_search_tab', 'query': query})
 
 
 # ── 清單讀寫 ────────────────────────────────────────────────────────────
@@ -156,7 +203,11 @@ def fm_authors_list(type: str = '', keyword: str = '', limit: int = 500) -> dict
 
     type: 'author'、'circle'，留空代表兩者都列。
     keyword: 以子字串比對名稱與別名（可留空）。
+    需要 FileManager 主程式正在執行，否則回 gui_not_running。
     """
+    blocked = _require_gui()
+    if blocked:
+        return blocked
     if type and type not in authors_db.TYPES:
         return {'ok': False, 'error': "type 必須是 'author' 或 'circle'"}
     with closing(authors_db.connect()) as conn:
@@ -183,7 +234,11 @@ def fm_authors_upsert(entries: list) -> dict:
     只送一筆帶 linked_names 的 entry 即可，另一邊會自動建檔並雙向關聯：
         [{"name": "南浜屋", "type": "circle", "linked_names": ["南浜よりこ"]}]
     若兩者已經各自存在、只是還沒關聯，改用 fm_authors_link 補上就好。
+    需要 FileManager 主程式正在執行，否則回 gui_not_running。
     """
+    blocked = _require_gui()
+    if blocked:
+        return blocked
     if not isinstance(entries, list) or not entries:
         return {'ok': False, 'error': 'entries 必須是非空陣列'}
     try:
@@ -206,7 +261,11 @@ def fm_authors_link(author: str, circle: str, unlink: bool = False) -> dict:
     重複呼叫同一組不會產生重複資料。任一邊不存在時會自動建檔，因此這也是
     「發現某作者屬於某團體」時最省事的寫法。
     unlink=true 則是解除關聯（兩個項目本身都保留）。
+    需要 FileManager 主程式正在執行，否則回 gui_not_running。
     """
+    blocked = _require_gui()
+    if blocked:
+        return blocked
     try:
         with closing(authors_db.connect()) as conn:
             if unlink:
@@ -233,7 +292,11 @@ def fm_authors_delete(ids: list = [], name: str = '', type: str = '') -> dict:
     """刪除作者／團體（軟刪除，使用者可在 GUI 還原）。
 
     給 ids 陣列，或給 name + type 二擇一。
+    需要 FileManager 主程式正在執行，否則回 gui_not_running。
     """
+    blocked = _require_gui()
+    if blocked:
+        return blocked
     with closing(authors_db.connect()) as conn:
         if ids:
             deleted = authors_db.soft_delete(conn, ids, source=authors_db.SOURCE_HERMES)
@@ -265,7 +328,11 @@ def fm_match_author(name: str = '', type: str = '', id: int = 0, limit: int = 20
     作法是把該實體的名稱與所有別名組成 OR 查詢丟進同一套搜尋管線，
     因此結果與使用者在 GUI 點該項目看到的完全一致。
     給 name（可加 type 消歧義）或 id。
+    需要 FileManager 主程式正在執行，否則回 gui_not_running。
     """
+    blocked = _require_gui()
+    if blocked:
+        return blocked
     with closing(authors_db.connect()) as conn:
         entity = _resolve_entity(conn, name, type or None, id)
     if entity is None:
@@ -284,7 +351,11 @@ def fm_authors_stats(type: str = '', limit: int = 100) -> dict:
     """統計清單中每個作者／團體在本機各有幾個檔案。
 
     每個實體都會跑一次搜尋，項目多時會很慢；建議搭配 type 或 limit 縮小範圍。
+    需要 FileManager 主程式正在執行，否則回 gui_not_running。
     """
+    blocked = _require_gui()
+    if blocked:
+        return blocked
     with closing(authors_db.connect()) as conn:
         entities = authors_db.list_entities(conn, type_=type or None, limit=limit)
 

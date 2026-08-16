@@ -102,19 +102,39 @@ def is_plain_keyword_term(term):
     return not any(token in candidate for token in (':', '<', '>', '!', '*', '?'))
 
 
-def search_plain_keyword_terms(everything, terms):
-    """逐個關鍵詞查詢並聯集去重（| 在此語意為 OR）。"""
+# GUI 逐個查詢變體向 Everything 索取的筆數上限。這兩個值決定了「一次搜尋最多
+# 看得到幾筆」，GUI 沿用至今；需要完整結果集的呼叫端（例如 Hermes 的大量搜尋）
+# 可用 scale 參數等比放大。
+PRIMARY_QUERY_LIMIT = 2000
+VARIANT_QUERY_LIMIT = 800
+# 帶 Everything 原生語法（: < > ! * ?）的查詢整串原樣送出，沿用 SDK 的預設筆數。
+RAW_QUERY_LIMIT = 200
+
+
+def search_plain_keyword_terms(everything, terms, limit_scale=1):
+    """逐個關鍵詞查詢並聯集去重（| 在此語意為 OR）。
+
+    回傳 (results, capped)。capped 表示至少有一個查詢變體撈滿了上限，也就是
+    Everything 可能還有更多符合的項目沒被取回——呼叫端要據此回報結果不完整。
+    """
     results = []
     seen = set()
+    capped = False
     for term in terms:
         for query_text in build_queries(term):
-            max_results = 2000 if query_text.startswith('regex:') or query_text == strip_term_quotes(term) else 800
-            for item in everything.query(query_text, max_results=max_results):
+            base = (PRIMARY_QUERY_LIMIT
+                    if query_text.startswith('regex:') or query_text == strip_term_quotes(term)
+                    else VARIANT_QUERY_LIMIT)
+            max_results = base * limit_scale
+            items = everything.query(query_text, max_results=max_results)
+            if len(items) >= max_results:
+                capped = True
+            for item in items:
                 if item.path in seen or not path_matches(item.path, term):
                     continue
                 seen.add(item.path)
                 results.append(item)
-    return results
+    return results, capped
 
 
 # ── 排除目錄 ────────────────────────────────────────────────────────────
@@ -137,24 +157,36 @@ def is_path_excluded(path, exclude_norm):
     return False
 
 
-def query_everything(everything, search_command):
-    """執行一次完整搜尋，回傳 SearchResult 清單（不套排除設定）。
+def query_everything(everything, search_command, limit_scale=1):
+    """執行一次完整搜尋，回傳 (SearchResult 清單, 是否撈滿上限)。不套排除設定。
 
     與 GUI 的 `_do_search` 判斷一致：所有關鍵詞都是純關鍵字時走多重查詢＋比對
     過濾；只要有一個帶 Everything 語法符號（: < > ! * ?）就整串原樣送出。
     """
     terms = split_terms(search_command)
     if terms and all(is_plain_keyword_term(term) for term in terms):
-        return search_plain_keyword_terms(everything, terms)
-    return everything.query(normalize_search_command(search_command))
+        return search_plain_keyword_terms(everything, terms, limit_scale)
+    max_results = RAW_QUERY_LIMIT * limit_scale
+    items = everything.query(normalize_search_command(search_command), max_results=max_results)
+    return items, len(items) >= max_results
 
 
-def run_search(everything, search_command, exclude_norm=(), under_dir=None, ext=None, limit=None):
-    """MCP 端用的搜尋入口：查詢＋排除過濾＋路徑/副檔名限縮＋筆數上限。
+def run_search(everything, search_command, exclude_norm=(), under_dir=None, ext=None,
+               limit=None, offset=0, limit_scale=1):
+    """MCP 端用的搜尋入口：查詢＋排除過濾＋路徑/副檔名限縮＋分頁。
 
-    回傳 (results, truncated)。results 為 everything_sdk.SearchResult 清單。
+    回傳 (results, info)。info 內含：
+      total     過濾後的總筆數（不受 limit/offset 影響）
+      offset    實際起始位置
+      returned  本次回傳筆數
+      has_more  offset+returned 之後還有沒有資料
+      capped    Everything 端撈滿了上限，代表 total 本身可能仍是低估
+
+    capped 與 has_more 是兩回事：前者是「索引裡可能還有更多沒取回」，後者是
+    「這次分頁沒給完」。舊版只回一個 truncated 且只反映 limit 的裁切，撞到
+    Everything 上限時會謊報未截斷。
     """
-    results = query_everything(everything, search_command)
+    results, capped = query_everything(everything, search_command, limit_scale)
 
     if exclude_norm:
         results = [r for r in results if not is_path_excluded(r.path, exclude_norm)]
@@ -176,8 +208,14 @@ def run_search(everything, search_command, exclude_norm=(), under_dir=None, ext=
                 if not r.is_dir and os.path.splitext(r.path)[1].lower().lstrip('.') in wanted
             ]
 
-    truncated = False
-    if limit and len(results) > limit:
-        results = results[:limit]
-        truncated = True
-    return results, truncated
+    total = len(results)
+    offset = max(0, int(offset or 0))
+    page = results[offset:offset + limit] if limit else results[offset:]
+    info = {
+        'total': total,
+        'offset': offset,
+        'returned': len(page),
+        'has_more': offset + len(page) < total,
+        'capped': capped,
+    }
+    return page, info
