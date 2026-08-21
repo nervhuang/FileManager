@@ -16,6 +16,7 @@
 import configparser
 import json
 import os
+import threading
 from contextlib import closing
 
 from mcp.server import MCPServer
@@ -36,14 +37,24 @@ server = MCPServer(
     ),
 )
 
-_everything = None
+_local = threading.local()
 
 
 def _get_everything():
-    global _everything
-    if _everything is None:
-        _everything = EverythingSDK()
-    return _everything
+    """回傳目前執行緒專用的 EverythingSDK。
+
+    MCP 框架用 anyio.to_thread.run_sync 執行每個同步工具呼叫，同一支工具的
+    連續兩次呼叫可能被排到不同的 worker thread 上。EverythingSDK 在建構時
+    會建立一個訊息視窗，而視窗的訊息佇列屬於建立它的那個執行緒——若快取成
+    跨執行緒共用的單例，其他執行緒收不到 Everything 的回覆，query() 會安靜
+    地逾時回傳空清單（不報錯），呼叫端只會看到「查不到任何檔案」。因此改成
+    每個執行緒各自快取一份，讓建立視窗與輪詢訊息永遠是同一個執行緒。
+    """
+    everything = getattr(_local, 'everything', None)
+    if everything is None:
+        everything = EverythingSDK()
+        _local.everything = everything
+    return everything
 
 
 def _exclude_norm():

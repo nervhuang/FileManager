@@ -138,9 +138,17 @@ class EverythingSDK:
         return hwnd
 
     def _create_reply_window(self):
-        """建立持久化的 IPC 回覆視窗，整個生命週期共用。"""
+        """建立持久化的 IPC 回覆視窗，整個生命週期共用。
+
+        類別名稱含 id(self)：類別是以名稱註冊在整個行程層級，若同一行程內
+        有第二個實例沿用相同名稱，RegisterClassExW 會悄悄失敗（類別已存在），
+        導致它的視窗其實仍套用第一個實例已註冊的 lpfnWndProc——Everything 的
+        回覆會被送進第一個實例的 _wnd_proc、疊加到它的 _ipc_results，而不是
+        真正發出查詢那個實例的。多執行緒各自持有一份 EverythingSDK 時（見
+        hermes_mcp._get_everything）就會踩到，因此類別名稱必須每個實例互不相同。
+        """
         hInst = self._kernel32.GetModuleHandleW(None)
-        self._cls_name = f"EvIPC_{os.getpid()}"
+        self._cls_name = f"EvIPC_{os.getpid()}_{id(self)}"
         wc = self._WNDCLASSEXW()
         wc.cbSize = ctypes.sizeof(self._WNDCLASSEXW)
         wc.lpfnWndProc = self._wndproc_ref
