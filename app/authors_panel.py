@@ -4,6 +4,8 @@
 單擊清單項目即以「名稱＋所有別名」組成 OR 查詢，在右側面板開一個搜尋分頁。
 """
 
+import re
+
 from PyQt5.QtCore import QPoint, QSize, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeView, QToolBar,
@@ -24,6 +26,24 @@ ENTITY_ID_ROLE = Qt.UserRole + 1
 ENTITY_TYPE_ROLE = Qt.UserRole + 2
 
 _TYPE_LABEL = {authors_db.AUTHOR: '作者', authors_db.CIRCLE: '團體'}
+
+# 同人圈慣用的「團體 (作者)」標記，外層方括號可有可無，括號可半形或全形；
+# 用 (?:...)$ 錨定在字串尾端取「最後一組括號」，團體名本身帶括號時才不會錯拆。
+_CIRCLE_AUTHOR_RE = re.compile(
+    r'^\[?\s*(?P<circle>.+?)\s*[(（]\s*(?P<author>[^()（）]+?)\s*[)）]\s*\]?$'
+)
+
+
+def _parse_circle_author(text):
+    """把「團體 (作者)」或「[團體 (作者)]」拆成 (團體名, 作者名)；不符合格式回傳 None。"""
+    match = _CIRCLE_AUTHOR_RE.match(text.strip())
+    if not match:
+        return None
+    circle = match.group('circle').strip()
+    author = match.group('author').strip()
+    if not circle or not author:
+        return None
+    return circle, author
 
 
 # 與中間檔案面板工具列共用的色盤：實心填色 + 深色描邊 + 高光，
@@ -172,6 +192,10 @@ class EntityEditDialog(QDialog):
         row = QHBoxLayout()
         row.addWidget(QLabel('名稱：', self))
         self.name_edit = QLineEdit(entity['name'] if entity else '', self)
+        if entity is None:
+            # 只在「新增」時攔截：貼上「團體 (作者)」格式就自動拆成兩筆並建立關聯。
+            # 編輯既有項目時名稱本來就可能含括號，不應該被這條規則誤拆。
+            self.name_edit.editingFinished.connect(self._maybe_split_pasted_name)
         row.addWidget(self.name_edit, 1)
         row.addWidget(QLabel('類型：', self))
         self.type_combo = QComboBox(self)
@@ -250,6 +274,18 @@ class EntityEditDialog(QDialog):
             self.link_label.setText('所屬團體：')
         else:
             self.link_label.setText('旗下作者：')
+
+    def _maybe_split_pasted_name(self):
+        """名稱欄符合「團體 (作者)」格式時，自動拆成團體名 + 旗下作者關聯。"""
+        parsed = _parse_circle_author(self.name_edit.text())
+        if parsed is None:
+            return
+        circle_name, author_name = parsed
+        self.name_edit.setText(circle_name)
+        self.type_combo.setCurrentIndex(self.type_combo.findData(authors_db.CIRCLE))
+        existing = {self.link_list.item(i).text() for i in range(self.link_list.count())}
+        if author_name not in existing:
+            self.link_list.addItem(author_name)
 
     def _on_accept(self):
         # 使用者常在別名／關聯欄打完字就直接按確定，沒按 Enter。先把殘留文字
