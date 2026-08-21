@@ -200,12 +200,37 @@ def _link(conn, author_id, circle_id):
 
 
 def _set_links(conn, entity_id, entity_type, counterpart_ids):
+    """把 entity_id 的關聯整組換成 counterpart_ids（先刪光再插入）。
+
+    只給 revert_change 用：還原到某個時間點的快照本來就該精確重現「當時的
+    完整清單」，包含移除快照之後才新增的關聯。upsert 的 linked_names 不要
+    呼叫這個——見 _add_links 的說明。
+    """
     if entity_type == AUTHOR:
         conn.execute('DELETE FROM links WHERE author_id = ?', (entity_id,))
         for cid in counterpart_ids:
             _link(conn, entity_id, cid)
     else:
         conn.execute('DELETE FROM links WHERE circle_id = ?', (entity_id,))
+        for aid in counterpart_ids:
+            _link(conn, aid, entity_id)
+
+
+def _add_links(conn, entity_id, entity_type, counterpart_ids):
+    """把 counterpart_ids 併入 entity_id 既有的關聯，只增不減。
+
+    作者／團體是多對多：一筆 links 資料列同時是作者清單裡的一項、也是團體
+    清單裡的一項。若像 aliases 那樣「整組取代」，會先刪光 entity_id 這一側
+    的全部關聯列——但那些列同時也是對方（另一個作者或團體）清單的一部分。
+    Hermes 發現作者時通常一次處理一位，對同一個團體分開呼叫多次 upsert；
+    若採整組取代，後寫入的作者會把前面已經記錄的其他作者關聯一起洗掉。
+    因此這裡改成只新增缺少的關聯，既有但這次沒列出的關聯維持不動；要移除
+    某一組關聯請用 fm_authors_link(unlink=true)。
+    """
+    if entity_type == AUTHOR:
+        for cid in counterpart_ids:
+            _link(conn, entity_id, cid)
+    else:
         for aid in counterpart_ids:
             _link(conn, aid, entity_id)
 
@@ -232,7 +257,13 @@ def upsert(conn, entries, source=SOURCE_LOCAL):
 
     每筆 entry 支援：id、name、type、aliases、linked_names、note。
     - 有 id 走更新；否則以 (type, name) 找現有未刪除實體，找不到才新增。
-    - aliases / linked_names 有給才動（給空陣列＝清空），沒給則保持原狀。
+    - aliases 有給才動，給空陣列＝清空，沒給則保持原狀（整組取代，安全：
+      別名只屬於這個實體自己，不會影響到別人）。
+    - linked_names 有給才動，是「新增」不是「取代」：只會把列出的關聯併入
+      既有清單，不會刪除既有但這次沒列出的關聯。作者／團體多對多，一筆
+      關聯同時屬於雙方清單，若整組取代，分開多次呼叫（例如一次只處理一位
+      作者）會把之前寫入、這次沒提到的關聯洗掉。要移除某組關聯請改用
+      fm_authors_link(unlink=true)。
     - linked_names 指的是「相對類型」的名稱；不存在時自動建檔。
 
     回傳 {'created': [id...], 'updated': [id...]}。
@@ -289,7 +320,7 @@ def upsert(conn, entries, source=SOURCE_LOCAL):
                         _ensure_entity(conn, n.strip(), other_type, source, now)
                         for n in (entry.get('linked_names') or []) if (n or '').strip()
                     ]
-                    _set_links(conn, entity_id, type_, counterpart_ids)
+                    _add_links(conn, entity_id, type_, counterpart_ids)
 
                 _log_change(
                     conn, source,
