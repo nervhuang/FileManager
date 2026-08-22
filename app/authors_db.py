@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS entities (
   name TEXT NOT NULL,
   type TEXT NOT NULL CHECK(type IN ('author','circle')),
   note TEXT NOT NULL DEFAULT '',
+  english_name TEXT NOT NULL DEFAULT '',
   source TEXT NOT NULL DEFAULT 'local',
   deleted INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
@@ -72,6 +73,17 @@ def db_path():
     return paths.authors_db_path()
 
 
+def _migrate(conn):
+    """幫既有資料庫補上後來才加的欄位。
+
+    _SCHEMA 的 CREATE TABLE IF NOT EXISTS 只在表不存在時生效，既有資料庫的
+    entities 表早就建過了，不會自動長出新欄位，得手動 ALTER TABLE 補上。
+    """
+    columns = {row['name'] for row in conn.execute('PRAGMA table_info(entities)')}
+    if 'english_name' not in columns:
+        conn.execute("ALTER TABLE entities ADD COLUMN english_name TEXT NOT NULL DEFAULT ''")
+
+
 def connect(path=None):
     """開啟（必要時建立）資料庫，回傳已套用 schema 的連線。"""
     target = path or db_path()
@@ -84,6 +96,7 @@ def connect(path=None):
     conn.execute('PRAGMA foreign_keys=ON')
     conn.execute('PRAGMA busy_timeout=8000')
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     conn.commit()
     return conn
 
@@ -96,6 +109,7 @@ def _row_to_entity(conn, row, with_relations=True):
         'name': row['name'],
         'type': row['type'],
         'note': row['note'],
+        'english_name': row['english_name'],
         'source': row['source'],
         'deleted': bool(row['deleted']),
         'created_at': row['created_at'],
@@ -137,7 +151,7 @@ def find_entity(conn, name, type_):
 
 
 def list_entities(conn, type_=None, keyword=None, include_deleted=False, limit=None):
-    """列出實體。keyword 會同時比對名稱與別名（子字串，不分大小寫）。"""
+    """列出實體。keyword 會同時比對名稱、別名與英文名稱（子字串，不分大小寫）。"""
     sql = 'SELECT DISTINCT e.* FROM entities e LEFT JOIN aliases a ON a.entity_id = e.id WHERE 1=1'
     args = []
     if not include_deleted:
@@ -146,9 +160,10 @@ def list_entities(conn, type_=None, keyword=None, include_deleted=False, limit=N
         sql += ' AND e.type = ?'
         args.append(type_)
     if keyword:
-        sql += ' AND (e.name LIKE ? COLLATE NOCASE OR a.alias LIKE ? COLLATE NOCASE)'
+        sql += (' AND (e.name LIKE ? COLLATE NOCASE OR a.alias LIKE ? COLLATE NOCASE '
+                 'OR e.english_name LIKE ? COLLATE NOCASE)')
         like = f'%{keyword}%'
-        args.extend([like, like])
+        args.extend([like, like, like])
     sql += ' ORDER BY e.type, e.name'
     if limit:
         sql += ' LIMIT ?'
@@ -255,8 +270,11 @@ def _ensure_entity(conn, name, type_, source, now):
 def upsert(conn, entries, source=SOURCE_LOCAL):
     """新增或更新實體。
 
-    每筆 entry 支援：id、name、type、aliases、linked_names、note。
+    每筆 entry 支援：id、name、type、aliases、linked_names、note、english_name。
     - 有 id 走更新；否則以 (type, name) 找現有未刪除實體，找不到才新增。
+    - english_name 有給才動，沒給則保持原狀；純中繼資料，只給網站查詢用，不會
+      併入 search_terms_for，不影響本機檔案搜尋結果。作者/團體與英文名稱是
+      一對一，單一欄位而非清單。
     - aliases 有給才動，給空陣列＝清空，沒給則保持原狀（整組取代，安全：
       別名只屬於這個實體自己，不會影響到別人）。
     - linked_names 有給才動，是「新增」不是「取代」：只會把列出的關聯併入
@@ -297,16 +315,18 @@ def upsert(conn, entries, source=SOURCE_LOCAL):
 
                 if entity_id:
                     conn.execute(
-                        'UPDATE entities SET name = ?, type = ?, note = ?, source = ?, updated_at = ? '
-                        'WHERE id = ?',
-                        (name, type_, entry.get('note', before['note']), source, now, entity_id),
+                        'UPDATE entities SET name = ?, type = ?, note = ?, english_name = ?, '
+                        'source = ?, updated_at = ? WHERE id = ?',
+                        (name, type_, entry.get('note', before['note']),
+                         entry.get('english_name', before['english_name']), source, now, entity_id),
                     )
                     updated.append(entity_id)
                 else:
                     cur = conn.execute(
-                        'INSERT INTO entities (name, type, note, source, deleted, created_at, updated_at) '
-                        'VALUES (?,?,?,?,0,?,?)',
-                        (name, type_, entry.get('note', ''), source, now, now),
+                        'INSERT INTO entities (name, type, note, english_name, source, deleted, '
+                        'created_at, updated_at) VALUES (?,?,?,?,?,0,?,?)',
+                        (name, type_, entry.get('note', ''), entry.get('english_name', ''),
+                         source, now, now),
                     )
                     entity_id = cur.lastrowid
                     created.append(entity_id)
@@ -430,11 +450,11 @@ def revert_change(conn, change_id, source=SOURCE_LOCAL):
             )
         else:
             conn.execute(
-                'UPDATE entities SET name = ?, type = ?, note = ?, source = ?, deleted = ?, '
-                'updated_at = ? WHERE id = ?',
+                'UPDATE entities SET name = ?, type = ?, note = ?, english_name = ?, source = ?, '
+                'deleted = ?, updated_at = ? WHERE id = ?',
                 (
-                    before['name'], before['type'], before['note'], before['source'],
-                    1 if before['deleted'] else 0, now, entity_id,
+                    before['name'], before['type'], before['note'], before.get('english_name', ''),
+                    before['source'], 1 if before['deleted'] else 0, now, entity_id,
                 ),
             )
             _set_aliases(conn, entity_id, before.get('aliases') or [])

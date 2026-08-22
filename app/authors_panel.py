@@ -223,6 +223,13 @@ class EntityEditDialog(QDialog):
         layout.addLayout(link_row)
         self._refresh_link_hint()
 
+        english_row = QHBoxLayout()
+        english_row.addWidget(QLabel('英文名稱：', self))
+        self.english_name_edit = QLineEdit(entity['english_name'] if entity else '', self)
+        self.english_name_edit.setPlaceholderText('網站查詢用，與本機檔案搜尋無關（可留空）')
+        english_row.addWidget(self.english_name_edit, 1)
+        layout.addLayout(english_row)
+
         note_row = QHBoxLayout()
         note_row.addWidget(QLabel('備註：', self))
         self.note_edit = QLineEdit(entity['note'] if entity else '', self)
@@ -311,6 +318,7 @@ class EntityEditDialog(QDialog):
             'aliases': _items(self.alias_list),
             'linked_names': _items(self.link_list),
             'note': self.note_edit.text().strip(),
+            'english_name': self.english_name_edit.text().strip(),
         }
         if self._entity:
             entry['id'] = self._entity['id']
@@ -566,6 +574,8 @@ class AuthorsPanel(QWidget):
         tooltip = [f"{_TYPE_LABEL[entity['type']]}：{entity['name']}"]
         if entity['aliases']:
             tooltip.append('別名：' + '、'.join(entity['aliases']))
+        if entity['english_name']:
+            tooltip.append('英文名稱：' + entity['english_name'])
         if entity['note']:
             tooltip.append('備註：' + entity['note'])
         tooltip.append('來源：' + entity['source'])

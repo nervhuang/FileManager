@@ -60,9 +60,15 @@
 .venv\Scripts\python.exe -m app.cli authors-list --type circle
 
 # 新增／更新（entries 用 stdin 餵，避免跟殼層引號搏鬥）
-'[{"name":"サイクロン","type":"circle","linked_names":["和泉","冷泉"]}]' | `
+'[{"name":"サイクロン","type":"circle","linked_names":["和泉","冷泉"],"english_name":"Cyclone"}]' | `
     .venv\Scripts\python.exe -m app.cli authors-upsert
 
 # 建立關聯
 .venv\Scripts\python.exe -m app.cli authors-link "和泉" "サイクロン"
+
+# 用英文名稱反查回本機清單裡對應哪個實體
+.venv\Scripts\python.exe -m app.cli authors-list --keyword "Cyclone"
+.venv\Scripts\python.exe -m app.cli match-author --name "Cyclone"
 ```
+
+`english_name` 是網站查詢用的英文名稱，單一字串（一對一，不是清單），不會影響本機檔案搜尋結果；但 `authors-list --keyword` 與 `match-author --name` 都能用它反查回對應的日文/中文實體。

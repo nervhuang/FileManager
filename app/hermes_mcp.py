@@ -213,7 +213,7 @@ def fm_authors_list(type: str = '', keyword: str = '', limit: int = 500) -> dict
     """列出作者／團體清單。
 
     type: 'author'、'circle'，留空代表兩者都列。
-    keyword: 以子字串比對名稱與別名（可留空）。
+    keyword: 以子字串比對名稱、別名與英文名稱（可留空）。
     需要 FileManager 主程式正在執行，否則回 gui_not_running。
     """
     blocked = _require_gui()
@@ -235,7 +235,11 @@ def fm_authors_upsert(entries: list) -> dict:
       name (必填，除非給了 id)、type ('author' 或 'circle'，必填除非給了 id)、
       id (要改既有項目時給)、aliases (字串陣列，會整組取代)、
       linked_names (相對類型的名稱陣列：作者填團體名、團體填作者名；
-                    對方不存在會自動建檔)、note。
+                    對方不存在會自動建檔)、note、
+      english_name (字串，該作者/團體在網站上查詢用的英文名稱；一對一單一值，
+                    不是陣列。純中繼資料，不會影響本機檔案搜尋結果，但
+                    fm_authors_list 的 keyword 與本工具其他函式的 name 參數都
+                    找得到它)。
     以 (type, name) 找得到現有項目時會更新它，不會重複新增。
     所有變更都會寫入變更紀錄，使用者可在 GUI 一鍵還原。
 
@@ -323,12 +327,13 @@ def fm_authors_delete(ids: list = [], name: str = '', type: str = '') -> dict:
 # ── 檔名比對 ────────────────────────────────────────────────────────────
 
 def _resolve_entity(conn, name, type_, entity_id):
+    """用名稱找實體：本名、別名、英文名稱三者都能命中同一筆。"""
     if entity_id:
         return authors_db.get_entity(conn, entity_id)
     if not name:
         return None
     candidates = [e for e in authors_db.list_entities(conn, type_=type_ or None, keyword=name)
-                  if e['name'] == name or name in e['aliases']]
+                  if e['name'] == name or name in e['aliases'] or e['english_name'] == name]
     return candidates[0] if candidates else None
 
 
@@ -337,8 +342,9 @@ def fm_match_author(name: str = '', type: str = '', id: int = 0, limit: int = 20
     """找出屬於某個作者／團體的本機檔案。
 
     作法是把該實體的名稱與所有別名組成 OR 查詢丟進同一套搜尋管線，
-    因此結果與使用者在 GUI 點該項目看到的完全一致。
-    給 name（可加 type 消歧義）或 id。
+    因此結果與使用者在 GUI 點該項目看到的完全一致（英文名稱不算進這個查詢，
+    純中繼資料，只給網站查詢用）。
+    給 name（可加 type 消歧義）或 id；name 也可以直接給英文名稱，一樣能找到。
     需要 FileManager 主程式正在執行，否則回 gui_not_running。
     """
     blocked = _require_gui()
@@ -353,7 +359,7 @@ def fm_match_author(name: str = '', type: str = '', id: int = 0, limit: int = 20
     query = authors_db.search_terms_for(entity)
     result = _run_search(query, 'any', limit)
     result['entity'] = {'id': entity['id'], 'name': entity['name'], 'type': entity['type'],
-                        'aliases': entity['aliases']}
+                        'aliases': entity['aliases'], 'english_name': entity['english_name']}
     return result
 
 
