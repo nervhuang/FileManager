@@ -1,19 +1,24 @@
 """更新檢查器面板與背景掃描執行緒。
 
-面板只放摘要：四區塊計數與新書清單。要逐本判斷「這本我到底有沒有」時得看縮圖
-與並排的本機檔名，那是 Web UI 的工作（雙擊清單項目開啟）。
+面板只放摘要：四區塊計數、新書清單與一小塊執行紀錄。要逐本判斷「這本我到底有
+沒有」時得看縮圖與並排的本機檔名，那是 Web UI 的工作（雙擊清單項目開啟）。
 
 掃描一輪全量約 25–35 分鐘，必須在背景執行緒跑，且隨時可停。所有可能拋出的
 邊界都在此收斂成訊號，不讓例外冒進 Qt 事件圈把主程式一起帶走。
+
+執行紀錄不是裝飾：跑那麼久，狀態列只留得住最後一行，看不出跑到哪、哪幾位失敗、
+還要多久。進度條給完成度，紀錄區給逐項結果與失敗原因。
 """
 
+import time
 from contextlib import closing
 
-from PyQt5.QtCore import QSize, Qt, QThread, pyqtSignal
+from PyQt5.QtCore import QSize, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QPixmap, QIcon
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolBar, QToolButton,
     QTreeWidget, QTreeWidgetItem, QFrame, QStyle, QAbstractItemView,
+    QProgressBar, QPlainTextEdit, QSplitter, QSizePolicy,
 )
 
 from . import fetcher, matcher, scanner, store, webui
@@ -66,7 +71,8 @@ def make_checker_icon(size=64):
 class ScanWorker(QThread):
     """在背景執行緒跑一輪掃描。"""
 
-    progress = pyqtSignal(int, int, str)   # 已完成、總數、目前實體名稱
+    progress = pyqtSignal(int, int, str)   # 索引、總數、目前實體名稱
+    entity_done = pyqtSignal(int, int, object)  # 索引、總數、該實體的結果 dict
     done = pyqtSignal(dict)                # summarize() 的結果
     failed = pyqtSignal(str)
 
@@ -104,7 +110,8 @@ class ScanWorker(QThread):
                 results = scanner.scan_all(
                     conn, entities, self._fetch, lookup,
                     progress=lambda i, total, e: self.progress.emit(
-                        i, total, e.get('name') or ''))
+                        i, total, e.get('name') or ''),
+                    on_result=lambda i, total, r: self.entity_done.emit(i, total, r))
                 self.done.emit(scanner.summarize(results))
         except fetcher.CookieExpired as exc:
             self.failed.emit(str(exc))
@@ -124,6 +131,16 @@ class CheckerPanel(QWidget):
         super().__init__(parent)
         self._worker = None
         self._toolbar_icon_size = QSize(64, 64)
+        self._scan_started_at = 0.0
+        self._scan_total = 0
+        self._scan_finished = 0
+        self._scan_new = 0
+        self._scan_upgrade = 0
+        self._scan_errors = 0
+        # 只在掃描期間跑，用來刷新已耗時與預估剩餘；停掉才不會空轉。
+        self._elapsed_timer = QTimer(self)
+        self._elapsed_timer.setInterval(1000)
+        self._elapsed_timer.timeout.connect(self._update_elapsed)
         # Web UI 由面板持有：兩者同生共死，主視窗不必知道伺服器的存在。
         self._webui = webui.WebUI()
 
@@ -137,9 +154,6 @@ class CheckerPanel(QWidget):
 
         self.counts_label = QLabel()
         self.counts_label.setContentsMargins(8, 6, 8, 6)
-        font = self.counts_label.font()
-        font.setPointSizeF(font.pointSizeF() + 1.0)
-        self.counts_label.setFont(font)
         layout.addWidget(self.counts_label)
 
         self.tree = QTreeWidget()
@@ -150,8 +164,19 @@ class CheckerPanel(QWidget):
         self.tree.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tree.itemDoubleClicked.connect(self._on_double_click)
         self.tree.setColumnWidth(0, 380)
-        layout.addWidget(self.tree, 1)
 
+        # 清單與紀錄放進 splitter：紀錄區平時只佔一小條，要追細節時可以拉大。
+        split = QSplitter(Qt.Vertical)
+        split.setChildrenCollapsible(False)
+        split.addWidget(self.tree)
+        split.addWidget(self._build_log_box())
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 0)
+        split.setSizes([460, 150])
+        layout.addWidget(split, 1)
+        self.splitter = split
+
+        self.apply_font_size(self._base_font_size())
         self.refresh()
 
     # ── 建構 ────────────────────────────────────────────────────────────
@@ -161,6 +186,49 @@ class CheckerPanel(QWidget):
         line.setFrameShape(QFrame.HLine)
         line.setFrameShadow(QFrame.Sunken)
         return line
+
+    def _build_log_box(self):
+        """進度條 ＋ 純文字紀錄。行數設上限，跑幾百位作者也不會吃掉記憶體。"""
+        box = QWidget()
+        vbox = QVBoxLayout(box)
+        vbox.setContentsMargins(8, 4, 8, 6)
+        vbox.setSpacing(4)
+
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        self.log_title_label = QLabel('執行紀錄')
+        self.log_title_label.setStyleSheet('color: #666;')
+        self.elapsed_label = QLabel('')
+        self.elapsed_label.setStyleSheet('color: #888;')
+        self.clear_log_button = QToolButton(self)
+        self.clear_log_button.setText('清除')
+        self.clear_log_button.setAutoRaise(True)
+        self.clear_log_button.setFocusPolicy(Qt.NoFocus)
+        self.clear_log_button.setToolTip('清空紀錄')
+        self.clear_log_button.clicked.connect(self.clear_log)
+        head.addWidget(self.log_title_label)
+        head.addStretch(1)
+        head.addWidget(self.elapsed_label)
+        head.addWidget(self.clear_log_button)
+        vbox.addLayout(head)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat('待命')
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFixedHeight(18)
+        vbox.addWidget(self.progress_bar)
+
+        self.log_view = QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setMaximumBlockCount(2000)
+        self.log_view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.log_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        vbox.addWidget(self.log_view, 1)
+
+        box.setMinimumHeight(110)
+        return box
 
     def _button(self, icon, tooltip, handler):
         btn = QToolButton(self)
@@ -196,6 +264,61 @@ class CheckerPanel(QWidget):
         bar.addWidget(self.detail_button)
         return bar
 
+    def _base_font_size(self):
+        size = self.font().pointSize()
+        return size if size > 0 else 10
+
+    def apply_font_size(self, size):
+        """跟隨主視窗的字型大小（Ctrl+= / Ctrl+-）。
+
+        每個子元件都被明確設過字型（計數列要放大、紀錄區要等寬縮小），設過的
+        字型不會再從父層繼承，所以這裡得逐一重設，不能只設面板自己。
+        """
+        family = self.font().family()
+        base = QFont(family, size)
+        self.setFont(base)
+        self.tree.setFont(base)
+        for widget in (self.log_title_label, self.elapsed_label,
+                       self.clear_log_button, self.progress_bar):
+            widget.setFont(base)
+
+        # 計數列是這個面板的標題，比內文大一級。
+        self.counts_label.setFont(QFont(family, size + 1))
+
+        # 紀錄區用等寬字型：逐項紀錄靠欄位對齊才讀得快。比內文小一級但不低於 8pt，
+        # 否則主視窗縮到 6pt 時紀錄會小到看不見。
+        log_font = QFont('Consolas', max(8, size - 1))
+        log_font.setStyleHint(QFont.Monospace)
+        self.log_view.setFont(log_font)
+
+        # 明確要求重算列高，不然要等下次重繪才會跟上。
+        self.tree.doItemsLayout()
+
+    # ── 版面狀態 ────────────────────────────────────────────────────────
+
+    def layout_state(self):
+        """回報面板內部版面，交給主視窗寫進 config.ini。
+
+        面板內部有兩處使用者會動的尺寸：清單／紀錄的分隔位置，以及清單欄寬。
+        主視窗只負責存取字串，不必知道這裡有幾個欄位或幾格 splitter。
+        """
+        return {
+            'split': list(self.splitter.sizes()),
+            'columns': [self.tree.columnWidth(i)
+                        for i in range(self.tree.columnCount())],
+        }
+
+    def restore_layout(self, split=None, columns=None):
+        """套回 `layout_state()` 存下來的版面。任一項壞掉就跳過該項用預設值。"""
+        # 全 0 代表面板從沒顯示過就被存下來（隱藏的 widget 尺寸是 0），
+        # 照套會讓清單與紀錄都變成 0 高。
+        if split and len(split) == self.splitter.count() and any(x > 0 for x in split):
+            self.splitter.setSizes([int(x) for x in split])
+        if columns:
+            for i, width in enumerate(columns[:self.tree.columnCount()]):
+                if int(width) > 0:
+                    self.tree.setColumnWidth(i, int(width))
+
     def set_toolbar_icon_size(self, size):
         self._toolbar_icon_size = size
         self.toolbar.setIconSize(size)
@@ -210,21 +333,38 @@ class CheckerPanel(QWidget):
             return
         self._worker = ScanWorker(entity_type, keyword, limit, self)
         self._worker.progress.connect(self._on_progress)
+        self._worker.entity_done.connect(self._on_entity_done)
         self._worker.done.connect(self._on_done)
         self._worker.failed.connect(self._on_failed)
         self._worker.finished.connect(self._on_thread_finished)
         self.scan_button.setEnabled(False)
         self.stop_button.setEnabled(True)
+
+        self._scan_started_at = time.monotonic()
+        self._scan_total = 0
+        self._scan_finished = 0
+        self._scan_new = self._scan_upgrade = self._scan_errors = 0
+        # 總數要等工作執行緒讀完資料庫才知道，先進不確定狀態的忙碌條。
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setFormat('準備中…')
+        self.elapsed_label.setText('')
+        self._elapsed_timer.start()
+        self.log('▶ 開始檢查更新'
+                 + (f'（篩選：{keyword}）' if keyword else '')
+                 + (f'（上限 {limit} 位）' if limit else ''))
         self.status_message.emit('開始檢查更新…')
         self._worker.start()
 
     def stop_scan(self):
         if self._worker is not None and self._worker.isRunning():
             self._worker.cancel()
+            self.log('■ 收到停止要求，等目前這位掃完就收尾（已掃的都已保留）。')
+            self.progress_bar.setFormat('停止中…')
             self.status_message.emit('正在停止…已掃描的部分都會保留。')
 
     def shutdown(self):
         """主視窗關閉時呼叫：停掉背景掃描與 Web UI 伺服器並等它們收尾。"""
+        self._elapsed_timer.stop()
         if self._worker is not None and self._worker.isRunning():
             self._worker.cancel()
             self._worker.wait(5000)
@@ -253,25 +393,113 @@ class CheckerPanel(QWidget):
             self.status_message.emit(f'無法開啟 Web UI：{exc}')
 
     def _on_progress(self, index, total, name):
+        self._scan_total = total
+        if self.progress_bar.maximum() != total:
+            self.progress_bar.setRange(0, total)
+        self.progress_bar.setValue(index)
+        self.progress_bar.setFormat(f'%v/%m（%p%）　{name}')
         self.status_message.emit(f'檢查更新 {index + 1}/{total}：{name}')
+
+    def _on_entity_done(self, index, total, result):
+        """一位作者掃完就記一行——這是紀錄區存在的理由：看得到逐項結果。"""
+        self._scan_finished = index + 1
+        self._scan_total = total
+        self.progress_bar.setValue(self._scan_finished)
+
+        name = result.get('name') or '(未知)'
+        prefix = f'[{self._scan_finished:>4}/{total}] {name}'
+        if result.get('error'):
+            self._scan_errors += 1
+            self.log(f'{prefix} ⚠ 失敗：{result["error"]}')
+        elif result.get('skipped') == 'no_english_name':
+            self.log(f'{prefix} ── 略過：沒有填英文名稱')
+        elif result.get('skipped'):
+            self.log(f'{prefix} ── 略過：{result["skipped"]}')
+        else:
+            works = result.get('works') or ()
+            new_count = sum(1 for w in works if w['verdict'] == matcher.VERDICT_NEW)
+            up_count = sum(1 for w in works if w['verdict'] == matcher.VERDICT_UPGRADE)
+            self._scan_new += new_count
+            self._scan_upgrade += up_count
+            if new_count or up_count:
+                bits = []
+                if new_count:
+                    bits.append(f'🆕 {new_count}')
+                if up_count:
+                    bits.append(f'⬆️ {up_count}')
+                self.log(f'{prefix} ★ ' + '、'.join(bits))
+            else:
+                self.log(f'{prefix} ── 無更新')
+            if result.get('truncated'):
+                # 名稱是中日文（等寬字型下佔兩格），對不齊 prefix，改用固定縮排。
+                self.log('        ↳ ⚠ 發布量超過取回上限，這位可能有遺漏')
+        self._update_elapsed()
 
     def _on_done(self, summary):
         counts = summary.get('counts') or {}
+        new_count = counts.get(matcher.VERDICT_NEW, 0)
+        up_count = counts.get(matcher.VERDICT_UPGRADE, 0)
+        self.log(f'✔ 檢查完成：掃描 {summary.get("scanned", 0)}/'
+                 f'{summary.get("entities", 0)} 位，'
+                 f'新書 {new_count}、版本升級 {up_count}'
+                 f'（耗時 {_format_duration(time.monotonic() - self._scan_started_at)}）')
+        if summary.get('skipped'):
+            self.log(f'　 略過 {len(summary["skipped"])} 位（沒有英文名稱）')
+        if summary.get('errors'):
+            self.log(f'　 失敗 {len(summary["errors"])} 位：'
+                     + '、'.join(name for name, _ in summary['errors'][:5])
+                     + ('…' if len(summary['errors']) > 5 else ''))
         self.status_message.emit(
-            f"檢查完成：新書 {counts.get(matcher.VERDICT_NEW, 0)}、"
-            f"版本升級 {counts.get(matcher.VERDICT_UPGRADE, 0)}")
+            f'檢查完成：新書 {new_count}、版本升級 {up_count}')
         if summary.get('truncated'):
+            self.log(f'　 ⚠ {len(summary["truncated"])} 位發布量超過取回上限，可能有遺漏：'
+                     + '、'.join(summary['truncated'][:5])
+                     + ('…' if len(summary['truncated']) > 5 else ''))
             self.status_message.emit(
                 f"注意：{len(summary['truncated'])} 位作者發布量超過取回上限，可能有遺漏。")
         self.refresh()
 
     def _on_failed(self, message):
+        self.log(f'✖ 檢查失敗：{message}')
         self.status_message.emit(f'檢查失敗：{message}')
 
     def _on_thread_finished(self):
         self.scan_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+        self._elapsed_timer.stop()
+        # 中途停止時進度條會停在半途，維持原值不歸零：那是真的做到哪。
+        if self.progress_bar.maximum() == 0:
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(0)
+        self.progress_bar.setFormat(
+            f'已結束　%v/%m　🆕 {self._scan_new}　⬆️ {self._scan_upgrade}'
+            + (f'　⚠ {self._scan_errors}' if self._scan_errors else ''))
+        self._update_elapsed()
         self.refresh()
+
+    # ── 紀錄 ────────────────────────────────────────────────────────────
+
+    def log(self, message):
+        """往紀錄區加一行並捲到底。時間戳用本機時鐘，對得上其他工具的 log。"""
+        stamp = time.strftime('%H:%M:%S')
+        self.log_view.appendPlainText(f'{stamp}  {message}')
+        bar = self.log_view.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def clear_log(self):
+        self.log_view.clear()
+
+    def _update_elapsed(self):
+        """已耗時與預估剩餘。用已完成筆數的平均速度外推，夠用就好。"""
+        if not self._scan_started_at:
+            return
+        elapsed = time.monotonic() - self._scan_started_at
+        text = f'已耗時 {_format_duration(elapsed)}'
+        if self._scan_finished and self._scan_total > self._scan_finished:
+            remain = (elapsed / self._scan_finished) * (
+                self._scan_total - self._scan_finished)
+            text += f'　剩餘約 {_format_duration(remain)}'
+        self.elapsed_label.setText(text)
 
     # ── 顯示 ────────────────────────────────────────────────────────────
 
@@ -321,6 +549,17 @@ class CheckerPanel(QWidget):
 
     def _open_detail(self):
         self.detail_requested.emit('')
+
+
+def _format_duration(seconds):
+    seconds = int(max(0, seconds))
+    if seconds < 60:
+        return f'{seconds} 秒'
+    minutes, seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f'{minutes} 分 {seconds:02d} 秒'
+    hours, minutes = divmod(minutes, 60)
+    return f'{hours} 小時 {minutes:02d} 分'
 
 
 def _format_posted(posted):

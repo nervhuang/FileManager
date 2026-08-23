@@ -200,15 +200,17 @@ def aggregate(items):
 
 
 def scan_all(conn, entities, fetch, local_lookup, *,
-             threshold=matcher.DEFAULT_THRESHOLD, progress=None):
+             threshold=matcher.DEFAULT_THRESHOLD, progress=None, on_result=None):
     """依序掃描多個實體並把結果寫進資料庫，回傳每個實體的結果。
 
     錯誤分兩級：單一實體的抓取或解析失敗只記在該實體上、繼續掃下一個；
     cookie 失效與連續限流會往上拋，因為那兩種情況繼續跑也只是空轉，
     而且會讓後面幾百個實體全部記上假的失敗紀錄。
 
-    `progress(index, total, entity)` 讓呼叫端更新狀態列。中止由 `fetch.cancelled`
-    控制，已掃完的實體都已經寫入資料庫，下次接著跑。
+    `progress(index, total, entity)` 在每個實體開始前呼叫，
+    `on_result(index, total, result)` 在該實體寫入資料庫後呼叫——前者讓呼叫端知道
+    正在跑誰，後者讓它知道跑出了什麼。中止由 `fetch.cancelled` 控制，
+    已掃完的實體都已經寫入資料庫，下次接著跑。
     """
     from . import store
 
@@ -236,6 +238,8 @@ def scan_all(conn, entities, fetch, local_lookup, *,
                       'truncated': False, 'newest_posted': '', 'error': str(exc)}
             store.record_scan(conn, entity_id, error=str(exc))
             results.append(result)
+            if on_result:
+                on_result(index, len(entities), result)
             continue
 
         if not result['skipped']:
@@ -250,6 +254,8 @@ def scan_all(conn, entities, fetch, local_lookup, *,
                               newest_posted=result['newest_posted'],
                               truncated=result['truncated'])
         results.append(result)
+        if on_result:
+            on_result(index, len(entities), result)
 
     return results
 

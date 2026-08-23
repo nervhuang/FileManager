@@ -38,6 +38,14 @@ _bundle_root = paths.bundle_root
 _runtime_root = paths.runtime_root
 
 
+def _int_list(raw):
+    """把 config.ini 的 '460,150' 解析成 [460, 150]；壞掉就當沒設定。"""
+    try:
+        return [int(x) for x in (raw or '').split(',') if x.strip()]
+    except ValueError:
+        return []
+
+
 class ExcludeSettingsDialog(QDialog):
     """排除設定對話框：勾選是否啟用排除清單，並維護「不列出的目錄」清單。
 
@@ -2338,6 +2346,9 @@ class FileManager(QMainWindow):
         # 左側作者／團體面板（含其過濾框、樹與按鈕列）
         if getattr(self, 'authors_panel', None) is not None:
             self.authors_panel.apply_font_size(new_size)
+        # 右側更新檢查器面板（含計數列、清單與執行紀錄）
+        if getattr(self, 'checker_panel', None) is not None:
+            self.checker_panel.apply_font_size(new_size)
         # 位址列高度隨字型改變，須在它更新後再算一次右側留白，否則右側頁籤列
         # 會沿用舊高度而與左側錯開幾個像素。
         self._sync_right_header_spacing()
@@ -2531,6 +2542,15 @@ class FileManager(QMainWindow):
         self._authors_panel_width = max(cfg.getint('Layout', 'authors_panel_width', fallback=660), 80)
         self._set_authors_panel_visible(cfg.getboolean('Layout', 'authors_panel_visible', fallback=True))
 
+        # 還原右側更新檢查器面板：外層寬度與顯示與否由主視窗管，面板內部的
+        # splitter 與欄寬由面板自己還原（見 CheckerPanel.restore_layout）。
+        self._checker_panel_width = max(cfg.getint('Layout', 'checker_panel_width', fallback=520), 80)
+        self._set_checker_panel_visible(cfg.getboolean('Layout', 'checker_panel_visible', fallback=False))
+        if self.checker_panel is not None:
+            self.checker_panel.restore_layout(
+                split=_int_list(cfg.get('Layout', 'checker_split_sizes', fallback='')),
+                columns=_int_list(cfg.get('Layout', 'checker_col_widths', fallback='')))
+
         # 還原兩個面板的欄位寬度、顯示與否，以及欄序
         for key, view in self._column_views():
             self._restore_columns(cfg, key, view)
@@ -2647,6 +2667,20 @@ class FileManager(QMainWindow):
                 self._authors_panel_width = current_width
         cfg.set('Layout', 'authors_panel_visible', 'true' if self._authors_panel_visible else 'false')
         cfg.set('Layout', 'authors_panel_width', str(self._authors_panel_width))
+
+        # 右側更新檢查器面板：同樣地，隱藏時 sizes()[2] 為 0，沿用先前記住的寬度
+        if self.main_splitter is not None and self._checker_panel_visible:
+            current_width = self.main_splitter.sizes()[2]
+            if current_width > 0:
+                self._checker_panel_width = current_width
+        cfg.set('Layout', 'checker_panel_visible', 'true' if self._checker_panel_visible else 'false')
+        cfg.set('Layout', 'checker_panel_width', str(self._checker_panel_width))
+        if self.checker_panel is not None:
+            state = self.checker_panel.layout_state()
+            cfg.set('Layout', 'checker_split_sizes',
+                    ','.join(str(x) for x in state['split']))
+            cfg.set('Layout', 'checker_col_widths',
+                    ','.join(str(x) for x in state['columns']))
 
         # 儲存兩個面板的欄位寬度、顯示與否，以及欄序
         for key, view in self._column_views():

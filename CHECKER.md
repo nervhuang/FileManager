@@ -213,6 +213,45 @@ cookie，本來就未必拿得到。
 面板放在 `main_splitter` **最右側**：它是「看結果」的地方，與左側「選作者」的動線
 相反，擺同一邊會互相搶寬度。
 
+### 執行紀錄區
+
+清單下方以垂直 splitter 掛一塊紀錄區：進度條（`%v/%m %p%` ＋ 目前作者名）、
+已耗時與預估剩餘、逐項紀錄。理由是一輪要跑 25–35 分鐘，狀態列只留得住最後一行，
+看不出跑到哪、哪幾位失敗、還要多久。
+
+每位作者掃完記一行（`★ 🆕 2、⬆️ 1`／`── 無更新`／`⚠ 失敗：…`／`── 略過：沒有填英文名稱`），
+資料來自 `scanner.scan_all(on_result=…)`——那個 callback 是為了這塊紀錄而加的，
+原本的 `progress` 在實體開始前呼叫，只知道正在跑誰、不知道跑出了什麼。
+
+`QPlainTextEdit.setMaximumBlockCount(2000)` 設上限，跑幾百位作者不會累積吃記憶體。
+預估剩餘用已完成筆數的平均速度外推。中途停止時進度條停在半途不歸零，那是真的做到哪。
+
+字型跟隨主視窗的 Ctrl+= / Ctrl+-：`CheckerPanel.apply_font_size()` 由
+`FileManager._apply_font_size()` 呼叫，與 `AuthorsPanel` 同一條路徑。子元件必須逐一
+重設——計數列比內文大一級、紀錄區用等寬且小一級，設過字型的元件就不再從父層繼承。
+紀錄區的下限壓在 8pt，否則主視窗縮到 6pt 時紀錄小到看不見。工具列圖示不跟著縮放，
+與中間檔案面板的工具列保持同一尺寸。
+
+### 版面狀態的保存
+
+`config.ini` 的 `[Layout]` 記四個鍵：
+
+| 鍵 | 內容 |
+| --- | --- |
+| `checker_panel_visible` | 面板是否顯示（預設 false） |
+| `checker_panel_width` | 面板寬度；隱藏時 `sizes()[2]` 為 0，沿用先前記住的值 |
+| `checker_split_sizes` | 清單／紀錄的分隔位置 |
+| `checker_col_widths` | 清單三欄的欄寬 |
+
+前兩個由主視窗管（`_apply_main_splitter_sizes()` 那條路徑），後兩個是面板內部的事，
+封裝在 `CheckerPanel.layout_state()` / `restore_layout()`——主視窗只負責把字串存進
+config，不必知道面板裡有幾格 splitter、幾個欄位。
+
+還原時的兩個守則：`split` 全為 0 代表面板從沒顯示過就被存下來（隱藏 widget 的尺寸
+是 0），照套會讓清單與紀錄都變成 0 高，直接跳過；欄寬為 0 同理。紀錄區在 splitter
+裡的 stretch factor 是 0，所以視窗高度改變時是清單吸收差額，使用者拉出來的紀錄高度
+會原樣留著。
+
 ### 兩條踩過的地雷
 
 **1. `EverythingSDK` 必須在工作執行緒內建立。**
