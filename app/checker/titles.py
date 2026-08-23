@@ -29,7 +29,12 @@ _CIRCLE_ARTIST = re.compile(r'^\[\s*(?P<circle>.*?)\s*(?:\(\s*(?P<artist>[^()]*?
 
 _ARCHIVE_EXTS = {'.zip', '.rar', '.7z', '.cbz', '.cbr', '.pdf', '.epub', '.tar'}
 
-# 語言標記。以子字串比對，因此 [萌の空漢化社] 這種漢化組名稱也能判成中文版。
+# 檔名用的語言關鍵字。以子字串比對，因此 [萌の空漢化社] 這種漢化組名稱也能判成中文版。
+#
+# 這份字典**只**用在本機檔名與標題括號——檔名沒有 namespace 可讀，只能認關鍵字。
+# 站上那側改讀 `language:` namespace 的值本身（見 `site_language_markers`），
+# 不再依賴這份字典：它只列得出 14 種語言，而站上超過 30 種，認不出來的會被
+# 當成「無語言標記」放行，白名單就變成了黑名單。
 _LANGUAGE_KEYWORDS = {
     'chinese': ('中国翻訳', '中國翻訳', '中国語', '漢化', '汉化', '中文', '中譯', '中译',
                 'chinese'),
@@ -57,25 +62,66 @@ _QUALITY_KEYWORDS = {
 
 _MARKER_KEYWORDS = dict(_LANGUAGE_KEYWORDS, **_QUALITY_KEYWORDS)
 
-LANGUAGE_MARKERS = frozenset(_LANGUAGE_KEYWORDS)
+# 語言標記在標記集合裡一律帶 `lang:` 前綴，與品質標記（decensored、digital…）分開。
+# 之所以要前綴而不是列舉：站上的語言值不受我們控制，`language:ukrainian` 這種
+# 沒列進字典的值也必須認得出「這是一個語言」，否則又會退回「認不出＝日文原版」。
+LANGUAGE_PREFIX = 'lang:'
 
-# 語言白名單：只有這些語言（以及完全沒有語言標記的日文原版）值得通知。
-# 實測本機藏書中譯 ≥2000 本、英譯 1 本，黑名單列不完，白名單才對得上實際分佈。
-WANTED_LANGUAGES = frozenset({'chinese'})
+# 站上 `language:` namespace 裡不是語言的值。
+#   translated / rewrite  伴隨真正的語言 tag 出現，由那個 tag 自己判，這裡忽略。
+# 其餘沒列到的值（textless narrative、text cleaned…）不在白名單內，一律排除。
+LANGUAGE_NAMESPACE_IGNORE = frozenset({'translated', 'rewrite'})
+
+# 語言白名單。實測 5 位作者最新各 25 本共 103 本：無語言標記 53、中文 19、
+# 中日並列 4，其餘 27 本散在英、韓、西、越、法、烏克蘭、土耳其與 text cleaned——
+# 黑名單列不完，白名單才對得上實際分佈。
+WANTED_LANGUAGES = frozenset({'japanese', 'chinese'})
 
 # 判定「版本升級」時視為值得通知的標記，依偏好排序。
-PREFERRED_MARKERS = ('chinese', 'decensored')
+PREFERRED_MARKERS = (LANGUAGE_PREFIX + 'chinese', 'decensored')
+
+
+def language_marker(value):
+    """把一個語言值（'korean'）轉成標記（'lang:korean'）。"""
+    return LANGUAGE_PREFIX + (value or '').strip().lower()
+
+
+def site_language_markers(tags):
+    """從站上的 tag 陣列取語言標記。
+
+    gdata API 帶 `namespace=1` 時回的是 `['language:korean', 'language:translated',
+    'artist:xxx', ...]` 這種扁平字串陣列（已實測確認）。直接讀 namespace 而非
+    關鍵字比對，好處有二：站上有三十幾種語言，字典列不完；而且不會被
+    `female:` / `other:` 裡剛好含有語言名稱的 tag 誤判。
+    """
+    found = set()
+    for tag in tags or ():
+        namespace, sep, value = str(tag).partition(':')
+        if not sep or namespace.strip().lower() != 'language':
+            continue
+        value = value.strip().lower()
+        if value and value not in LANGUAGE_NAMESPACE_IGNORE:
+            found.add(language_marker(value))
+    return found
 
 
 def languages(markers):
-    """從標記集合中取出語言標記。空集合代表日文原版。"""
-    return set(markers or ()) & LANGUAGE_MARKERS
+    """從標記集合中取出語言值（不含前綴）。空集合代表日文原版。"""
+    return {m[len(LANGUAGE_PREFIX):] for m in (markers or ())
+            if str(m).startswith(LANGUAGE_PREFIX)}
 
 
 def is_wanted_language(markers):
-    """這個版本的語言值不值得通知：中譯或無語言標記的原版為真。"""
+    """這個版本的語言值不值得通知。
+
+    嚴格白名單：**只要出現任何一個白名單外的語言就為假**，即使同時掛著日文或
+    中文也一樣。站上的 language tag 常常沒跟上——日文 tag 掛著沒改、標題卻已經
+    寫明是英譯本；寬鬆規則會被「japanese 在白名單裡」拖著放行，等於沒過濾。
+
+    完全沒有語言標記代表日文原版，為真。
+    """
     found = languages(markers)
-    return not found or bool(found & WANTED_LANGUAGES)
+    return not (found - WANTED_LANGUAGES)
 
 
 def _nfkc(text):
@@ -90,12 +136,17 @@ def strip_extension(name):
 
 
 def detect_markers(*texts):
-    """從任意段文字（標記、漢化組名、站上 tag）判出版本標記集合。"""
+    """從檔名或標題括號裡的文字判出版本標記集合。
+
+    語言結果帶 `lang:` 前綴，與 `site_language_markers()` 的輸出同一套詞彙，
+    兩邊可以直接聯集。
+    """
     haystack = _nfkc(' '.join(t for t in texts if t)).lower()
     found = set()
     for marker, keywords in _MARKER_KEYWORDS.items():
         if any(keyword in haystack for keyword in keywords):
-            found.add(marker)
+            found.add(language_marker(marker) if marker in _LANGUAGE_KEYWORDS
+                      else marker)
     return found
 
 

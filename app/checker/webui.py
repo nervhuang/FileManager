@@ -303,9 +303,10 @@ function draw(){
 
 function card(i){
   const date = i.posted ? new Date(i.posted*1000).toISOString().slice(0,10) : "";
-  const tags = (i.markers||[]).map(m => `<span class="tag">${esc(m)}</span>`).join("");
+  // 語言標記在後端帶 lang: 前綴（與品質標記分開），顯示時去掉。
+  const tags = (i.markers||[]).map(m => `<span class="tag">${esc(m.replace(/^lang:/, ""))}</span>`).join("");
   const miss = (i.missing_markers||[]).length
-    ? `<div class="meta">缺少版本：${esc(i.missing_markers.join("、"))}</div>` : "";
+    ? `<div class="meta">缺少版本：${esc(i.missing_markers.map(m => m.replace(/^lang:/, "")).join("、"))}</div>` : "";
   const match = i.matched_local
     ? `<div class="match">本機：${esc(i.matched_local)}</div>` : "";
   return `<article class="card" id="g${esc(i.gid)}">

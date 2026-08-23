@@ -18,7 +18,7 @@ from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QPixmap, QIcon
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolBar, QToolButton,
     QTreeWidget, QTreeWidgetItem, QFrame, QStyle, QAbstractItemView,
-    QProgressBar, QPlainTextEdit, QSplitter, QSizePolicy,
+    QProgressBar, QPlainTextEdit, QSplitter, QSizePolicy, QMessageBox,
 )
 
 from . import fetcher, matcher, scanner, store, webui
@@ -137,6 +137,7 @@ class CheckerPanel(QWidget):
         self._scan_new = 0
         self._scan_upgrade = 0
         self._scan_errors = 0
+        self._scan_excluded = 0
         # 只在掃描期間跑，用來刷新已耗時與預估剩餘；停掉才不會空轉。
         self._elapsed_timer = QTimer(self)
         self._elapsed_timer.setInterval(1000)
@@ -257,11 +258,15 @@ class CheckerPanel(QWidget):
         self.detail_button = self._button(
             style.standardIcon(QStyle.SP_FileDialogDetailedView),
             '開啟詳細清單（Web UI）', self._open_detail)
+        self.reset_button = self._button(
+            style.standardIcon(QStyle.SP_DialogResetButton),
+            '重設掃描紀錄（清空比對結果與進度，下次從頭掃描）', self.reset_scan_data)
 
         bar.addWidget(self.scan_button)
         bar.addWidget(self.stop_button)
         bar.addSeparator()
         bar.addWidget(self.detail_button)
+        bar.addWidget(self.reset_button)
         return bar
 
     def _base_font_size(self):
@@ -322,7 +327,8 @@ class CheckerPanel(QWidget):
     def set_toolbar_icon_size(self, size):
         self._toolbar_icon_size = size
         self.toolbar.setIconSize(size)
-        for btn in (self.scan_button, self.stop_button, self.detail_button):
+        for btn in (self.scan_button, self.stop_button, self.detail_button,
+                    self.reset_button):
             btn.setIconSize(size)
 
     # ── 掃描 ────────────────────────────────────────────────────────────
@@ -344,6 +350,7 @@ class CheckerPanel(QWidget):
         self._scan_total = 0
         self._scan_finished = 0
         self._scan_new = self._scan_upgrade = self._scan_errors = 0
+        self._scan_excluded = 0
         # 總數要等工作執行緒讀完資料庫才知道，先進不確定狀態的忙碌條。
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setFormat('準備中…')
@@ -361,6 +368,46 @@ class CheckerPanel(QWidget):
             self.log('■ 收到停止要求，等目前這位掃完就收尾（已掃的都已保留）。')
             self.progress_bar.setFormat('停止中…')
             self.status_message.emit('正在停止…已掃描的部分都會保留。')
+
+    def reset_scan_data(self):
+        """清空比對結果與掃描進度，下一輪從頭重建。
+
+        判定規則改動（語系白名單、門檻）之後才需要。舊列的 `markers` 是用舊規則
+        判出來的，站上的 tag 早就不在手上，重評救不回來——只能重抓。
+        """
+        if self._worker is not None and self._worker.isRunning():
+            self.status_message.emit('掃描進行中，請先停止再重設。')
+            return
+
+        try:
+            with closing(store.connect()) as conn:
+                findings = conn.execute(
+                    'SELECT COUNT(*) FROM checker_findings').fetchone()[0]
+        except Exception:
+            findings = 0
+
+        answer = QMessageBox.question(
+            self, '重設掃描紀錄',
+            f'將清空 {findings} 筆比對結果與全部掃描進度，'
+            '下次掃描時每位作者都會從頭重建基準（約 25–35 分鐘）。\n\n'
+            '你按過的「忽略」與「已下載」不會被清掉。\n\n'
+            '確定要重設嗎？',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
+
+        try:
+            with closing(store.connect()) as conn:
+                removed, states = store.reset_scan_data(conn)
+        except Exception as exc:
+            self.log(f'✖ 重設失敗：{exc}')
+            self.status_message.emit(f'重設失敗：{exc}')
+            return
+
+        self.log(f'⟲ 已重設：清掉 {removed} 筆比對結果、{states} 筆掃描紀錄。'
+                 '按開始掃描重建基準。')
+        self.status_message.emit(f'已重設掃描紀錄（{removed} 筆結果）。')
+        self.refresh()
 
     def shutdown(self):
         """主視窗關閉時呼叫：停掉背景掃描與 Web UI 伺服器並等它們收尾。"""
@@ -419,17 +466,23 @@ class CheckerPanel(QWidget):
             works = result.get('works') or ()
             new_count = sum(1 for w in works if w['verdict'] == matcher.VERDICT_NEW)
             up_count = sum(1 for w in works if w['verdict'] == matcher.VERDICT_UPGRADE)
+            excluded = int(result.get('excluded') or 0)
             self._scan_new += new_count
             self._scan_upgrade += up_count
+            self._scan_excluded += excluded
+            # 排除數要逐位顯示，不能只給總數：語系過濾一旦壞掉（站方改了 tag 格式），
+            # 症狀是每位作者都「無更新」，看不出原因。有「排除 25、新書 0」這種行
+            # 才分得出是過濾器出事，還是真的沒新書。
+            tail = f'（排除 {excluded}）' if excluded else ''
             if new_count or up_count:
                 bits = []
                 if new_count:
                     bits.append(f'🆕 {new_count}')
                 if up_count:
                     bits.append(f'⬆️ {up_count}')
-                self.log(f'{prefix} ★ ' + '、'.join(bits))
+                self.log(f'{prefix} ★ ' + '、'.join(bits) + tail)
             else:
-                self.log(f'{prefix} ── 無更新')
+                self.log(f'{prefix} ── 無更新{tail}')
             if result.get('truncated'):
                 # 名稱是中日文（等寬字型下佔兩格），對不齊 prefix，改用固定縮排。
                 self.log('        ↳ ⚠ 發布量超過取回上限，這位可能有遺漏')
@@ -442,7 +495,8 @@ class CheckerPanel(QWidget):
         self.log(f'✔ 檢查完成：掃描 {summary.get("scanned", 0)}/'
                  f'{summary.get("entities", 0)} 位，'
                  f'新書 {new_count}、版本升級 {up_count}'
-                 f'（耗時 {_format_duration(time.monotonic() - self._scan_started_at)}）')
+                 + (f'、排除 {self._scan_excluded}' if self._scan_excluded else '')
+                 + f'（耗時 {_format_duration(time.monotonic() - self._scan_started_at)}）')
         if summary.get('skipped'):
             self.log(f'　 略過 {len(summary["skipped"])} 位（沒有英文名稱）')
         if summary.get('errors'):
@@ -473,6 +527,7 @@ class CheckerPanel(QWidget):
             self.progress_bar.setValue(0)
         self.progress_bar.setFormat(
             f'已結束　%v/%m　🆕 {self._scan_new}　⬆️ {self._scan_upgrade}'
+            + (f'　🚫 {self._scan_excluded}' if self._scan_excluded else '')
             + (f'　⚠ {self._scan_errors}' if self._scan_errors else ''))
         self._update_elapsed()
         self.refresh()

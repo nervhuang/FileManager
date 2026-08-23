@@ -8,6 +8,9 @@
 只差一個假名。兩者無法用單一門檻分開，所以中間那段交給人判斷。
 
 作品系列（series）用來擋掉跨作品的假陽性：標題再像，系列不同就幾乎不可能是同一本。
+
+語系限縮在最前面：非白名單語言（日文、中文以外）直接判 `VERDICT_SUPPRESSED`，
+連比對都不必做。
 """
 
 import difflib
@@ -69,6 +72,17 @@ def classify(site, locals_, threshold=DEFAULT_THRESHOLD,
     回傳 dict：verdict、score、matched（對到的本機項目）、missing_markers
     （站上有、本機該本沒有的偏好標記，即「版本升級」的理由）。
     """
+    site_markers = site.get('markers') or set()
+
+    # 語系限縮先做，且**與本機有沒有這本無關**。
+    #
+    # 舊版只在「本機已有同名書」時才靜音，理由是沒收過的作品仍該讓使用者知道
+    # 它存在。實際用起來不成立：只有韓譯／英譯版存在的書，使用者本來就不會收，
+    # 通知他也只是噪音。實測 5 位作者的最新 103 本裡有 27 本（26%）屬於這類。
+    if not titles.is_wanted_language(site_markers):
+        return {'verdict': VERDICT_SUPPRESSED, 'score': 0.0, 'matched': None,
+                'missing_markers': []}
+
     match, score = best_match(site, locals_, threshold)
     result = {'verdict': VERDICT_NEW, 'score': score, 'matched': match,
               'missing_markers': []}
@@ -83,14 +97,6 @@ def classify(site, locals_, threshold=DEFAULT_THRESHOLD,
     local_markers = set()
     for local in same_title:
         local_markers |= local['markers']
-
-    site_markers = site.get('markers') or set()
-
-    # 非白名單語言（英、韓、西、葡…）且本機已有這本：使用者不收這些語言，靜音不打擾。
-    # 本機沒有這本時不靜音——那是一本沒收過的作品，仍該讓使用者知道它存在。
-    if same_title and not titles.is_wanted_language(site_markers):
-        result['verdict'] = VERDICT_SUPPRESSED
-        return result
 
     missing = [m for m in preferred if m in site_markers and m not in local_markers]
     if missing:

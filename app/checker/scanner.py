@@ -14,7 +14,10 @@ import os
 
 from . import fetcher, matcher, titles
 
-FIRST_RUN_LIMIT = 10    # 首次掃描每個 tag 取幾筆建立基準
+# 首次掃描每個 tag 取幾筆建立基準。取滿一頁：tag 頁本來就是一次回 25 筆、
+# gdata 的 API_BATCH 也是 25，所以 10 改 25 不多花任何一次請求。語系限縮會吃掉
+# 這個額度（實測約四分之一會被排除），額度太小會讓基準只剩個位數。
+FIRST_RUN_LIMIT = 25
 MAX_ITEMS = 50          # 動態追溯的上限（2 頁）
 PAGE_SIZE = 25
 
@@ -66,7 +69,7 @@ def scan_entity(entity, fetch, local_lookup, *, last_scan_at=None,
         'entity_id': entity.get('id'), 'name': entity.get('name'),
         'type': entity.get('type'), 'tag': tag,
         'items': [], 'works': [], 'error': None, 'skipped': None, 'truncated': False,
-        'newest_posted': '',
+        'newest_posted': '', 'excluded': 0,
     }
     if not tag:
         result['skipped'] = 'no_english_name'
@@ -121,11 +124,22 @@ def scan_entity(entity, fetch, local_lookup, *, last_scan_at=None,
         english = html.unescape(meta.get('title') or '').strip()
         # title_jpn 有時是空的（純英文投稿），此時只能退回英文標題。
         parsed = titles.parse(japanese or english)
-        # 站上的 language:／其他 tag 也帶版本資訊，與標題裡的標記合併判斷。
-        parsed['markers'] = parsed['markers'] | titles.detect_markers(
-            *(meta.get('tags') or []))
+        # 標記有三個來源，聯集起來判斷：
+        #   1. 標題括號裡的文字（關鍵字比對）——已在 parse() 裡做完
+        #   2. 站上 language: namespace 的值（直接讀，不猜）
+        #   3. 站上其他 tag 的關鍵字（無修正之類的品質標記）
+        # 語言只認 2 與 1，不從 3 猜：那會被 female:／other: 裡剛好含語言名稱的
+        # tag 誤判。品質標記則相反，只有 3 認得出來。
+        tags = meta.get('tags') or []
+        quality = {m for m in titles.detect_markers(*tags)
+                   if not m.startswith(titles.LANGUAGE_PREFIX)}
+        parsed['markers'] = (parsed['markers']
+                             | titles.site_language_markers(tags)
+                             | quality)
 
         verdict = matcher.classify(parsed, local_items, threshold)
+        if verdict['verdict'] == matcher.VERDICT_SUPPRESSED:
+            result['excluded'] += 1
         result['items'].append({
             'gid': gid, 'token': token,
             'url': f'https://exhentai.org/g/{gid}/{token}/',
@@ -235,7 +249,8 @@ def scan_all(conn, entities, fetch, local_lookup, *,
             result = {'entity_id': entity_id, 'name': entity.get('name'),
                       'type': entity.get('type'), 'tag': fetcher.tag_for(entity),
                       'items': [], 'works': [], 'skipped': None,
-                      'truncated': False, 'newest_posted': '', 'error': str(exc)}
+                      'truncated': False, 'newest_posted': '', 'excluded': 0,
+                      'error': str(exc)}
             store.record_scan(conn, entity_id, error=str(exc))
             results.append(result)
             if on_result:

@@ -215,16 +215,26 @@ def refresh_verdicts(conn, entity_id, local_items,
     不會再被抓一次。使用者把那本書下載下來之後，若沒有這步，它會永遠停在
     「新書」——明明檔案已經在本機了。這裡不花任何網路成本，只是拿當前的本機
     檔案清單把舊判定重算一次。
+
+    **必須把存下來的 `markers` 讀回來**：標記有一半來自站上的 tag（語言、無修正），
+    那些資訊不在標題裡。只從標題重新解析會把它們整個丟掉，於是靠 `language:korean`
+    被排除的書會變回「無語言標記＝日文原版」重新冒出來——排除自己解除；同樣地，
+    靠站上 tag 判出的 `decensored` 也會消失，版本升級退回成已有。
     """
     from . import titles
 
     rows = conn.execute(
-        'SELECT gid, title, title_jpn, verdict, score FROM checker_findings '
+        'SELECT gid, title, title_jpn, markers, verdict, score FROM checker_findings '
         'WHERE entity_id = ?', (entity_id,)).fetchall()
 
     updates = []
     for row in rows:
         parsed = titles.parse(row['title_jpn'] or row['title'])
+        try:
+            stored = set(json.loads(row['markers'] or '[]'))
+        except ValueError:
+            stored = set()
+        parsed['markers'] = parsed['markers'] | stored
         verdict = matcher.classify(parsed, local_items, threshold)
         new_verdict = verdict['verdict']
         if new_verdict == row['verdict']:
@@ -242,6 +252,29 @@ def refresh_verdicts(conn, entity_id, local_items,
             'missing_markers = ?, matched_local = ? WHERE gid = ?', updates)
         conn.commit()
     return len(updates)
+
+
+def reset_scan_data(conn):
+    """清空比對結果與掃描進度，讓下一輪每位作者都當首次掃描重建基準。
+
+    為什麼需要這個：判定規則改了（例如語系白名單）之後，舊列救不回來。
+    `markers` 欄位存的是掃描當下判出來的結果，當時認不出的語言就是空的，
+    重評也只會再得到「無語言標記＝日文原版」。要套新規則只能重抓 metadata，
+    而增量掃描以 `last_posted` 為界不會再抓舊項目——清掉 `checker_state`
+    才會退回首次掃描。
+
+    **`checker_decisions` 不動**：那是使用者按過的「忽略」與「已下載」，
+    是人的決定，不是程式算出來的東西，沒有理由跟著規則變動被清掉。
+
+    回傳 (清掉的結果筆數, 清掉的掃描紀錄筆數)。
+    """
+    ensure_schema(conn)
+    findings = conn.execute('SELECT COUNT(*) FROM checker_findings').fetchone()[0]
+    states = conn.execute('SELECT COUNT(*) FROM checker_state').fetchone()[0]
+    conn.execute('DELETE FROM checker_findings')
+    conn.execute('DELETE FROM checker_state')
+    conn.commit()
+    return findings, states
 
 
 def load_findings(conn, *, verdicts=None, entity_id=None):
