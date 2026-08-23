@@ -22,6 +22,7 @@ from PyQt5.QtGui import QKeySequence, QIcon, QFont, QPixmap, QPainter, QColor, Q
 
 from . import gui_bridge, paths, search_query
 from .authors_panel import AuthorsPanel
+from .checker.panel import CheckerPanel, make_checker_icon
 from .everything_sdk import EverythingSDK
 from .models import SearchSortProxyModel, SearchResultsModel, FileSystemSortProxyModel
 from .views import SearchListView, FileListView
@@ -163,6 +164,11 @@ class FileManager(QMainWindow):
         self.authors_panel = None
         self.main_splitter = None
         self._bridge_server = None
+        # 更新檢查器面板：預設收起，靠工具列圖示或 Ctrl+Shift+U 叫出來。
+        # 預設不顯示是因為它只有在剛掃描完才有東西可看，常駐佔寬度不划算。
+        self._checker_panel_visible = False
+        self._checker_panel_width = 520
+        self.checker_panel = None
         # 監控中間面板目前目錄，任何外部檔案異動皆可即時刷新
         self._mid_fs_watcher = QFileSystemWatcher(self)
         self._mid_fs_watcher.directoryChanged.connect(self._on_mid_dir_changed)
@@ -439,6 +445,13 @@ class FileManager(QMainWindow):
             None,  # 導覽 ┃ 新增+排列
             (QStyle.StandardPixmap.SP_FileDialogNewFolder, "新增資料夾", self._create_folder_in_current_dir),
         ])
+        # 更新檢查器的入口固定放在這條工具列上：面板本身預設收起，沒有這顆按鈕
+        # 就只剩選單能叫出來，等於藏起來了。
+        self.checker_toolbar_button = make_panel_nav_button(
+            make_checker_icon(), "更新檢查器：比對站上新書與本機藏書",
+            self._toggle_checker_panel)
+        self.mid_panel_toolbar.addSeparator()
+        self.mid_panel_toolbar.addWidget(self.checker_toolbar_button)
 
         # Phase B：檔案總管風格的操作按鈕（圖示＋文字），作用於目前焦點面板。
         def make_glyph_icon(kind):
@@ -599,13 +612,25 @@ class FileManager(QMainWindow):
         self.authors_panel.toolbar.setFixedHeight(toolbar_height)
         self.authors_panel.search_requested.connect(self._on_authors_search_requested)
 
+        # 更新檢查器面板放在最右側：它是「看結果」的地方，與左側「選作者」的
+        # 動線相反，擺在同一邊會互相搶寬度。
+        self.checker_panel = CheckerPanel(self)
+        self.checker_panel.set_toolbar_icon_size(self._toolbar_icon_size)
+        self.checker_panel.toolbar.setFixedHeight(toolbar_height)
+        self.checker_panel.status_message.connect(self._show_checker_status)
+        self.checker_panel.detail_requested.connect(self._on_checker_detail_requested)
+
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter.addWidget(self.authors_panel)
         self.main_splitter.addWidget(self.right_splitter)
+        self.main_splitter.addWidget(self.checker_panel)
         self.main_splitter.setStretchFactor(0, 0)
         self.main_splitter.setStretchFactor(1, 1)
-        self.main_splitter.setSizes([self._authors_panel_width, 1200])
+        self.main_splitter.setStretchFactor(2, 0)
+        self.main_splitter.setSizes(
+            [self._authors_panel_width, 1200, self._checker_panel_width])
         self.authors_panel.setVisible(self._authors_panel_visible)
+        self.checker_panel.setVisible(self._checker_panel_visible)
 
         right_container = QWidget()
         right_vbox = QVBoxLayout()
@@ -1864,6 +1889,12 @@ class FileManager(QMainWindow):
         self.action_authors_panel.setShortcut(QKeySequence("Ctrl+Shift+A"))
         self.action_authors_panel.toggled.connect(self._set_authors_panel_visible)
 
+        self.action_checker_panel = view_menu.addAction("顯示更新檢查器(&U)")
+        self.action_checker_panel.setCheckable(True)
+        self.action_checker_panel.setChecked(self._checker_panel_visible)
+        self.action_checker_panel.setShortcut(QKeySequence("Ctrl+Shift+U"))
+        self.action_checker_panel.toggled.connect(self._set_checker_panel_visible)
+
         # 「選項」為頂層選單，排在「檢視」右邊，底下提供「排除設定」項目。
         option_menu = menu_bar.addMenu("選項(&O)")
         self.action_exclude_settings = option_menu.addAction("排除設定(&E)…")
@@ -1944,10 +1975,51 @@ class FileManager(QMainWindow):
         self._authors_panel_visible = visible
         self.authors_panel.setVisible(visible)
         if visible:
-            sizes = self.main_splitter.sizes()
-            self.main_splitter.setSizes([self._authors_panel_width, max(sum(sizes) - self._authors_panel_width, 1)])
+            self._apply_main_splitter_sizes()
         if hasattr(self, 'action_authors_panel'):
             self.action_authors_panel.setChecked(visible)
+
+    def _apply_main_splitter_sizes(self):
+        """重算三欄寬度：左作者面板、中間檔案區、右更新檢查器。
+
+        必須一次給滿三個值。main_splitter 從兩欄變三欄之後，若還是只傳兩個，
+        第三欄會被壓成 0 寬——切換左面板時右面板就無聲消失了。
+        """
+        if self.main_splitter is None:
+            return
+        total = sum(self.main_splitter.sizes())
+        left = self._authors_panel_width if self._authors_panel_visible else 0
+        right = self._checker_panel_width if self._checker_panel_visible else 0
+        self.main_splitter.setSizes([left, max(total - left - right, 1), right])
+
+    def _set_checker_panel_visible(self, visible):
+        """切換右側更新檢查器面板。"""
+        visible = bool(visible)
+        if self.checker_panel is None or self.main_splitter is None:
+            self._checker_panel_visible = visible
+            return
+        if not visible and self.checker_panel.isVisible():
+            width = self.main_splitter.sizes()[2]
+            if width > 0:
+                self._checker_panel_width = width
+        self._checker_panel_visible = visible
+        self.checker_panel.setVisible(visible)
+        if visible:
+            self.checker_panel.refresh()
+            self._apply_main_splitter_sizes()
+        if hasattr(self, 'action_checker_panel'):
+            self.action_checker_panel.setChecked(visible)
+
+    def _toggle_checker_panel(self):
+        self._set_checker_panel_visible(not self._checker_panel_visible)
+
+    def _show_checker_status(self, message):
+        """把檢查器的進度與錯誤送到狀態列。掃描一輪要半小時，得看得到進度。"""
+        self.statusBar().showMessage(message, 15000)
+
+    def _on_checker_detail_requested(self, gid):
+        """在系統預設瀏覽器開啟檢查器的詳細清單。"""
+        self.checker_panel.open_detail(gid)
 
     def _on_authors_search_requested(self, query):
         """點左面板的項目：在搜尋面板開一個新分頁並執行查詢。"""
@@ -2619,6 +2691,10 @@ class FileManager(QMainWindow):
             self._bridge_server = None
         if self.authors_panel is not None:
             self.authors_panel.close_db()
+        if self.checker_panel is not None:
+            # 掃描執行緒還在跑時直接關視窗，Qt 會硬砍執行緒，可能留下半寫入的
+            # 交易。先送出取消再等它收尾。
+            self.checker_panel.shutdown()
         super().closeEvent(event)
 
 

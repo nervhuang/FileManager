@@ -16,3 +16,12 @@ authors.db
 authors.db-wal
 authors.db-shm
 .codegraph/
+
+# 更新檢查器：exhentai 登入 cookie，內含帳號憑證，絕不可進版控
+exhentai.txt
+*.cookies
+# 更新檢查器：縮圖快取（視同網際網路暫存檔，可隨時重建）
+checker_cache/
+checker.db
+checker.db-wal
+checker.db-shm
