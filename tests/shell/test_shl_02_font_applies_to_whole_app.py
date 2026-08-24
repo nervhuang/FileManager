@@ -133,3 +133,25 @@ def test_shl_01_font_scaling_is_reversible(main_window, qapp):
     drifted = {name: (before[name], after[name])
                for name in before if before[name] != after[name]}
     assert not drifted, f'來回縮放後與原始不同（原始, 現在）：{drifted}'
+
+
+@pytest.mark.parametrize("step", [0, 4, 8, 16], ids=lambda n: f'+{n}pt')
+def test_shl_10_toolbar_height_grows_with_the_font(main_window, qapp, step):
+    """SHL-10a：工具列高度釘死，但必須隨字型重算，否則文字會被切掉。
+
+    高度在建構時算一次就釘死。字型不跟著縮放的年代這樣沒問題；一旦工具列
+    文字也隨字型長大（SHL-2），釘死的高度就會把文字裁掉——實測 18pt 時，
+    檔案面板與作者面板的工具列各需要 107 與 111px，卻都被釘在 102px。
+    """
+    from PyQt5.QtWidgets import QToolBar
+
+    main_window._apply_font_size(main_window._current_font_size() + step)
+    qapp.processEvents()
+
+    clipped = {}
+    for index, toolbar in enumerate(main_window.findChildren(QToolBar), 1):
+        needed = toolbar.sizeHint().height()
+        if toolbar.height() < needed:
+            clipped[f'工具列#{index}'] = f'高度 {toolbar.height()} < 需要 {needed}'
+
+    assert not clipped, f'工具列高度不足，文字會被裁切：{clipped}'

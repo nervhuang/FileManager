@@ -613,20 +613,18 @@ class FileManager(QMainWindow):
         self.authors_panel = AuthorsPanel(self)
         # 工具列圖示與中間檔案面板同尺寸（面板可獨立關閉，故不併入主工具列）
         self.authors_panel.set_toolbar_icon_size(self._toolbar_icon_size)
-        # 兩條工具列雖然各自獨立，但左右並排，高度必須一致才不會錯開一階
-        toolbar_height = max(self.mid_panel_toolbar.sizeHint().height(),
-                             self.authors_panel.toolbar.sizeHint().height())
-        self.mid_panel_toolbar.setFixedHeight(toolbar_height)
-        self.authors_panel.toolbar.setFixedHeight(toolbar_height)
         self.authors_panel.search_requested.connect(self._on_authors_search_requested)
 
         # 更新檢查器面板放在最右側：它是「看結果」的地方，與左側「選作者」的
         # 動線相反，擺在同一邊會互相搶寬度。
         self.checker_panel = CheckerPanel(self)
         self.checker_panel.set_toolbar_icon_size(self._toolbar_icon_size)
-        self.checker_panel.toolbar.setFixedHeight(toolbar_height)
         self.checker_panel.status_message.connect(self._show_checker_status)
         self.checker_panel.detail_requested.connect(self._on_checker_detail_requested)
+
+        # 三條工具列各自獨立卻左右並排，高度差一階就看得出來，統一釘成同一個值。
+        # 這個值依字型計算，字型改變時必須重算（見 font_scaling）。
+        font_scaling.sync_toolbar_heights(self)
 
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter.addWidget(self.authors_panel)
@@ -2327,6 +2325,8 @@ class FileManager(QMainWindow):
         if new_size == old_size:
             return
         font_scaling.apply(self, old_size, new_size)
+        # 工具列高度是釘死的，不重算就會把放大後的按鈕文字裁掉。
+        font_scaling.sync_toolbar_heights(self)
 
         # 以下都是遞迴蓋不到的：設了 stylesheet 而阻斷傳播的、需要重繪的、
         # 以及自己帶特殊規則的面板。必須在遞迴之後跑，才不會被遞迴蓋掉。

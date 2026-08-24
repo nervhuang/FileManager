@@ -11,7 +11,7 @@
 """
 
 from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import QWidget
+from PyQt5.QtWidgets import QWIDGETSIZE_MAX, QToolBar, QWidget
 
 # 與 FileManager.on_font_decrease 的下限一致。
 MIN_POINT_SIZE = 6
@@ -51,3 +51,30 @@ def _resized(font, point_size):
     new_font = QFont(font)
     new_font.setPointSize(max(MIN_POINT_SIZE, point_size))
     return new_font
+
+
+def sync_toolbar_heights(root):
+    """把 `root` 底下所有工具列釘成同一個高度，依目前字型重算。回傳該高度。
+
+    工具列高度必須釘死：三條工具列左右並排，高度差一階就會看得出來，
+    而各自的 `sizeHint` 本來就不同（按鈕數量、有無文字標籤）。
+
+    但釘死的值必須跟著字型重算。原本它在建構時算一次就固定，那個年代工具列
+    文字不隨字型縮放，所以不會出事；文字開始跟著長大之後（SHL-2），釘死的
+    高度就會把文字裁掉——實測 18pt 時檔案面板與作者面板的工具列各需要
+    107 與 111px，卻都還釘在 102px。
+
+    先解除釘死再讀 `sizeHint`：釘死狀態下讀到的是被限制後的值，不是內容需求。
+    """
+    toolbars = root.findChildren(QToolBar)
+    if not toolbars:
+        return 0
+
+    for bar in toolbars:
+        bar.setMinimumHeight(0)
+        bar.setMaximumHeight(QWIDGETSIZE_MAX)
+
+    height = max(bar.sizeHint().height() for bar in toolbars)
+    for bar in toolbars:
+        bar.setFixedHeight(height)
+    return height
