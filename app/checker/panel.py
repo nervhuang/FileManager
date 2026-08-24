@@ -14,7 +14,7 @@ import time
 from contextlib import closing
 
 from PyQt5.QtCore import QSize, Qt, QThread, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QPixmap, QIcon
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolBar, QToolButton,
     QTreeWidget, QTreeWidgetItem, QFrame, QStyle, QAbstractItemView,
@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
 )
 
 from . import fetcher, matcher, scanner, store, webui
+from .icons import make_checker_icon
 
 VERDICT_LABEL = {
     matcher.VERDICT_NEW: '🆕 新書',
@@ -31,42 +32,6 @@ VERDICT_LABEL = {
 }
 # 面板只顯示需要動作的兩類；已有與疑似留給 Web UI，否則清單會被淹沒。
 PANEL_VERDICTS = (matcher.VERDICT_NEW, matcher.VERDICT_UPGRADE)
-
-_INK = QColor('#4a4a4a')
-_PAPER = QColor('#fdfdfd')
-_COVER = QColor('#7aa8dc')
-_COVER_EDGE = QColor('#37567a')
-_GLASS = QColor('#eaf3ff')
-_BADGE = QColor('#e0483c')
-
-
-def make_checker_icon(size=64):
-    """書本加放大鏡：沿用面板工具列的實心填色＋深色描邊風格，不是線稿。"""
-    pix = QPixmap(size, size)
-    pix.fill(Qt.transparent)
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.Antialiasing)
-    s = size / 64.0
-
-    # 書本
-    p.setPen(QPen(_COVER_EDGE, 2.4 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-    p.setBrush(_COVER)
-    p.drawRoundedRect(int(8 * s), int(10 * s), int(34 * s), int(44 * s), 3 * s, 3 * s)
-    p.setBrush(_PAPER)
-    p.drawRoundedRect(int(14 * s), int(16 * s), int(24 * s), int(32 * s), 2 * s, 2 * s)
-    p.setPen(QPen(_INK, 1.6 * s, Qt.SolidLine, Qt.RoundCap))
-    for i in range(3):
-        y = int((22 + i * 7) * s)
-        p.drawLine(int(18 * s), y, int(34 * s), y)
-
-    # 放大鏡
-    p.setPen(QPen(_INK, 3.2 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-    p.setBrush(_GLASS)
-    p.drawEllipse(int(30 * s), int(28 * s), int(24 * s), int(24 * s))
-    p.drawLine(int(50 * s), int(48 * s), int(59 * s), int(58 * s))
-    p.end()
-    return QIcon(pix)
-
 
 class ScanWorker(QThread):
     """在背景執行緒跑一輪掃描。"""

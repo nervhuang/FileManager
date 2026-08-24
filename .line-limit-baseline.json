@@ -3,7 +3,6 @@
   "limit": 600,
   "files": {
     "app/authors_panel.py": 673,
-    "app/checker/panel.py": 627,
     "app/file_manager.py": 2808,
     "app/views.py": 705,
     "app/widgets.py": 917
