@@ -1,6 +1,21 @@
 # Changelog
 
 ## 2026-08-24
+- Scale the font across the whole application, not a hand-maintained list of widgets
+  - Raising the size to 21pt left the menu bar, the status bar, all three toolbars and the main window itself at 12pt; only the lists, tab bars, breadcrumb and the two panels followed
+  - The cause was not a few missed widgets but the shape of the code: `_apply_font_size` implemented a cross-cutting concern by enumeration, so every new panel had to remember to register itself. The authors panel was missed once (it ignored Ctrl+= entirely) and the update checker was the second retrofit
+  - New `app/font_scaling.py` walks the whole widget tree and applies a *delta* rather than an absolute size, so deliberate offsets survive — toolbar buttons sit two points above body text for icon/text balance, the checker's count row one above, its log one below in a monospace face
+  - Measure everything first, then apply. `setFont` propagates to children that have not set a font of their own, so mutating as you walk means each level reads the already-updated value and the delta compounds — measured on a 12pt tree, the leaves were driven down to the 6pt floor
+  - `QApplication.setFont` is deliberately left alone: it is global mutable state that makes the operation order-dependent, and the first version of this change made two tests contaminate each other. Dialogs already apply the font themselves, since Qt stops propagation at top-level window boundaries
+  - Three tests: every one of the 176 widgets tracks the change, the previously-missed menu/status/toolbars are named explicitly, and scaling is reversible through +9 / 6pt / 40pt round trips
+- Draw the update checker's stop icon instead of using `QStyle`'s
+  - `SP_MediaStop` only ships up to 32×32 and Qt does not upscale, so in the 64px toolbar it rendered at half the size of its five neighbours — the same problem `SP_BrowserReload` had, and the fix left behind then (`widgets.make_refresh_icon`) had not been reused
+  - New `checker.icons.make_stop_icon()`: a red rounded square 40/64 across, matching the refresh ring's diameter so the two carry equal weight side by side. A square rather than a circle so the silhouette stays distinct from the ring next to it. The highlight covers about 40% of the width — spanning the full width read as a minus sign, closer to "remove" than "stop"
+  - A new test walks every toolbar button and fails on any icon whose `actualSize(64,64)` is not 64×64. `availableSizes()` reports the source pixmaps' dimensions, not the rendered size, which is why this went unnoticed
+- Fix two test scripts that had been failing unnoticed, and isolate tests from personal settings
+  - `test_search_click_realapp.py` had been unrunnable since 2026-06-13: it passed a list of path strings while `update_search_results` had moved to `SearchResult` tuples. It guards against proxy mapping corruption crashing the app on click, so that defence had been absent for two months
+  - `test_move_no_sync_refresh.py` passed every assertion but exited 1 — a Traditional Chinese Windows console is cp950 and cannot encode the check mark in its result line
+  - Both now point `FILEMANAGER_HOME` at an empty temporary directory. They construct a real `FileManager`, which read the developer's own `config.ini`; on this machine `[Exclude]` covers all of `C:\`, so the test files created under `C:\...\Temp` were correctly filtered out and the tests looked broken
 - Restrict the update checker to Chinese and Japanese, suppressing everything else
   - A gallery is notified only when its language set is empty (Japanese original) or falls entirely within {japanese, chinese}; any value outside the whitelist suppresses it (`VERDICT_SUPPRESSED` — stored but not shown)
   - Read the site's `language:` namespace values directly instead of matching a keyword dictionary. `_LANGUAGE_KEYWORDS` listed 14 languages against the site's 30-plus, and `is_wanted_language()` treated "unrecognized" as "Japanese original" — so dutch and ukrainian slipped through and the whitelist was really a blacklist. Reading the namespace makes it a true whitelist: anything unlisted is excluded by default. It also stops `female:` / `other:` tags that happen to contain a language name from causing false matches
