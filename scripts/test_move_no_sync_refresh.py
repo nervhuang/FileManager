@@ -8,6 +8,20 @@ import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+# Windows 主控台預設用系統 codepage（繁中環境常是 cp950），印不出 ✓／✗ 會直接炸掉，
+# 於是斷言全過的測試仍以 exit=1 收場，看起來像測試失敗。與 app/cli.py 同一套處理。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
+# 測試必須與開發者的個人設定隔離：FileManager 會讀 runtime_root() 底下的
+# config.ini，而真實設定裡的 [Exclude] 可能排除整個磁碟，把測試資料濾光。
+# 用 FILEMANAGER_HOME 指向一個空的暫存目錄（見 docs/spec/settings.md 的 SET-1），
+# 程式會以內建預設值執行（SET-5），設定也只寫進那裡。
+os.environ['FILEMANAGER_HOME'] = tempfile.mkdtemp(prefix='fm_test_home_')
+
 from PyQt5.QtWidgets import QApplication, QWidget
 from app.file_manager import FileManager
 

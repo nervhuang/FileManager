@@ -15,21 +15,35 @@ import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+# 測試必須與開發者的個人設定隔離：FileManager 會讀 runtime_root() 底下的
+# config.ini，而真實設定裡的 [Exclude] 可能排除整個磁碟，把測試資料濾光。
+# 用 FILEMANAGER_HOME 指向一個空的暫存目錄（見 docs/spec/settings.md 的 SET-1），
+# 程式會以內建預設值執行（SET-5），設定也只寫進那裡。
+os.environ['FILEMANAGER_HOME'] = tempfile.mkdtemp(prefix='fm_test_home_')
+
 from PyQt5.QtCore import Qt, QItemSelectionModel
 from PyQt5.QtWidgets import QApplication
+from app.everything_sdk import SearchResult
 from app.file_manager import FileManager
 
 FILEPATH_ROLE = Qt.UserRole + 1
 
 
 def make_files(dirpath, prefix, n):
-    paths = []
+    """建立檔案並回傳 SearchResult 清單。
+
+    update_search_results 收的是 everything_sdk.SearchResult（可解包為
+    path/is_dir/size/mtime），不是字串路徑——中繼資料由 Everything 查詢直接
+    帶回來，不逐筆 os.stat。見 docs/spec/search.md 的 SRCH-15、SRCH-16。
+    """
+    results = []
     for i in range(n):
         p = os.path.join(dirpath, f"{prefix}_{i}.txt")
         with open(p, 'w', encoding='utf-8') as f:
             f.write('x')
-        paths.append(p)
-    return paths
+        st = os.stat(p)
+        results.append(SearchResult(p, False, st.st_size, int(st.st_mtime)))
+    return results
 
 
 def simulate_clicks(win):
@@ -81,8 +95,9 @@ def main():
     print('第二次點擊全部有效 :', all(x for x in r2) and len(r2) == 3, '(預期 True)')
     if not (all(x for x in r2) and len(r2) == 3):
         ok = False
-    print('第二次點擊內容正確 :', set(x for x in r2 if x) == set(second))
-    if set(x for x in r2 if x) != set(second):
+    second_paths = {r.path for r in second}
+    print('第二次點擊內容正確 :', set(x for x in r2 if x) == second_paths)
+    if set(x for x in r2 if x) != second_paths:
         ok = False
 
     print()
