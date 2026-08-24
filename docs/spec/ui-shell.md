@@ -84,9 +84,24 @@ proxy style 物件必須留參考：`setStyle` 不接手所有權，被回收會
 > 已改為自繪的 `checker.icons.make_stop_icon()`，並由
 > `tests/shell/test_shl_11_toolbar_icon_sizes.py` 遍歷全部工具列按鈕把關。
 
-**SHL-12** Qt 內建圖示只在確認該圖示有 128×128 來源時才可直接用
-（垃圾桶、資料夾、箭頭、`SP_FileDialogDetailedView`、`SP_DialogResetButton` 已確認）。
-沒有的必須自繪，見 `widgets.make_refresh_icon()`。
+**SHL-12** Qt 內建圖示只在兩個條件都成立時才可直接用：
+該圖示確實有 128×128 來源（垃圾桶、資料夾、箭頭已確認），
+**且**它的外觀與周圍自繪圖示是同一套視覺語彙。沒有的必須自繪。
+
+**SHL-12a** 視覺語彙為**實心填色 ＋ 深色描邊 ＋ 高光**，不是線稿，也不是
+Windows 的立體光澤風格。同一條工具列裡混用兩套語彙一眼就看得出來。
+
+> 更新檢查器的工具列曾經是這樣：兩顆自繪的扁平圖示，加上兩顆 Windows 系統圖示
+> （有光澤的文件、立體掃把）。已全部改為自繪的 `checker.icons` ——
+> `make_detail_icon()`（瀏覽器視窗裡的縮圖牆）與 `make_reset_icon()`
+> （紀錄紙加紅色回轉箭頭）。
+
+**SHL-12b** 回轉箭頭要把環與箭頭畫成**同一條封閉路徑**。分成兩個圖形畫，
+接合處無論怎麼對齊都會留下看得見的縫。見 `checker.icons._ring_arrow_path()`
+與 `widgets.make_refresh_icon()`。
+
+**SHL-12c** 圖示裡的徽章要畫得夠大。實測 64px 的圖示裡放一個 26px 的徽章，
+「環＋缺口＋箭頭」三層細節會糊成一個白色的 C，看不出是回轉箭頭。 **[手動]**
 
 **SHL-13** 工具列建於 `QToolBar` 而非固定 `QHBoxLayout`，面板變窄時按鈕折進溢位選單，
 不得把最小寬度往上推。實測：檔案面板工具列最小寬 94px、作者面板 151px。

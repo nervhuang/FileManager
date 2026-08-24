@@ -17,12 +17,13 @@ from PyQt5.QtCore import QSize, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolBar, QToolButton,
-    QTreeWidget, QTreeWidgetItem, QFrame, QStyle, QAbstractItemView,
+    QTreeWidget, QTreeWidgetItem, QFrame, QAbstractItemView,
     QProgressBar, QPlainTextEdit, QSplitter, QSizePolicy, QMessageBox,
 )
 
 from . import fetcher, matcher, scanner, store, webui
-from .icons import make_checker_icon, make_stop_icon
+from .icons import (make_checker_icon, make_detail_icon, make_reset_icon,
+                    make_stop_icon)
 
 VERDICT_LABEL = {
     matcher.VERDICT_NEW: '🆕 新書',
@@ -214,17 +215,15 @@ class CheckerPanel(QWidget):
         bar.setIconSize(self._toolbar_icon_size)
         bar.setStyleSheet('QToolBar { spacing: 6px; }')
 
-        style = self.style()
         self.scan_button = self._button(
             make_checker_icon(), '檢查更新（背景執行，可隨時停止）', self.start_scan)
         self.stop_button = self._button(
             make_stop_icon(), '停止掃描', self.stop_scan)
         self.stop_button.setEnabled(False)
         self.detail_button = self._button(
-            style.standardIcon(QStyle.SP_FileDialogDetailedView),
-            '開啟詳細清單（Web UI）', self._open_detail)
+            make_detail_icon(), '開啟詳細清單（Web UI）', self._open_detail)
         self.reset_button = self._button(
-            style.standardIcon(QStyle.SP_DialogResetButton),
+            make_reset_icon(),
             '重設掃描紀錄（清空比對結果與進度，下次從頭掃描）', self.reset_scan_data)
 
         bar.addWidget(self.scan_button)

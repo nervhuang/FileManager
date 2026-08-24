@@ -10,8 +10,10 @@
 沿用 `widgets.make_refresh_icon()` 建立的作法。
 """
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+import math
+
+from PyQt5.QtCore import Qt, QPointF, QRectF
+from PyQt5.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 
 _INK = QColor('#4a4a4a')
 _PAPER = QColor('#fdfdfd')
@@ -31,6 +33,35 @@ def _canvas(size):
     painter = QPainter(pix)
     painter.setRenderHint(QPainter.Antialiasing)
     return pix, painter, size / 64.0
+
+
+def _ring_arrow_path(cx, cy, mid_r, band, start_deg, span_deg, tip_deg):
+    """回轉箭頭：環與箭頭畫成同一條封閉路徑。
+
+    分成兩個圖形畫的話，接合處無論怎麼對齊都會留下看得見的縫。箭尖落在環的
+    中心線上，整個箭頭因此都在圓弧範圍內，不會往外突出。作法沿用
+    `widgets.make_refresh_icon()`。
+    """
+    arrow_half = band * 1.7          # 箭頭底邊半寬，比環寬才看得出是箭頭
+    outer_r, inner_r = mid_r + band, mid_r - band
+    end_deg = start_deg + span_deg
+
+    def polar(r, deg):
+        rad = math.radians(deg)
+        return QPointF(cx + r * math.cos(rad), cy - r * math.sin(rad))
+
+    def square(r):
+        return QRectF(cx - r, cy - r, r * 2, r * 2)
+
+    path = QPainterPath()
+    path.moveTo(polar(mid_r - arrow_half, start_deg))    # 箭頭內角
+    path.lineTo(polar(mid_r, start_deg - tip_deg))       # 箭尖
+    path.lineTo(polar(mid_r + arrow_half, start_deg))    # 箭頭外角
+    path.arcTo(square(outer_r), start_deg, span_deg)     # 外緣
+    path.lineTo(polar(inner_r, end_deg))                 # 尾端切平
+    path.arcTo(square(inner_r), end_deg, -span_deg)      # 內緣繞回
+    path.closeSubpath()
+    return path
 
 
 def make_checker_icon(size=64):
@@ -82,5 +113,81 @@ def make_stop_icon(size=64):
     p.setPen(QPen(_STOP_LIGHT, 2.0 * s, Qt.SolidLine, Qt.RoundCap))
     p.drawLine(int(left + 8 * s), int(top + 8 * s),
                int(left + side * 0.45), int(top + 8 * s))
+    p.end()
+    return QIcon(pix)
+
+
+def make_detail_icon(size=64):
+    """開啟詳細清單（Web UI）：瀏覽器視窗裡的縮圖牆。
+
+    畫成瀏覽器而不是單純的清單圖示，因為這顆按鈕開的是外部瀏覽器分頁，
+    不是在面板裡展開——剪影上就先告訴使用者「會跳出去」。
+    """
+    pix, p, s = _canvas(size)
+
+    left, top = 7 * s, 12 * s
+    width, height = 50 * s, 40 * s
+    bar = 10 * s
+
+    # 視窗外框與標題列
+    p.setPen(QPen(_COVER_EDGE, 2.4 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(_PAPER)
+    p.drawRoundedRect(int(left), int(top), int(width), int(height), 3 * s, 3 * s)
+    p.setBrush(_COVER)
+    p.drawRoundedRect(int(left), int(top), int(width), int(bar), 3 * s, 3 * s)
+    p.drawRect(int(left), int(top + bar - 3 * s), int(width), int(3 * s))
+
+    # 標題列上的三顆點
+    p.setPen(Qt.NoPen)
+    p.setBrush(_PAPER)
+    for i in range(3):
+        p.drawEllipse(int(left + (5 + i * 6) * s), int(top + bar / 2 - 1.6 * s),
+                      int(3.2 * s), int(3.2 * s))
+
+    # 2×2 縮圖格
+    p.setPen(QPen(_COVER_EDGE, 1.6 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(_GLASS)
+    cell = 18 * s
+    gap = 4 * s
+    grid_left = left + (width - cell * 2 - gap) / 2
+    grid_top = top + bar + gap
+    for row in range(2):
+        for col in range(2):
+            p.drawRect(int(grid_left + col * (cell + gap)),
+                       int(grid_top + row * (cell * 0.62 + gap)),
+                       int(cell), int(cell * 0.62))
+    p.end()
+    return QIcon(pix)
+
+
+def make_reset_icon(size=64):
+    """重設掃描紀錄：紀錄紙上蓋一個紅色的回轉箭頭。
+
+    紅色而非綠色：這個動作會清掉既有的比對結果，與工具列上綠色的「重新整理」
+    是不同性質的事，顏色先分開才不會誤按。
+    """
+    pix, p, s = _canvas(size)
+
+    # 紀錄紙偏左上，讓出右下角給徽章
+    p.setPen(QPen(_INK, 2.4 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(_PAPER)
+    p.drawRoundedRect(int(7 * s), int(6 * s), int(31 * s), int(40 * s), 3 * s, 3 * s)
+    p.setPen(QPen(_INK, 1.8 * s, Qt.SolidLine, Qt.RoundCap))
+    for i in range(3):
+        y = int((15 + i * 7) * s)
+        p.drawLine(int(13 * s), y, int(32 * s), y)
+
+    # 右下角的紅色徽章。刻意畫大：64px 下徽章若只有 26px，環＋缺口＋箭頭
+    # 三層細節會糊成一個白色的 C，看不出是回轉箭頭。
+    cx, cy, badge_r = 42.0, 42.0, 19.0
+    p.setPen(QPen(_STOP_EDGE, 2.2 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(_STOP)
+    p.drawEllipse(int((cx - badge_r) * s), int((cy - badge_r) * s),
+                  int(badge_r * 2 * s), int(badge_r * 2 * s))
+
+    p.setPen(Qt.NoPen)
+    p.setBrush(_PAPER)
+    p.drawPath(_ring_arrow_path(cx * s, cy * s, 9.6 * s, 2.6 * s,
+                                start_deg=70, span_deg=290, tip_deg=45))
     p.end()
     return QIcon(pix)

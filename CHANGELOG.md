@@ -1,6 +1,12 @@
 # Changelog
 
 ## 2026-08-24
+- Draw the update checker's remaining two toolbar icons instead of using `QStyle`'s
+  - The toolbar carried two visual languages side by side: two hand-drawn flat icons next to two Windows system icons (a glossy document, a skeuomorphic broom). They pass the size rule — both ship 128×128 — but nothing else about them matched
+  - `make_detail_icon()` is a browser window with a 2×2 thumbnail grid. A browser rather than a plain list, because the button opens an external tab rather than expanding something in the panel — the silhouette says so before the tooltip does
+  - `make_reset_icon()` is a sheet of records with a red circular-arrow badge. Red rather than green: it clears existing results, which is a different kind of act from the green refresh elsewhere in the app, and the colours should separate before the user clicks
+  - The badge is drawn deliberately large. At 26px inside a 64px icon the ring, its gap and the arrowhead blur into a white "C" and stop reading as a circular arrow
+  - The ring and its arrowhead are one closed path, as in `widgets.make_refresh_icon()`; drawn as separate shapes they leave a visible seam at the join no matter how they are aligned
 - Scale the font across the whole application, not a hand-maintained list of widgets
   - Raising the size to 21pt left the menu bar, the status bar, all three toolbars and the main window itself at 12pt; only the lists, tab bars, breadcrumb and the two panels followed
   - The cause was not a few missed widgets but the shape of the code: `_apply_font_size` implemented a cross-cutting concern by enumeration, so every new panel had to remember to register itself. The authors panel was missed once (it ignored Ctrl+= entirely) and the update checker was the second retrofit
