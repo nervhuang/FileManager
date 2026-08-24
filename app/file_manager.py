@@ -17,16 +17,16 @@ from PyQt5.QtWidgets import (
     QDialog, QCheckBox, QListWidget, QFileDialog, QDialogButtonBox,
     QPushButton, QLabel, QActionGroup, QShortcut, QFrame,
 )
-from PyQt5.QtCore import QDir, Qt, QSize, QFileInfo, QEvent, QTimer, QFileSystemWatcher, QPoint, QItemSelectionModel, QMimeData, QUrl
-from PyQt5.QtGui import QKeySequence, QIcon, QFont, QPixmap, QPainter, QColor, QStandardItem, QPen, QLinearGradient
+from PyQt5.QtCore import QDir, Qt, QSize, QFileInfo, QEvent, QTimer, QFileSystemWatcher, QItemSelectionModel, QMimeData, QUrl
+from PyQt5.QtGui import QKeySequence, QIcon, QFont, QStandardItem
 
-from . import font_scaling, gui_bridge, paths, search_query
+from . import font_scaling, gui_bridge, icons, paths, search_query
 from .authors_panel import AuthorsPanel
 from .checker.panel import CheckerPanel, make_checker_icon
 from .everything_sdk import EverythingSDK
 from .models import SearchSortProxyModel, SearchResultsModel, FileSystemSortProxyModel
 from .views import SearchListView, FileListView
-from .widgets import PathTabBar, BreadcrumbBar, build_column_visibility_menu, make_refresh_icon
+from .widgets import PathTabBar, BreadcrumbBar, build_column_visibility_menu
 
 ref_s = 0
 ref_e = 1
@@ -226,169 +226,10 @@ class FileManager(QMainWindow):
         action_close_tab.triggered.connect(self._close_current_tab)
         self.addAction(action_close_tab)
 
-        def make_up_folder_icon():
-            size = self._toolbar_icon_size
-            pix = QPixmap(size)
-            pix.fill(Qt.transparent)
-
-            p = QPainter(pix)
-            p.setRenderHint(QPainter.Antialiasing)
-
-            width = size.width()
-            height = size.height()
-
-            # Draw a custom angled folder matching the new-folder icon perspective, without the plus mark.
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor("#fff1a8"))
-            p.drawPolygon(
-                QPoint(int(width * 0.18), int(height * 0.16)),
-                QPoint(int(width * 0.44), int(height * 0.16)),
-                QPoint(int(width * 0.54), int(height * 0.06)),
-                QPoint(int(width * 0.80), int(height * 0.06)),
-                QPoint(int(width * 0.70), int(height * 0.28)),
-                QPoint(int(width * 0.08), int(height * 0.28)),
-            )
-
-            p.setBrush(QColor("#f2c23f"))
-            p.drawPolygon(
-                QPoint(int(width * 0.08), int(height * 0.28)),
-                QPoint(int(width * 0.70), int(height * 0.28)),
-                QPoint(int(width * 0.62), int(height * 0.88)),
-                QPoint(int(width * 0.08), int(height * 0.88)),
-            )
-
-            p.setBrush(QColor("#d89613"))
-            p.drawPolygon(
-                QPoint(int(width * 0.70), int(height * 0.28)),
-                QPoint(int(width * 0.86), int(height * 0.16)),
-                QPoint(int(width * 0.78), int(height * 0.78)),
-                QPoint(int(width * 0.62), int(height * 0.88)),
-            )
-
-            p.setPen(QPen(QColor("#8f5c00"), 1.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            p.drawLine(int(width * 0.18), int(height * 0.16), int(width * 0.44), int(height * 0.16))
-            p.drawLine(int(width * 0.44), int(height * 0.16), int(width * 0.54), int(height * 0.06))
-            p.drawLine(int(width * 0.54), int(height * 0.06), int(width * 0.80), int(height * 0.06))
-            p.drawLine(int(width * 0.80), int(height * 0.06), int(width * 0.70), int(height * 0.28))
-            p.drawLine(int(width * 0.70), int(height * 0.28), int(width * 0.62), int(height * 0.88))
-            p.drawLine(int(width * 0.62), int(height * 0.88), int(width * 0.08), int(height * 0.88))
-            p.drawLine(int(width * 0.08), int(height * 0.88), int(width * 0.08), int(height * 0.28))
-            p.drawLine(int(width * 0.08), int(height * 0.28), int(width * 0.18), int(height * 0.16))
-            p.drawLine(int(width * 0.70), int(height * 0.28), int(width * 0.86), int(height * 0.16))
-            p.drawLine(int(width * 0.86), int(height * 0.16), int(width * 0.78), int(height * 0.78))
-            p.drawLine(int(width * 0.78), int(height * 0.78), int(width * 0.62), int(height * 0.88))
-
-            p.setPen(QPen(QColor("#ffe08a"), 1.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            p.drawLine(int(width * 0.14), int(height * 0.32), int(width * 0.64), int(height * 0.32))
-            p.drawLine(int(width * 0.14), int(height * 0.38), int(width * 0.62), int(height * 0.38))
-
-            # Green up arrow, centered and larger
-            arrow_center_x = width // 2 + 1
-            arrow_top_y = max(8, height // 5)
-            arrow_mid_y = height // 2
-            arrow_bottom_y = height - 7
-            arrow_head_half_width = max(6, width // 7)
-
-            arrow_pen = QPen(QColor("#2fb24a"), 4.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-            p.setPen(arrow_pen)
-            p.drawLine(arrow_center_x, arrow_bottom_y, arrow_center_x, arrow_top_y)
-            p.drawLine(arrow_center_x, arrow_top_y, arrow_center_x - arrow_head_half_width, arrow_mid_y)
-            p.drawLine(arrow_center_x, arrow_top_y, arrow_center_x + arrow_head_half_width, arrow_mid_y)
-
-            # Arrow highlight
-            p.setPen(QPen(QColor("#8be28d"), 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            p.drawLine(arrow_center_x, arrow_bottom_y - 1, arrow_center_x, arrow_top_y + 1)
-
-            p.end()
-            return QIcon(pix)
-
-        def make_layout_icon(orientation, active=False):
-            size = self._toolbar_icon_size
-            pix = QPixmap(size)
-            pix.fill(Qt.transparent)
-
-            p = QPainter(pix)
-            p.setRenderHint(QPainter.Antialiasing)
-            width = size.width()
-            height = size.height()
-
-            shadow_color = QColor(0, 0, 0, 28)
-            edge_dark = QColor("#6b6b6b")
-            edge_mid = QColor("#9a9a9a")
-            edge_light = QColor("#f8f8f8")
-            fill_top = QColor("#fbfbfb")
-            fill_bottom = QColor("#d8d8d8")
-            divider_dark = QColor("#5d5d5d")
-            divider_light = QColor("#ffffff")
-            accent = QColor("#2f66d0") if active else QColor("#808080")
-
-            def draw_pane(rect):
-                shadow_rect = rect.translated(1, 2)
-                p.setPen(Qt.NoPen)
-                p.setBrush(shadow_color)
-                p.drawRect(shadow_rect)
-
-                grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-                grad.setColorAt(0.0, fill_top)
-                grad.setColorAt(1.0, fill_bottom)
-                p.setBrush(grad)
-                p.setPen(Qt.NoPen)
-                p.drawRect(rect)
-
-                p.setPen(QPen(edge_light, 1.0))
-                p.drawLine(rect.left(), rect.bottom(), rect.left(), rect.top())
-                p.drawLine(rect.left(), rect.top(), rect.right(), rect.top())
-                p.setPen(QPen(edge_dark, 1.0))
-                p.drawLine(rect.right(), rect.top() + 1, rect.right(), rect.bottom())
-                p.drawLine(rect.left() + 1, rect.bottom(), rect.right(), rect.bottom())
-                p.setPen(QPen(edge_mid, 1.0))
-                p.drawLine(rect.left() + 1, rect.bottom() - 1, rect.left() + 1, rect.top() + 1)
-                p.drawLine(rect.left() + 1, rect.top() + 1, rect.right() - 1, rect.top() + 1)
-
-                inset = rect.adjusted(3, 3, -3, -3)
-                p.setPen(QPen(QColor(255, 255, 255, 120), 1.0))
-                p.drawLine(inset.left(), inset.top(), inset.right(), inset.top())
-                p.setPen(QPen(QColor(160, 160, 160, 140), 1.0))
-                p.drawLine(inset.left(), inset.bottom(), inset.right(), inset.bottom())
-
-            content_rect = pix.rect().adjusted(7, 8, -7, -8)
-            pane_gap = max(5, width // 12)
-
-            if orientation == Qt.Orientation.Horizontal:
-                pane_width = max(10, (content_rect.width() - pane_gap) // 2)
-                left_rect = content_rect.adjusted(0, 0, -(content_rect.width() - pane_width), 0)
-                right_rect = content_rect.adjusted(content_rect.width() - pane_width, 0, 0, 0)
-                draw_pane(left_rect)
-                draw_pane(right_rect)
-                split_x = left_rect.right() + pane_gap // 2 + 1
-                p.setPen(QPen(divider_light, 1.0))
-                p.drawLine(split_x - 1, content_rect.top() + 4, split_x - 1, content_rect.bottom() - 4)
-                p.setPen(QPen(divider_dark, 1.4))
-                p.drawLine(split_x, content_rect.top() + 3, split_x, content_rect.bottom() - 3)
-            else:
-                pane_height = max(10, (content_rect.height() - pane_gap) // 2)
-                top_rect = content_rect.adjusted(0, 0, 0, -(content_rect.height() - pane_height))
-                bottom_rect = content_rect.adjusted(0, content_rect.height() - pane_height, 0, 0)
-                draw_pane(top_rect)
-                draw_pane(bottom_rect)
-                split_y = top_rect.bottom() + pane_gap // 2 + 1
-                p.setPen(QPen(divider_light, 1.0))
-                p.drawLine(content_rect.left() + 4, split_y - 1, content_rect.right() - 4, split_y - 1)
-                p.setPen(QPen(divider_dark, 1.4))
-                p.drawLine(content_rect.left() + 3, split_y, content_rect.right() - 3, split_y)
-
-            accent_pen = QPen(accent, 1.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-            p.setPen(accent_pen)
-            if orientation == Qt.Orientation.Horizontal:
-                p.drawLine(content_rect.left() + 3, content_rect.bottom() - 2, content_rect.right() - 3, content_rect.bottom() - 2)
-            else:
-                p.drawLine(content_rect.right() - 2, content_rect.top() + 3, content_rect.right() - 2, content_rect.bottom() - 3)
-
-            p.end()
-            return QIcon(pix)
-
-        self._make_layout_icon = make_layout_icon
-        up_folder_icon = make_up_folder_icon()
+        self._make_layout_icon = (
+            lambda orientation, active=False: icons.make_layout_icon(
+                orientation, active, self._toolbar_icon_size))
+        up_folder_icon = icons.make_up_folder_icon(self._toolbar_icon_size)
         horizontal_layout_icon = self._make_layout_icon(Qt.Orientation.Horizontal, active=True)
         vertical_layout_icon = self._make_layout_icon(Qt.Orientation.Vertical)
 
@@ -462,48 +303,6 @@ class FileManager(QMainWindow):
         self.mid_panel_toolbar.addWidget(self.checker_toolbar_button)
 
         # Phase B：檔案總管風格的操作按鈕（圖示＋文字），作用於目前焦點面板。
-        def make_glyph_icon(kind):
-            size = self._toolbar_icon_size
-            pix = QPixmap(size)
-            pix.fill(Qt.transparent)
-            p = QPainter(pix)
-            p.setRenderHint(QPainter.Antialiasing)
-            w, h = size.width(), size.height()
-            ink = QColor("#4a4a4a")
-            p.setPen(QPen(ink, 2.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            p.setBrush(Qt.NoBrush)
-
-            def pt(fx, fy):
-                return QPoint(int(w * fx), int(h * fy))
-
-            if kind == "copy":
-                p.drawRect(int(w * 0.22), int(h * 0.18), int(w * 0.38), int(h * 0.44))
-                p.setBrush(QColor("#ffffff"))
-                p.drawRect(int(w * 0.38), int(h * 0.34), int(w * 0.38), int(h * 0.44))
-            elif kind == "cut":
-                p.drawLine(pt(0.30, 0.28), pt(0.74, 0.62))
-                p.drawLine(pt(0.74, 0.30), pt(0.30, 0.64))
-                r = int(w * 0.13)
-                p.drawEllipse(int(w * 0.20), int(h * 0.60), r, r)
-                p.drawEllipse(int(w * 0.66), int(h * 0.60), r, r)
-            elif kind == "paste":
-                p.setBrush(QColor("#ffffff"))
-                p.drawRoundedRect(int(w * 0.24), int(h * 0.22), int(w * 0.50), int(h * 0.58), 4, 4)
-                p.setBrush(ink)
-                p.drawRoundedRect(int(w * 0.40), int(h * 0.13), int(w * 0.20), int(h * 0.13), 2, 2)
-                p.setPen(QPen(ink, 1.6, Qt.SolidLine, Qt.RoundCap))
-                p.drawLine(pt(0.33, 0.44), pt(0.65, 0.44))
-                p.drawLine(pt(0.33, 0.56), pt(0.65, 0.56))
-                p.drawLine(pt(0.33, 0.68), pt(0.55, 0.68))
-            elif kind == "rename":
-                p.drawLine(pt(0.24, 0.76), pt(0.68, 0.32))
-                p.setBrush(ink)
-                p.drawPolygon(pt(0.18, 0.82), pt(0.30, 0.78), pt(0.24, 0.70))
-                p.setBrush(Qt.NoBrush)
-                p.drawLine(pt(0.60, 0.24), pt(0.76, 0.40))
-            p.end()
-            return QIcon(pix)
-
         def make_action_button(icon, text, handler):
             btn = QToolButton(self)
             if isinstance(icon, QIcon):
@@ -524,14 +323,14 @@ class FileManager(QMainWindow):
             btn.clicked.connect(handler)
             return btn
 
-        self.act_cut = make_action_button(make_glyph_icon("cut"), "剪下", self._cut_selected_paths_from_focused_view)
-        self.act_copy = make_action_button(make_glyph_icon("copy"), "複製", self._copy_selected_paths_from_focused_view)
-        self.act_paste = make_action_button(make_glyph_icon("paste"), "貼上", self._paste_from_toolbar)
-        self.act_rename = make_action_button(make_glyph_icon("rename"), "重新命名", self._rename_selected_focused_item)
+        self.act_cut = make_action_button(icons.make_file_action_icon("cut", self._toolbar_icon_size), "剪下", self._cut_selected_paths_from_focused_view)
+        self.act_copy = make_action_button(icons.make_file_action_icon("copy", self._toolbar_icon_size), "複製", self._copy_selected_paths_from_focused_view)
+        self.act_paste = make_action_button(icons.make_file_action_icon("paste", self._toolbar_icon_size), "貼上", self._paste_from_toolbar)
+        self.act_rename = make_action_button(icons.make_file_action_icon("rename", self._toolbar_icon_size), "重新命名", self._rename_selected_focused_item)
         self.act_delete = make_action_button(QStyle.StandardPixmap.SP_TrashIcon, "刪除", self._delete_selected_focused_items)
         # 重新整理自行繪製：SP_BrowserReload 只有 24/32px，在 64px 工具列裡不會
         # 放大，會比其他圖示小一半（見 widgets.make_refresh_icon）。
-        self.act_refresh = make_action_button(make_refresh_icon(self._toolbar_icon_size.width()), "重新整理", lambda: self.refresh_mid_panel(force=True))
+        self.act_refresh = make_action_button(icons.make_refresh_icon(self._toolbar_icon_size), "重新整理", lambda: self.refresh_mid_panel(force=True))
         # 上下/左右排列鈕緊接「新增資料夾」，排在操作按鈕左邊
         self.layout_horizontal_button = make_panel_nav_button(horizontal_layout_icon, "左右排列", lambda: self._set_right_panel_layout(Qt.Orientation.Horizontal))
         self.mid_panel_toolbar.addWidget(self.layout_horizontal_button)

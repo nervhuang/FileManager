@@ -20,7 +20,7 @@ from PyQt5.QtGui import (
 )
 
 from . import authors_db
-from .widgets import make_refresh_icon
+from .icons import make_refresh_icon
 
 ENTITY_ID_ROLE = Qt.UserRole + 1
 ENTITY_TYPE_ROLE = Qt.UserRole + 2
@@ -476,7 +476,7 @@ class AuthorsPanel(QWidget):
             (_standard_icon(QStyle.StandardPixmap.SP_TrashIcon), '刪除',
              '刪除選取項目（可還原）', self._delete_selected, True),
             (None, None, None, None, None),
-            (make_refresh_icon(self._toolbar_icon_size.width()), '重新整理',
+            (make_refresh_icon(self._toolbar_icon_size), '重新整理',
              '重新整理', self.reload, False),
             (_make_glyph_icon('history'), '變更', '最近變更／還原', self._open_changes, False),
         )
