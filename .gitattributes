@@ -1,0 +1,8 @@
+# Git hook 是 shell script，被轉成 CRLF 之後 sh 會回 bad interpreter，
+# hook 於是靜默失效——正是這種「沒人發現的失效」讓專案走到現在這步。
+.githooks/* text eol=lf
+
+# YAML 與 JSON 跨平台工具讀，一律 LF。
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf

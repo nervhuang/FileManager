@@ -1,0 +1,11 @@
+{
+  "_comment": "單檔上限 600 行。這裡列的是既有超標檔，只擋它們變得更長；拆小之後跑 scripts/check_line_limits.py --update 把數字降下來。降了就不能再升回去。",
+  "limit": 600,
+  "files": {
+    "app/authors_panel.py": 673,
+    "app/checker/panel.py": 627,
+    "app/file_manager.py": 2808,
+    "app/views.py": 705,
+    "app/widgets.py": 917
+  }
+}

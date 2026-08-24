@@ -1,0 +1,30 @@
+#!/bin/sh
+# commit 前的快速把關：只跑純邏輯測試與行數上限，目標是兩秒內給出答案。
+# 含 Qt 的測試留給 CI（.github/workflows/test.yml），那些要建 QApplication，
+# 每次 commit 都等它會讓人開始用 --no-verify。
+#
+# 啟用方式（clone 後跑一次）：
+#     git config core.hooksPath .githooks
+#
+# 真的要跳過時用 git commit --no-verify。CI 仍然會擋，所以跳過只是延後，
+# 不是繞過。
+
+set -e
+
+if [ -x ".venv/Scripts/python.exe" ]; then
+    PY=".venv/Scripts/python.exe"
+elif [ -x ".venv/bin/python" ]; then
+    PY=".venv/bin/python"
+else
+    PY="python"
+fi
+
+export PYTHONIOENCODING=utf-8
+
+echo "pre-commit: 行數上限"
+"$PY" scripts/check_line_limits.py
+
+echo "pre-commit: 純邏輯測試"
+"$PY" -m pytest -q -m logic
+
+echo "pre-commit: 通過"

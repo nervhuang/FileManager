@@ -1,0 +1,2 @@
+PyQt5>=5.15  # GUI
+pywin32>=306  # 原生右鍵選單、右鍵拖放、回收筒（win32com / win32gui / pythoncom）
