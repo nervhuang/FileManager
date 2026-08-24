@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
 )
 
 from . import fetcher, matcher, scanner, store, webui
-from .icons import make_checker_icon
+from .icons import make_checker_icon, make_stop_icon
 
 VERDICT_LABEL = {
     matcher.VERDICT_NEW: '🆕 新書',
@@ -218,7 +218,7 @@ class CheckerPanel(QWidget):
         self.scan_button = self._button(
             make_checker_icon(), '檢查更新（背景執行，可隨時停止）', self.start_scan)
         self.stop_button = self._button(
-            style.standardIcon(QStyle.SP_MediaStop), '停止掃描', self.stop_scan)
+            make_stop_icon(), '停止掃描', self.stop_scan)
         self.stop_button.setEnabled(False)
         self.detail_button = self._button(
             style.standardIcon(QStyle.SP_FileDialogDetailedView),

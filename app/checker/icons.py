@@ -19,6 +19,9 @@ _COVER = QColor('#7aa8dc')
 _COVER_EDGE = QColor('#37567a')
 _GLASS = QColor('#eaf3ff')
 _BADGE = QColor('#e0483c')
+_STOP = QColor('#e0483c')
+_STOP_EDGE = QColor('#8f2119')
+_STOP_LIGHT = QColor('#f2867c')
 
 
 def _canvas(size):
@@ -50,5 +53,34 @@ def make_checker_icon(size=64):
     p.setBrush(_GLASS)
     p.drawEllipse(int(30 * s), int(28 * s), int(24 * s), int(24 * s))
     p.drawLine(int(50 * s), int(48 * s), int(59 * s), int(58 * s))
+    p.end()
+    return QIcon(pix)
+
+
+def make_stop_icon(size=64):
+    """停止掃描：紅色圓角方塊。
+
+    不能用 QStyle 的 SP_MediaStop——這個樣式只提供到 32×32，擺進 64px 工具列
+    只會置中顯示 32px，看起來是鄰居的一半大。這正是當初 SP_BrowserReload 的
+    同一個問題（見 widgets.make_refresh_icon）。
+
+    用方塊而非圓形：它與旁邊的「重新整理」圓環在剪影上就分得開，工具列縮成
+    小圖示時仍認得出來。
+    """
+    pix, p, s = _canvas(size)
+
+    side = 40 * s          # 與重新整理圓環的直徑相當，兩顆並排時份量才一致
+    left = top = (size - side) / 2.0
+    radius = 6 * s
+
+    p.setPen(QPen(_STOP_EDGE, 2.6 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(_STOP)
+    p.drawRoundedRect(int(left), int(top), int(side), int(side), radius, radius)
+
+    # 左上角的短高光：與資料夾、書本圖示同一套立體語彙，不是純平面色塊。
+    # 刻意只佔約四成寬——橫貫整寬會讀成一條減號，看起來像「移除」而不是「停止」。
+    p.setPen(QPen(_STOP_LIGHT, 2.0 * s, Qt.SolidLine, Qt.RoundCap))
+    p.drawLine(int(left + 8 * s), int(top + 8 * s),
+               int(left + side * 0.45), int(top + 8 * s))
     p.end()
     return QIcon(pix)

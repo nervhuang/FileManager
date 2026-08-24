@@ -56,10 +56,11 @@ proxy style 物件必須留參考：`setStyle` 不接手所有權，被回收會
 （判定方式：`icon.actualSize(QSize(64,64)) == QSize(64,64)`，
 排除 `objectName` 為 `qt_toolbar_ext_button` 的溢位鈕）。
 
-> **[待修]** [`app/checker/panel.py:256`](../../app/checker/panel.py#L256) 的「停止掃描」
-> 用 `QStyle.SP_MediaStop`，2026-08-24 實測只有 32×32，同工具列其餘 5 個皆 64×64。
-> 這與當初 `SP_BrowserReload` 只出 24/32px 的問題完全同類；
-> 既有解法 `widgets.make_refresh_icon()` 沒被沿用。
+> 這條規則曾經失守：更新檢查器的「停止掃描」用 `QStyle.SP_MediaStop`，
+> 實測只有 32×32，同工具列其餘五個皆 64×64——與當初 `SP_BrowserReload`
+> 只出 24/32px 完全同類，而既有解法 `widgets.make_refresh_icon()` 沒被沿用。
+> 已改為自繪的 `checker.icons.make_stop_icon()`，並由
+> `tests/shell/test_shl_11_toolbar_icon_sizes.py` 遍歷全部工具列按鈕把關。
 
 **SHL-12** Qt 內建圖示只在確認該圖示有 128×128 來源時才可直接用
 （垃圾桶、資料夾、箭頭、`SP_FileDialogDetailedView`、`SP_DialogResetButton` 已確認）。
