@@ -23,6 +23,42 @@ def _as_qsize(size):
     return size if isinstance(size, QSize) else QSize(size, size)
 
 
+# ── 調色盤 ────────────────────────────────────────────────────────────────
+# 語彙是實心填色 ＋ 深色描邊 ＋ 高光（docs/spec/ui-shell.md 的 SHL-12a）。
+# 這些值原本硬寫在各個繪圖函式裡，抽出來才看得出哪幾顆該是同一族。
+
+INK = QColor('#4a4a4a')            # 通用深色描邊
+PAPER = QColor('#fbfbfb')
+
+FOLDER_LIGHT = QColor('#fff1a8')   # 資料夾上蓋
+FOLDER = QColor('#f2c23f')         # 資料夾正面
+FOLDER_SIDE = QColor('#d89613')    # 資料夾側面（立體感）
+FOLDER_EDGE = QColor('#8f5c00')
+FOLDER_GLOSS = QColor('#ffe08a')
+
+GREEN = QColor('#2fb24a')          # 導覽箭頭與「新增」徽章
+GREEN_DARK = QColor('#1d7a33')
+GREEN_LIGHT = QColor('#8be28d')
+
+METAL = QColor('#c9ccd1')          # 金屬：垃圾桶、剪刀刀身、鉛筆金屬環
+METAL_DARK = QColor('#8a8f96')
+METAL_LIGHT = QColor('#eceef1')
+
+BLUE = QColor('#7aa8dc')           # 紙板、夾板
+BLUE_DARK = QColor('#37567a')
+BLUE_ACCENT = QColor('#2f66d0')
+
+
+def _canvas(size):
+    """回傳 (pixmap, painter, 相對 64px 的縮放係數)。"""
+    size = _as_qsize(size)
+    pix = QPixmap(size)
+    pix.fill(Qt.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.Antialiasing)
+    return pix, painter, size.width() / 64.0
+
+
 def make_up_folder_icon(size=64):
     """回到上一層目錄：黃色立體資料夾加綠色上箭頭。"""
     size = _as_qsize(size)
@@ -189,45 +225,15 @@ def make_layout_icon(orientation, active=False, size=64):
 
 
 def make_file_action_icon(kind, size=64):
-    """檔案面板的操作圖示：cut／copy／paste／rename。"""
-    size = _as_qsize(size)
-    pix = QPixmap(size)
-    pix.fill(Qt.transparent)
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.Antialiasing)
-    w, h = size.width(), size.height()
-    ink = QColor("#4a4a4a")
-    p.setPen(QPen(ink, 2.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-    p.setBrush(Qt.NoBrush)
+    """檔案面板的操作圖示：cut／copy／paste／rename。
 
-    def pt(fx, fy):
-        return QPoint(int(w * fx), int(h * fy))
-
-    if kind == "copy":
-        p.drawRect(int(w * 0.22), int(h * 0.18), int(w * 0.38), int(h * 0.44))
-        p.setBrush(QColor("#ffffff"))
-        p.drawRect(int(w * 0.38), int(h * 0.34), int(w * 0.38), int(h * 0.44))
-    elif kind == "cut":
-        p.drawLine(pt(0.30, 0.28), pt(0.74, 0.62))
-        p.drawLine(pt(0.74, 0.30), pt(0.30, 0.64))
-        r = int(w * 0.13)
-        p.drawEllipse(int(w * 0.20), int(h * 0.60), r, r)
-        p.drawEllipse(int(w * 0.66), int(h * 0.60), r, r)
-    elif kind == "paste":
-        p.setBrush(QColor("#ffffff"))
-        p.drawRoundedRect(int(w * 0.24), int(h * 0.22), int(w * 0.50), int(h * 0.58), 4, 4)
-        p.setBrush(ink)
-        p.drawRoundedRect(int(w * 0.40), int(h * 0.13), int(w * 0.20), int(h * 0.13), 2, 2)
-        p.setPen(QPen(ink, 1.6, Qt.SolidLine, Qt.RoundCap))
-        p.drawLine(pt(0.33, 0.44), pt(0.65, 0.44))
-        p.drawLine(pt(0.33, 0.56), pt(0.65, 0.56))
-        p.drawLine(pt(0.33, 0.68), pt(0.55, 0.68))
-    elif kind == "rename":
-        p.drawLine(pt(0.24, 0.76), pt(0.68, 0.32))
-        p.setBrush(ink)
-        p.drawPolygon(pt(0.18, 0.82), pt(0.30, 0.78), pt(0.24, 0.70))
-        p.setBrush(Qt.NoBrush)
-        p.drawLine(pt(0.60, 0.24), pt(0.76, 0.40))
+    畫法定義在檔案下方的 _FILE_ACTION_PAINTERS；這裡只負責備好畫布。
+    """
+    painter_fn = _FILE_ACTION_PAINTERS.get(kind)
+    if painter_fn is None:
+        raise ValueError(f'未知的檔案操作圖示：{kind!r}')
+    pix, p, s = _canvas(size)
+    painter_fn(p, s)
     p.end()
     return QIcon(pix)
 
@@ -289,3 +295,222 @@ def make_refresh_icon(size=64):
 
     p.end()
     return QIcon(pix)
+
+
+# ── 取代 Qt 系統圖示的自繪版本 ────────────────────────────────────────────
+# 這四顆原本用 QStyle 的 SP_ArrowBack／SP_ArrowForward／SP_FileDialogNewFolder／
+# SP_TrashIcon。它們的尺寸沒問題（都有 128×128），問題在外觀：Windows 的立體
+# 光澤風格與這裡的實心填色語彙擺在同一條工具列上，一眼就看得出是兩套東西。
+
+def _arrow_polygon(s, pointing_right):
+    """粗箭頭：箭身加箭頭，單一多邊形，接合處才不會有縫。"""
+    shaft_top, shaft_bottom = 26.0, 38.0
+    head_top, head_bottom = 14.0, 50.0
+    tip, head_base, tail = 54.0, 34.0, 12.0
+    xs = [tip, head_base, head_base, tail, tail, head_base, head_base]
+    ys = [32.0, head_top, shaft_top, shaft_top, shaft_bottom, shaft_bottom, head_bottom]
+    if not pointing_right:
+        xs = [64.0 - x for x in xs]
+    return QPointF(xs[0] * s, ys[0] * s), [QPointF(x * s, y * s) for x, y in zip(xs, ys)]
+
+
+def _draw_arrow(p, s, pointing_right):
+    _, points = _arrow_polygon(s, pointing_right)
+    path = QPainterPath()
+    path.moveTo(points[0])
+    for point in points[1:]:
+        path.lineTo(point)
+    path.closeSubpath()
+
+    p.setPen(QPen(GREEN_DARK, 2.4 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(GREEN)
+    p.drawPath(path)
+
+    # 箭身上緣的高光，與資料夾圖示同一種厚度感
+    p.setPen(QPen(GREEN_LIGHT, 2.0 * s, Qt.SolidLine, Qt.RoundCap))
+    x0, x1 = (16.0, 32.0) if pointing_right else (32.0, 48.0)
+    p.drawLine(int(x0 * s), int(29 * s), int(x1 * s), int(29 * s))
+
+
+def make_back_icon(size=64):
+    """前一頁：綠色左箭頭，與「回到上一層」的綠色同一族。"""
+    pix, p, s = _canvas(size)
+    _draw_arrow(p, s, pointing_right=False)
+    p.end()
+    return QIcon(pix)
+
+
+def make_forward_icon(size=64):
+    """後一頁：綠色右箭頭。"""
+    pix, p, s = _canvas(size)
+    _draw_arrow(p, s, pointing_right=True)
+    p.end()
+    return QIcon(pix)
+
+
+def _draw_folder(p, s):
+    """黃色立體資料夾本體，座標與 make_up_folder_icon 一致。"""
+    p.setPen(Qt.NoPen)
+    p.setBrush(FOLDER_LIGHT)
+    p.drawPolygon(QPoint(int(11 * s), int(10 * s)), QPoint(int(28 * s), int(10 * s)),
+                  QPoint(int(35 * s), int(4 * s)), QPoint(int(51 * s), int(4 * s)),
+                  QPoint(int(45 * s), int(18 * s)), QPoint(int(5 * s), int(18 * s)))
+    p.setBrush(FOLDER)
+    p.drawPolygon(QPoint(int(5 * s), int(18 * s)), QPoint(int(45 * s), int(18 * s)),
+                  QPoint(int(40 * s), int(56 * s)), QPoint(int(5 * s), int(56 * s)))
+    p.setBrush(FOLDER_SIDE)
+    p.drawPolygon(QPoint(int(45 * s), int(18 * s)), QPoint(int(55 * s), int(10 * s)),
+                  QPoint(int(50 * s), int(50 * s)), QPoint(int(40 * s), int(56 * s)))
+
+    p.setPen(QPen(FOLDER_EDGE, 1.6 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    for a, b in (((11, 10), (28, 10)), ((28, 10), (35, 4)), ((35, 4), (51, 4)),
+                 ((51, 4), (45, 18)), ((45, 18), (40, 56)), ((40, 56), (5, 56)),
+                 ((5, 56), (5, 18)), ((5, 18), (11, 10)),
+                 ((45, 18), (55, 10)), ((55, 10), (50, 50)), ((50, 50), (40, 56))):
+        p.drawLine(int(a[0] * s), int(a[1] * s), int(b[0] * s), int(b[1] * s))
+
+    p.setPen(QPen(FOLDER_GLOSS, 1.3 * s, Qt.SolidLine, Qt.RoundCap))
+    p.drawLine(int(9 * s), int(21 * s), int(41 * s), int(21 * s))
+    p.drawLine(int(9 * s), int(25 * s), int(40 * s), int(25 * s))
+
+
+def _draw_plus_badge(p, s, cx, cy, radius):
+    """綠色加號徽章，與作者面板的「新增」徽章同一種。"""
+    p.setPen(QPen(GREEN_DARK, 2.0 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(GREEN)
+    p.drawEllipse(int((cx - radius) * s), int((cy - radius) * s),
+                  int(radius * 2 * s), int(radius * 2 * s))
+    p.setPen(QPen(PAPER, 2.8 * s, Qt.SolidLine, Qt.RoundCap))
+    arm = radius * 0.52
+    p.drawLine(int((cx - arm) * s), int(cy * s), int((cx + arm) * s), int(cy * s))
+    p.drawLine(int(cx * s), int((cy - arm) * s), int(cx * s), int((cy + arm) * s))
+
+
+def make_new_folder_icon(size=64):
+    """新增資料夾：資料夾加綠色加號徽章。"""
+    pix, p, s = _canvas(size)
+    _draw_folder(p, s)
+    _draw_plus_badge(p, s, cx=46.0, cy=45.0, radius=15.0)
+    p.end()
+    return QIcon(pix)
+
+
+def make_trash_icon(size=64):
+    """刪除：金屬垃圾桶。檔案面板與作者面板共用同一顆。"""
+    pix, p, s = _canvas(size)
+
+    # 桶身（上寬下窄的梯形，四角略圓）
+    p.setPen(QPen(INK, 2.4 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(METAL)
+    body = QPainterPath()
+    body.moveTo(14 * s, 22 * s)
+    body.lineTo(50 * s, 22 * s)
+    body.lineTo(45 * s, 56 * s)
+    body.lineTo(19 * s, 56 * s)
+    body.closeSubpath()
+    p.drawPath(body)
+
+    # 桶身直紋
+    p.setPen(QPen(METAL_DARK, 1.8 * s, Qt.SolidLine, Qt.RoundCap))
+    for x_top, x_bottom in ((24, 26), (32, 32), (40, 38)):
+        p.drawLine(int(x_top * s), int(28 * s), int(x_bottom * s), int(50 * s))
+
+    # 桶蓋與提把
+    p.setPen(QPen(INK, 2.4 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(METAL_LIGHT)
+    p.drawRoundedRect(int(10 * s), int(15 * s), int(44 * s), int(8 * s), 3 * s, 3 * s)
+    p.setBrush(Qt.NoBrush)
+    p.drawRoundedRect(int(26 * s), int(8 * s), int(12 * s), int(7 * s), 2 * s, 2 * s)
+    p.end()
+    return QIcon(pix)
+
+
+# ── 檔案操作圖示 ──────────────────────────────────────────────────────────
+# 這四顆原本是無填色的線稿，與同一條工具列上的資料夾、箭頭、垃圾桶不是同一套
+# 語彙。改成實心填色＋深色描邊＋高光。
+
+def _make_copy_icon(p, s):
+    """兩張疊起來的紙。後面那張只露出左上角，前後關係才看得出來。"""
+    p.setPen(QPen(INK, 2.2 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(METAL_LIGHT)
+    p.drawRoundedRect(int(12 * s), int(9 * s), int(28 * s), int(36 * s), 3 * s, 3 * s)
+    p.setBrush(PAPER)
+    p.drawRoundedRect(int(24 * s), int(19 * s), int(28 * s), int(36 * s), 3 * s, 3 * s)
+    p.setPen(QPen(BLUE, 2.0 * s, Qt.SolidLine, Qt.RoundCap))
+    for i in range(3):
+        y = int((28 + i * 8) * s)
+        p.drawLine(int(30 * s), y, int(46 * s), y)
+
+
+def _make_cut_icon(p, s):
+    """剪刀：金屬刀身加藍色握環。"""
+    # 刀身描粗一點並用 INK：METAL_DARK 擺在飽和的鄰居旁邊會顯得褪色
+    p.setPen(QPen(INK, 5.6 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.drawLine(int(20 * s), int(10 * s), int(42 * s), int(40 * s))
+    p.drawLine(int(44 * s), int(10 * s), int(22 * s), int(40 * s))
+    p.setPen(QPen(METAL, 2.6 * s, Qt.SolidLine, Qt.RoundCap))
+    p.drawLine(int(21 * s), int(12 * s), int(41 * s), int(39 * s))
+    p.drawLine(int(43 * s), int(12 * s), int(23 * s), int(39 * s))
+
+    p.setPen(QPen(BLUE_DARK, 2.4 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(BLUE)
+    ring = 15.0
+    p.drawEllipse(int(11 * s), int(40 * s), int(ring * s), int(ring * s))
+    p.drawEllipse(int(38 * s), int(40 * s), int(ring * s), int(ring * s))
+    p.setBrush(Qt.transparent)
+    p.setPen(QPen(PAPER, 2.6 * s, Qt.SolidLine, Qt.RoundCap))
+    p.drawEllipse(int(15 * s), int(44 * s), int(7 * s), int(7 * s))
+    p.drawEllipse(int(42 * s), int(44 * s), int(7 * s), int(7 * s))
+
+
+def _make_paste_icon(p, s):
+    """夾板夾著一張紙。夾板用藍色，與複製的白紙分得開。"""
+    p.setPen(QPen(BLUE_DARK, 2.4 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(BLUE)
+    p.drawRoundedRect(int(11 * s), int(12 * s), int(42 * s), int(44 * s), 4 * s, 4 * s)
+    p.setBrush(PAPER)
+    p.drawRoundedRect(int(17 * s), int(22 * s), int(30 * s), int(30 * s), 2 * s, 2 * s)
+
+    # 上方的金屬夾
+    p.setPen(QPen(INK, 2.2 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(METAL)
+    p.drawRoundedRect(int(24 * s), int(6 * s), int(16 * s), int(11 * s), 2.5 * s, 2.5 * s)
+
+    p.setPen(QPen(BLUE, 2.0 * s, Qt.SolidLine, Qt.RoundCap))
+    for i in range(3):
+        y = int((30 + i * 7) * s)
+        p.drawLine(int(22 * s), y, int(42 * s), y)
+
+
+def _make_rename_icon(p, s):
+    """鉛筆加底線：木身、金屬環、深色筆尖，與作者面板的「編輯」同一種鉛筆。"""
+    p.setPen(QPen(FOLDER_EDGE, 2.0 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(FOLDER)
+    p.drawPolygon(QPoint(int(24 * s), int(38 * s)), QPoint(int(44 * s), int(12 * s)),
+                  QPoint(int(52 * s), int(18 * s)), QPoint(int(32 * s), int(44 * s)))
+    p.setPen(QPen(FOLDER_GLOSS, 1.6 * s, Qt.SolidLine, Qt.RoundCap))
+    p.drawLine(int(29 * s), int(38 * s), int(47 * s), int(15 * s))
+
+    # 筆尖
+    p.setPen(QPen(INK, 1.8 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(INK)
+    p.drawPolygon(QPoint(int(24 * s), int(38 * s)), QPoint(int(32 * s), int(44 * s)),
+                  QPoint(int(20 * s), int(48 * s)))
+
+    # 金屬環
+    p.setPen(QPen(METAL_DARK, 1.8 * s, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(METAL)
+    p.drawPolygon(QPoint(int(39 * s), int(18 * s)), QPoint(int(45 * s), int(11 * s)),
+                  QPoint(int(53 * s), int(17 * s)), QPoint(int(47 * s), int(24 * s)))
+
+    # 底線：這顆是「重新命名」不是「編輯」，底線代表在改名字
+    p.setPen(QPen(BLUE_ACCENT, 3.0 * s, Qt.SolidLine, Qt.RoundCap))
+    p.drawLine(int(12 * s), int(56 * s), int(52 * s), int(56 * s))
+
+
+_FILE_ACTION_PAINTERS = {
+    'copy': _make_copy_icon,
+    'cut': _make_cut_icon,
+    'paste': _make_paste_icon,
+    'rename': _make_rename_icon,
+}

@@ -11,7 +11,7 @@ from datetime import datetime
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QFileSystemModel, QWidget,
-    QHBoxLayout, QVBoxLayout, QAction, QMessageBox, QStyle,
+    QHBoxLayout, QVBoxLayout, QAction, QMessageBox,
     QToolButton, QToolBar, QSplitter, QSizePolicy, QFileIconProvider,
     QAbstractItemView, QMenu, QComboBox,
     QDialog, QCheckBox, QListWidget, QFileDialog, QDialogButtonBox,
@@ -235,10 +235,7 @@ class FileManager(QMainWindow):
 
         def make_panel_nav_button(icon, tooltip, handler):
             button = QToolButton(self)
-            if isinstance(icon, QIcon):
-                button.setIcon(icon)
-            else:
-                button.setIcon(QApplication.style().standardIcon(icon))
+            button.setIcon(icon)
             button.setIconSize(self._toolbar_icon_size)
             button.setToolTip(tooltip)
             button.setAutoRaise(True)
@@ -288,11 +285,12 @@ class FileManager(QMainWindow):
 
         # 中間面板：加入多重頁籤列
         self.mid_panel_toolbar, self.mid_nav_buttons = build_panel_toolbar([
-            (QStyle.StandardPixmap.SP_ArrowBack, "前一頁", self._navigate_back),
-            (QStyle.StandardPixmap.SP_ArrowForward, "後一頁", self._navigate_forward),
+            (icons.make_back_icon(self._toolbar_icon_size), "前一頁", self._navigate_back),
+            (icons.make_forward_icon(self._toolbar_icon_size), "後一頁", self._navigate_forward),
             (up_folder_icon, "回到上一層目錄", self._navigate_up),
             None,  # 導覽 ┃ 新增+排列
-            (QStyle.StandardPixmap.SP_FileDialogNewFolder, "新增資料夾", self._create_folder_in_current_dir),
+            (icons.make_new_folder_icon(self._toolbar_icon_size), "新增資料夾",
+             self._create_folder_in_current_dir),
         ])
         # 更新檢查器的入口固定放在這條工具列上：面板本身預設收起，沒有這顆按鈕
         # 就只剩選單能叫出來，等於藏起來了。
@@ -305,10 +303,7 @@ class FileManager(QMainWindow):
         # Phase B：檔案總管風格的操作按鈕（圖示＋文字），作用於目前焦點面板。
         def make_action_button(icon, text, handler):
             btn = QToolButton(self)
-            if isinstance(icon, QIcon):
-                btn.setIcon(icon)
-            else:
-                btn.setIcon(QApplication.style().standardIcon(icon))
+            btn.setIcon(icon)
             btn.setIconSize(self._toolbar_icon_size)
             btn.setText(text)
             btn.setToolTip(text)
@@ -327,9 +322,7 @@ class FileManager(QMainWindow):
         self.act_copy = make_action_button(icons.make_file_action_icon("copy", self._toolbar_icon_size), "複製", self._copy_selected_paths_from_focused_view)
         self.act_paste = make_action_button(icons.make_file_action_icon("paste", self._toolbar_icon_size), "貼上", self._paste_from_toolbar)
         self.act_rename = make_action_button(icons.make_file_action_icon("rename", self._toolbar_icon_size), "重新命名", self._rename_selected_focused_item)
-        self.act_delete = make_action_button(QStyle.StandardPixmap.SP_TrashIcon, "刪除", self._delete_selected_focused_items)
-        # 重新整理自行繪製：SP_BrowserReload 只有 24/32px，在 64px 工具列裡不會
-        # 放大，會比其他圖示小一半（見 widgets.make_refresh_icon）。
+        self.act_delete = make_action_button(icons.make_trash_icon(self._toolbar_icon_size), "刪除", self._delete_selected_focused_items)
         self.act_refresh = make_action_button(icons.make_refresh_icon(self._toolbar_icon_size), "重新整理", lambda: self.refresh_mid_panel(force=True))
         # 上下/左右排列鈕緊接「新增資料夾」，排在操作按鈕左邊
         self.layout_horizontal_button = make_panel_nav_button(horizontal_layout_icon, "左右排列", lambda: self._set_right_panel_layout(Qt.Orientation.Horizontal))

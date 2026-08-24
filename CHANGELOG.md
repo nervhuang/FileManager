@@ -1,6 +1,12 @@
 # Changelog
 
 ## 2026-08-24
+- Draw every toolbar icon; no Qt system icons remain
+  - Three visual languages were sharing one toolbar: line art with no fill (cut, copy, paste, rename), filled-and-outlined drawings (folder, layout, refresh), and Windows system icons (back, forward, new folder, trash). Side by side it is immediately obvious they are not one set
+  - The four system icons are replaced by drawings in the established language — filled, dark-outlined, with a highlight: green back/forward arrows from the same family as the up-folder's green arrow, a folder with the green plus badge the authors panel already uses for "add", and a metal bin
+  - The four line-art icons are redrawn as filled shapes: two stacked sheets, scissors with blue finger rings, a blue clipboard holding paper, and a pencil over an underline
+  - Scissors blades use the general ink colour rather than the metal grey; against saturated neighbours the grey read as washed out
+  - Icon drawing moved out of `widgets.py` and out of two closures inside `initUI` into `app/icons.py`, which also holds the palette. `file_manager.py` dropped from 2807 to 2599 lines and `widgets.py` from 917 to 858. Verified by rendering: the eight moved icons hash pixel-identically before and after the move
 - Draw the update checker's remaining two toolbar icons instead of using `QStyle`'s
   - The toolbar carried two visual languages side by side: two hand-drawn flat icons next to two Windows system icons (a glossy document, a skeuomorphic broom). They pass the size rule — both ship 128×128 — but nothing else about them matched
   - `make_detail_icon()` is a browser window with a 2×2 thumbnail grid. A browser rather than a plain list, because the button opens an external tab rather than expanding something in the panel — the silhouette says so before the tooltip does

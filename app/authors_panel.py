@@ -13,14 +13,13 @@ from PyQt5.QtWidgets import (
     QMessageBox, QMenu, QTableWidget, QTableWidgetItem, QAbstractItemView,
     QHeaderView, QFrame,
 )
-from PyQt5.QtWidgets import QApplication, QStyle
 from PyQt5.QtGui import (
     QColor, QFont, QIcon, QLinearGradient, QPainter, QPen, QPixmap,
     QStandardItem, QStandardItemModel,
 )
 
 from . import authors_db
-from .icons import make_refresh_icon
+from .icons import make_refresh_icon, make_trash_icon
 
 ENTITY_ID_ROLE = Qt.UserRole + 1
 ENTITY_TYPE_ROLE = Qt.UserRole + 2
@@ -159,11 +158,6 @@ def _make_glyph_icon(kind):
 
     p.end()
     return QIcon(pix)
-
-
-def _standard_icon(pixmap_enum):
-    """刪除與重新整理直接沿用系統圖示，與檔案面板工具列同一顆。"""
-    return QApplication.style().standardIcon(pixmap_enum)
 
 
 def _inherit_font(dialog, parent):
@@ -473,7 +467,7 @@ class AuthorsPanel(QWidget):
              lambda: self._add_entity(authors_db.CIRCLE), False),
             (None, None, None, None, None),
             (_make_glyph_icon('edit'), '編輯', '編輯選取項目', self._edit_selected, True),
-            (_standard_icon(QStyle.StandardPixmap.SP_TrashIcon), '刪除',
+            (make_trash_icon(self._toolbar_icon_size), '刪除',
              '刪除選取項目（可還原）', self._delete_selected, True),
             (None, None, None, None, None),
             (make_refresh_icon(self._toolbar_icon_size), '重新整理',
