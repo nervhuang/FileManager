@@ -21,3 +21,18 @@ Windows 桌面檔案管理程式（PyQt5），搜尋透過 [Everything](https://
 ### 歷史（何時為何改）
 
 - [CHANGELOG.md](CHANGELOG.md) — 變更紀錄
+
+## 測試
+
+```powershell
+.venv\Scripts\pip install -r requirements-dev.txt
+.venv\Scripts\python -m pytest            # 全部
+.venv\Scripts\python -m pytest -m logic   # 只跑純邏輯（秒級，pre-commit 用這個）
+```
+
+測試檔名對應 [docs/spec/](docs/spec/) 的條文編號，例如
+`tests/search/test_srch_14_folder_first_sort.py` 對應 `search.md` 的 SRCH-14。
+改行為時規格與測試一起改，只改其中一邊視為錯誤。
+
+Qt 測試以 offscreen 平台執行：量得到 widget 的尺寸、字型與選取狀態，
+量不到「看起來對不對」。外觀一律人工驗收，見規格裡的 **[手動]** 標記。

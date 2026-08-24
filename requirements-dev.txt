@@ -1,2 +1,4 @@
 Pillow>=10  # scripts/generate_icon.py 產生 icon.ico/png 用
 mcp>=2  # app/hermes_mcp.py 的 Hermes MCP stdio server 用
+pytest>=8  # 測試
+pytest-qt>=4  # Qt 測試（qapp / qtbot fixture），以 offscreen 平台執行

@@ -82,8 +82,8 @@
 **FOP-20** 檔案面板與搜尋面板的右鍵選單為 Windows 原生 shell 選單
 （`IContextMenu`），不是自製選單。 **[手動]**
 
-**FOP-21** `IContextMenu2` 在部分項目上會失敗（探測腳本 `scripts/test_cm.py` 已記錄
-`-2147467263 未實作`）。失敗時退回 `IContextMenu`，不得讓選單完全打不開。 **[手動]**
+**FOP-21** `IContextMenu2` 在部分項目上會失敗（探測腳本
+`scripts/probe_shell_context_menu.py` 已記錄 `-2147467263 未實作`）。失敗時退回 `IContextMenu`，不得讓選單完全打不開。 **[手動]**
 
 ---
 

@@ -75,8 +75,7 @@
 ## 結果模型與排序
 
 **SRCH-14** **資料夾恆排於所有檔案之上**，任一欄位、升冪降冪皆然。
-已有測試涵蓋 5 種排序組合（現 `scripts/test_folder_first_sort.py`，待收編為
-`tests/search/test_SRCH_14_folder_first.py`）。
+測試涵蓋 6 種排序組合，見 `tests/search/test_srch_14_folder_first_sort.py`。
 
 **SRCH-15** 結果中繼資料（大小、時間、是否為目錄）由 Everything 查詢直接回傳，
 **不得逐筆 `os.stat`**。
@@ -84,15 +83,18 @@
 **SRCH-16** `update_search_results` 接收 `everything_sdk.SearchResult` 的清單
 （可解包為 `(filepath, is_dir, size, mtime)`），不接受字串清單。
 
-> **[待修]** `scripts/test_search_click_realapp.py` 仍傳 `list[str]`，自 2026-06-13 起失效。
-> 它守護的是「重建結果模型導致 proxy 對應表損毀 → 點擊時原生崩潰」，
-> 這條防線自六月起實際上是空的。收編時必須先修好這支測試。
+> 這條規則曾經失守：`scripts/test_search_click_realapp.py` 自 2026-06-13 起仍傳
+> `list[str]`，測試無法執行而沒人發現，「重建結果模型導致 proxy 對應表損毀 →
+> 點擊時原生崩潰」這條防線空了兩個月。已修復並收編為
+> `tests/search/test_srch_16_18_result_model_rebuild.py`。
 
 **SRCH-17** 重建結果模型期間必須關閉排序 proxy 的 dynamic sorting。
 每次 `appendRow` 都重排在 2000 列時是 O(n²)，會造成 2–3 秒 UI 凍結。
 
 **SRCH-18** 重建結果模型不得損毀 proxy 的索引對應：舊作法在列數變少時重建會越界。
-（現 `scripts/test_search_click_proxy.py`，待收編。）
+見 `tests/search/test_srch_16_18_result_model_rebuild.py`。
+注意損毀只在完整主視窗路徑（真正的 `update_search_results`、啟用排序的 view、
+真正的 `selectionModel`）下重現，最小化的 model/proxy 環境重現不出來。
 
 ---
 
