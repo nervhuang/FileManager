@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QDir, Qt, QSize, QFileInfo, QEvent, QTimer, QFileSystemWatcher, QPoint, QItemSelectionModel, QMimeData, QUrl
 from PyQt5.QtGui import QKeySequence, QIcon, QFont, QPixmap, QPainter, QColor, QStandardItem, QPen, QLinearGradient
 
-from . import gui_bridge, paths, search_query
+from . import font_scaling, gui_bridge, paths, search_query
 from .authors_panel import AuthorsPanel
 from .checker.panel import CheckerPanel, make_checker_icon
 from .everything_sdk import EverythingSDK
@@ -2317,38 +2317,37 @@ class FileManager(QMainWindow):
         self.listView.setRootIndex(self.file_proxy.mapFromSource(self.fileListModel.index(dir_path)))
 
     def _apply_font_size(self, new_size):
-        """將字型大小套用至所有 listview 及頁籤列。"""
-        for widget in (self.listView, self.listView2):
-            current_font = widget.font()
-            f = QFont(current_font.family(), new_size)
-            widget.setFont(f)
-        # 同步頁籤列字型
+        """把字級套用到整個應用程式。
+
+        遞迴走訪整棵 widget 樹，不是逐一列舉。列舉法必須有人記得維護，
+        作者面板與更新檢查器已經各漏過一次（見 app/font_scaling.py）。
+        """
+        # 必須先取：遞迴一跑，listView 的字級就變了。
+        old_size = self._current_font_size()
+        if new_size == old_size:
+            return
+        font_scaling.apply(self, old_size, new_size)
+
+        # 以下都是遞迴蓋不到的：設了 stylesheet 而阻斷傳播的、需要重繪的、
+        # 以及自己帶特殊規則的面板。必須在遞迴之後跑，才不會被遞迴蓋掉。
         for tab_container in (self.mid_tab_bar, self.right_tab_bar):
-            tb = tab_container.tab_bar
-            current_font = tb.font()
-            f = QFont(current_font.family(), new_size)
-            tb.setFont(f)
-            tb.update()
+            tab_container.tab_bar.update()
         self._sync_right_header_spacing()
         self._sync_tab_bar_heights()
-        # 同步 info combobox 字型
-        for combo in (self.mid_info_combo, self.right_info_combo):
-            current_font = combo.font()
-            f = QFont(current_font.family(), new_size)
-            combo.setFont(f)
+
         if getattr(self, 'path_bar', None) is not None:
-            current_font = self.path_bar.font()
-            f = QFont(current_font.family(), new_size)
-            # 位址列與其中的按鈕、編輯框各自設了 stylesheet，字型不會從父層傳下去，
-            # 必須由它自己逐一套用（見 BreadcrumbBar.apply_font）。
-            self.path_bar.apply_font(f)
+            # 位址列與其中的按鈕、編輯框各自設了 stylesheet，Qt 視其字型為已明確
+            # 指定，父層字型不再傳下去，必須由它自己逐一套用（見
+            # BreadcrumbBar.apply_font）。導覽後重建的麵包屑也要繼承。
+            self.path_bar.apply_font(QFont(self.path_bar.font().family(), new_size))
             self.path_bar.set_path(self._current_dir())
-        # 左側作者／團體面板（含其過濾框、樹與按鈕列）
+        # 這兩個面板的內部有刻意的相對差距（計數列大一級、執行紀錄等寬且小一級、
+        # 下限 8pt），由它們自己決定。
         if getattr(self, 'authors_panel', None) is not None:
             self.authors_panel.apply_font_size(new_size)
-        # 右側更新檢查器面板（含計數列、清單與執行紀錄）
         if getattr(self, 'checker_panel', None) is not None:
             self.checker_panel.apply_font_size(new_size)
+
         # 位址列高度隨字型改變，須在它更新後再算一次右側留白，否則右側頁籤列
         # 會沿用舊高度而與左側錯開幾個像素。
         self._sync_right_header_spacing()

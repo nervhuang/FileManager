@@ -33,12 +33,19 @@ import pytest  # noqa: E402
 
 
 @pytest.fixture
-def main_window(qapp):
+def main_window(qapp, tmp_path, monkeypatch):
     """真實的 FileManager 主視窗，測試結束後關閉。
 
     建立成本不低（會載入設定、建立三條工具列與兩個面板），需要它的測試才用。
     只驗 model/proxy 的測試請直接建立該類別，不要拉整個主視窗進來。
+
+    每個測試各自一份 FILEMANAGER_HOME：`closeEvent` 會把字級、版面、分頁
+    寫回 config.ini（SET-14），共用一個目錄的話前一個測試的結束狀態就成了
+    下一個測試的起始狀態，字型相關的測試會因此互相污染。
     """
+    monkeypatch.setenv('FILEMANAGER_HOME', str(tmp_path / 'home'))
+    (tmp_path / 'home').mkdir()
+
     from app.file_manager import FileManager
     window = FileManager()
     window.show()
