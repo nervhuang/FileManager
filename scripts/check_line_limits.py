@@ -17,6 +17,16 @@ import json
 import os
 import sys
 
+# 主控台預設用系統 codepage（開發機的繁中 Windows 是 cp950，GitHub Actions 的
+# windows runner 是 cp1252），印不出中文就直接拋 UnicodeEncodeError，讓「檢查
+# 通過」的訊息把整支腳本弄成非零 exit code——檢查其實過了，死在印結果。
+# 與 app/cli.py、tests/conftest.py 同一套處理。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 LIMIT = 600
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 SCAN_DIR = os.path.join(ROOT, 'app')

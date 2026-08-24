@@ -12,6 +12,11 @@ jobs:
     # 原生右鍵選單），而且要驗的行為就是它在 Windows 上的行為。
     runs-on: windows-latest
 
+    env:
+      # runner 的主控台是 cp1252，任何印中文的步驟都會拋 UnicodeEncodeError。
+      # 設在 job 層級，之後新增的步驟不必各自記得。
+      PYTHONIOENCODING: utf-8
+
     steps:
       - uses: actions/checkout@v4
 
@@ -32,6 +37,4 @@ jobs:
         env:
           # Qt 沒有桌面可用；offscreen 量得到 widget 狀態，量不到長相。
           QT_QPA_PLATFORM: offscreen
-          # runner 的主控台編碼不是 UTF-8，測試輸出含日文檔名會炸。
-          PYTHONIOENCODING: utf-8
         run: python -m pytest -v

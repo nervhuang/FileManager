@@ -105,6 +105,24 @@ Windows 桌面檔案管理程式（PyQt5 + Everything 索引）。
 Everything、FileManager 主程式、exhentai、真實 shell。這些必須是可注入的介面，
 測試餵假物件。這條界線也決定了「哪些邏輯應該是純函式」——愈多愈好。
 
+### 任何會印中文的 Python 進入點都要固定 UTF-8
+
+```python
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+```
+
+主控台預設用系統 codepage：開發機的繁中 Windows 是 cp950，GitHub Actions 的
+windows runner 是 cp1252。兩者都印不出這個專案的中文訊息，會直接拋
+`UnicodeEncodeError`。
+
+這個 bug 已經出現過三次（`app/cli.py`、測試腳本、`scripts/check_line_limits.py`），
+每一次的症狀都一樣難認：**工作本身其實成功了，死在印結果那一行**，
+看起來卻像檢查失敗。
+
 ### 測試不得依賴開發者的個人設定
 
 `tests/conftest.py` 已把 `FILEMANAGER_HOME` 指向空的暫存目錄。
