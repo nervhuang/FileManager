@@ -1,8 +1,6 @@
 import sys
 import subprocess
 import os
-import ctypes
-import ctypes.wintypes as wt
 import traceback
 from datetime import datetime
 
@@ -957,42 +955,15 @@ class FileManager(QMainWindow):
         return paths
 
     def _delete_paths_to_recycle_bin(self, paths):
-        existing = [p for p in paths if os.path.exists(p)]
-        if not existing:
+        """送回收筒。成功時順帶刷新兩個面板。"""
+        outcome = shell_ops.delete_to_recycle_bin(int(self.winId()), paths)
+        if not (outcome.ran and outcome.code == 0 and not outcome.aborted):
             return False
-
-        class SHFILEOPSTRUCTW(ctypes.Structure):
-            _fields_ = [
-                ("hwnd", wt.HWND),
-                ("wFunc", wt.UINT),
-                ("pFrom", ctypes.c_wchar_p),
-                ("pTo", ctypes.c_wchar_p),
-                ("fFlags", ctypes.c_ushort),
-                ("fAnyOperationsAborted", wt.BOOL),
-                ("hNameMappings", ctypes.c_void_p),
-                ("lpszProgressTitle", ctypes.c_wchar_p),
-            ]
-
-        FO_DELETE = 0x0003
-        FOF_ALLOWUNDO = 0x0040
-        FOF_WANTNUKEWARNING = 0x4000
-
-        path_buf = ctypes.create_unicode_buffer('\0'.join(existing) + '\0')
-        op = SHFILEOPSTRUCTW()
-        op.hwnd = int(self.winId())
-        op.wFunc = FO_DELETE
-        op.pFrom = ctypes.cast(path_buf, ctypes.c_wchar_p)
-        op.pTo = None
-        op.fFlags = FOF_ALLOWUNDO | FOF_WANTNUKEWARNING
-
-        result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
-        if result == 0 and not op.fAnyOperationsAborted:
-            self.refresh_mid_panel()
-            # 刪除只會「移除」搜尋結果，不可能新增符合項，故一律走輕量的逐列存在性
-            # 檢查，避免重跑整個 Everything 查詢並重建模型而造成 GUI 凍結。
-            self._refresh_search_results_existence()
-            return True
-        return False
+        self.refresh_mid_panel()
+        # 刪除只會「移除」搜尋結果，不可能新增符合項，故一律走輕量的逐列存在性
+        # 檢查，避免重跑整個 Everything 查詢並重建模型而造成 GUI 凍結。
+        self._refresh_search_results_existence()
+        return True
 
     def _delete_selected_focused_items(self):
         view = self._focused_file_view()

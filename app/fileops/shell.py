@@ -115,3 +115,34 @@ def move_or_copy(hwnd, src_paths, target_dir, op):
 
     code = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op_struct))
     return Outcome(True, code, bool(op_struct.fAnyOperationsAborted))
+
+
+FO_DELETE = 0x0003
+FOF_ALLOWUNDO = 0x0040
+FOF_WANTNUKEWARNING = 0x4000
+
+
+def delete_to_recycle_bin(hwnd, paths):
+    """把 paths 送進回收筒。回傳 Outcome(ran, code, aborted)。
+
+    `FOF_ALLOWUNDO` 是「送回收筒」而不是永久刪除；`FOF_WANTNUKEWARNING` 讓
+    無法送回收筒的情況（容量不足、網路磁碟）由系統跳警告，而不是靜默永久刪除
+    （docs/spec/fileops.md 的 FOP-7、FOP-9）。
+
+    這裡刻意沒有 normpath：`FO_DELETE` 的 `pTo` 是 None，實測對正斜線沒有問題
+    （見 FOP-15a 的對照表），維持搬過來之前的行為。
+    """
+    existing = [p for p in paths if os.path.exists(p)]
+    if not existing:
+        return NOTHING_TO_DO
+
+    path_buf = ctypes.create_unicode_buffer('\0'.join(existing) + '\0')
+    op = SHFILEOPSTRUCTW()
+    op.hwnd = hwnd
+    op.wFunc = FO_DELETE
+    op.pFrom = ctypes.cast(path_buf, ctypes.c_wchar_p)
+    op.pTo = None
+    op.fFlags = FOF_ALLOWUNDO | FOF_WANTNUKEWARNING
+
+    code = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+    return Outcome(True, code, bool(op.fAnyOperationsAborted))
