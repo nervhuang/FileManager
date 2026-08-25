@@ -21,7 +21,8 @@ from contextlib import closing
 
 from mcp.server import MCPServer
 
-from . import authors_db, gui_bridge, paths
+from . import gui_bridge, paths
+from .authors import db as authors_db
 from .search import query as search_query
 from .search.everything import EverythingSDK
 

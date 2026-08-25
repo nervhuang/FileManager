@@ -75,7 +75,7 @@ def ensure_schema(conn):
 
 def connect():
     """開一條已套用兩邊 schema 的連線。呼叫端負責關閉。"""
-    from .. import authors_db
+    from ..authors import db as authors_db
 
     conn = authors_db.connect()
     ensure_schema(conn)

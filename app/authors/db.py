@@ -12,7 +12,7 @@ import os
 import sqlite3
 from datetime import datetime
 
-from . import paths
+from .. import paths
 
 AUTHOR = 'author'
 CIRCLE = 'circle'

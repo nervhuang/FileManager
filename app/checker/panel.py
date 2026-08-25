@@ -54,7 +54,7 @@ class ScanWorker(QThread):
             self._fetch.cancelled = True
 
     def run(self):
-        from .. import authors_db
+        from ..authors import db as authors_db
         from ..search.everything import EverythingSDK
 
         try:

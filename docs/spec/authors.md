@@ -1,7 +1,15 @@
 # 作者／團體域
 
-目標位置 `app/authors/`。現況 [`app/authors_db.py`](../../app/authors_db.py)（資料層，
-不依賴 Qt）＋ [`app/authors_panel.py`](../../app/authors_panel.py)（面板與對話框）。
+[`app/authors/`](../../app/authors/)，分兩層。
+
+| 檔案 | 依賴 Qt | 職責 |
+|---|---|---|
+| `db.py` | 否 | `authors.db` 的結構、查詢與異動日誌 |
+| `names.py` | 否 | 「團體 (作者)」貼上拆分 |
+| `panel.py` | 是 | 面板、樹、新增／編輯與最近變更對話框 |
+| `icons.py` | 是 | 面板工具列的自繪圖示 |
+
+不依賴 Qt 的那兩個是服務層：Hermes MCP server 與 CLI 兩個進程也讀寫 `authors.db`。
 
 ---
 
@@ -62,8 +70,10 @@ Qt 在頂層視窗邊界停止字型傳播，對話框必須自己套用，不�
 
 ## 「團體 (作者)」貼上自動拆分
 
-**[未驗]** 以下條文由 [`app/authors_panel.py:32-49`](../../app/authors_panel.py#L32-L49)
-逆向寫出（commit `ae89452`、`bd80b87`），任何既有文件都沒有記載，請確認是否符合原意。
+**[未驗]** 以下條文由程式碼逆向寫出（commit `ae89452`、`bd80b87`），任何既有文件
+都沒有記載，**請確認是否符合原意**。實作在 [`app/authors/names.py`](../../app/authors/names.py)，
+行為已由 `tests/authors/test_aut_17_parse_circle_author.py` 鎖住——但測試鎖的是
+「現在怎麼跑」，不是「應該怎麼跑」。條文確認後若有出入，先改規格與測試。
 
 **AUT-17** 名稱欄輸入符合「團體 (作者)」格式時，自動拆成團體名 ＋ 旗下作者，
 沿用既有的 `linked_names` 路徑寫入，建立雙向關聯。
@@ -90,10 +100,8 @@ Qt 在頂層視窗邊界停止字型傳播，對話框必須自己套用，不�
 
 ---
 
-## 拆分注意
+## 尚未完成的部分
 
-- `authors_db.py` 已經不依賴 Qt，拆分時原樣移入 `app/authors/db.py`。
-- `authors_panel.py` 目前 673 行，含資料邏輯、對話框、面板、**以及約 200 行的圖示繪製色盤與
-  繪圖函式**。圖示繪製屬外殼的視覺語彙，應移到 `app/widgets.py` 或 `app/icons.py`，
-  不屬於本域。這是本域超過 600 行上限的主因。
-- 對外只發 `search_requested(str)` 訊號，不得直接呼叫搜尋域或主視窗。
+- `panel.py` 531 行，仍然一個檔案裝著面板、樹、兩個對話框。對話框（`EntityEditDialog`
+  與 `RecentChangesDialog`）可以再分出去。
+- 對外只發 `search_requested(str)` 訊號，不得直接呼叫搜尋域或主視窗。這條目前成立。

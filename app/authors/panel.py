@@ -4,161 +4,25 @@
 單擊清單項目即以「名稱＋所有別名」組成 OR 查詢，在右側面板開一個搜尋分頁。
 """
 
-import re
 
-from PyQt5.QtCore import QPoint, QSize, Qt, pyqtSignal
+from PyQt5.QtCore import QSize, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeView, QToolBar,
     QDialog, QDialogButtonBox, QLabel, QComboBox, QListWidget, QPushButton,
     QMessageBox, QMenu, QTableWidget, QTableWidgetItem, QAbstractItemView,
     QHeaderView, QFrame,
 )
-from PyQt5.QtGui import (
-    QColor, QFont, QIcon, QLinearGradient, QPainter, QPen, QPixmap,
-    QStandardItem, QStandardItemModel,
-)
+from PyQt5.QtGui import QFont, QStandardItem, QStandardItemModel
 
-from . import authors_db
-from .icons import make_refresh_icon, make_trash_icon
+from . import db as authors_db
+from ..icons import make_refresh_icon, make_trash_icon   # 外殼共用的那兩顆
+from .icons import make_glyph_icon
+from .names import parse_circle_author
 
 ENTITY_ID_ROLE = Qt.UserRole + 1
 ENTITY_TYPE_ROLE = Qt.UserRole + 2
 
 _TYPE_LABEL = {authors_db.AUTHOR: '作者', authors_db.CIRCLE: '團體'}
-
-# 同人圈慣用的「團體 (作者)」標記，外層方括號可有可無，括號可半形或全形；
-# 用 (?:...)$ 錨定在字串尾端取「最後一組括號」，團體名本身帶括號時才不會錯拆。
-# 括號內可能不只一位作者，用頓號／逗號分隔（如「和泉、冷泉」），數量不限。
-_CIRCLE_AUTHOR_RE = re.compile(
-    r'^\[?\s*(?P<circle>.+?)\s*[(（]\s*(?P<authors>[^()（）]+?)\s*[)）]\s*\]?$'
-)
-_AUTHOR_SPLIT_RE = re.compile(r'[、,，]\s*')
-
-
-def _parse_circle_author(text):
-    """把「團體 (作者[、作者…])」或「[…]」拆成 (團體名, [作者名, …])；不符合格式回傳 None。"""
-    match = _CIRCLE_AUTHOR_RE.match(text.strip())
-    if not match:
-        return None
-    circle = match.group('circle').strip()
-    authors = [a.strip() for a in _AUTHOR_SPLIT_RE.split(match.group('authors')) if a.strip()]
-    if not circle or not authors:
-        return None
-    return circle, authors
-
-
-# 與中間檔案面板工具列共用的色盤：實心填色 + 深色描邊 + 高光，
-# 而非單純的線稿，這樣兩條工具列擺在一起才是同一種視覺語彙。
-_INK = QColor("#4a4a4a")
-_BODY = QColor("#7aa8dc")          # 人形主體
-_BODY_DARK = QColor("#4d7cb0")
-_BODY_BACK = QColor("#b8cfe8")     # 後排人形（較淡，製造前後層次）
-_EDGE = QColor("#37567a")          # 人形描邊
-_SKIN = QColor("#f5cfa4")
-_SKIN_EDGE = QColor("#b3844f")
-_GREEN = QColor("#2fb24a")         # 新增徽章
-_GREEN_DARK = QColor("#1d7a33")
-_WOOD_LIGHT = QColor("#fff1a8")    # 鉛筆木身，沿用資料夾圖示的黃
-_WOOD = QColor("#f2c23f")
-_WOOD_EDGE = QColor("#8f5c00")
-_METAL = QColor("#c9ccd1")
-_FACE = QColor("#fbfbfb")          # 時鐘面
-_RIM = QColor("#6b6b6b")
-_ACCENT = QColor("#2f66d0")
-
-
-def _make_glyph_icon(kind):
-    """畫出工具列圖示（64×64 畫布，由 QToolButton 縮到實際大小）。
-
-    風格對齊中間檔案面板的 make_up_folder_icon／make_glyph_icon：實心填色、
-    深色描邊、局部高光，不是純線稿。
-    """
-    canvas = 64
-    pix = QPixmap(canvas, canvas)
-    pix.fill(Qt.transparent)
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.Antialiasing)
-
-    def pt(fx, fy):
-        return QPoint(int(canvas * fx), int(canvas * fy))
-
-    def px(f):
-        return int(canvas * f)
-
-    def filled(brush, edge, width=1.6):
-        p.setBrush(brush)
-        p.setPen(QPen(edge, width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-
-    def person(cx, cy_head, scale, body, edge, skin=_SKIN, skin_edge=_SKIN_EDGE):
-        """一個人形：頭 + 肩胸。cx 為中心、scale 控制大小。"""
-        head_r = 0.115 * scale
-        filled(skin, skin_edge)
-        p.drawEllipse(px(cx - head_r), px(cy_head - head_r),
-                      px(head_r * 2), px(head_r * 2))
-        # 肩胸：上緣為半圓，下緣切平
-        grad = QLinearGradient(pt(cx, cy_head + head_r), pt(cx, cy_head + 0.46 * scale))
-        grad.setColorAt(0.0, body.lighter(112))
-        grad.setColorAt(1.0, body)
-        filled(grad, edge)
-        left, right = cx - 0.20 * scale, cx + 0.20 * scale
-        top, bottom = cy_head + head_r * 1.15, cy_head + 0.44 * scale
-        p.drawChord(px(left), px(top), px(right - left), px((bottom - top) * 2), 0, 180 * 16)
-        p.setPen(QPen(body.lighter(150), 1.2, Qt.SolidLine, Qt.RoundCap))
-        p.drawLine(pt(cx - 0.10 * scale, top + 0.05 * scale),
-                   pt(cx - 0.13 * scale, bottom - 0.02 * scale))
-
-    def plus_badge(cx, cy, r=0.19):
-        filled(_GREEN, _GREEN_DARK, 1.8)
-        p.drawEllipse(px(cx - r), px(cy - r), px(r * 2), px(r * 2))
-        p.setPen(QPen(QColor("#ffffff"), 3.4, Qt.SolidLine, Qt.RoundCap))
-        p.drawLine(pt(cx - r * 0.52, cy), pt(cx + r * 0.52, cy))
-        p.drawLine(pt(cx, cy - r * 0.52), pt(cx, cy + r * 0.52))
-
-    if kind == 'add_author':
-        person(0.42, 0.32, 1.15, _BODY, _EDGE)
-        plus_badge(0.76, 0.76)
-
-    elif kind == 'add_circle':
-        person(0.30, 0.30, 0.88, _BODY_BACK, _EDGE.lighter(135))
-        person(0.58, 0.28, 0.88, _BODY_BACK, _EDGE.lighter(135))
-        person(0.44, 0.42, 1.00, _BODY, _EDGE)
-        plus_badge(0.78, 0.78, 0.17)
-
-    elif kind == 'edit':
-        # 鉛筆：木身 + 金屬套環 + 筆尖，斜置由左下指向右上
-        body_pts = [pt(0.30, 0.86), pt(0.22, 0.70), pt(0.66, 0.26), pt(0.78, 0.40)]
-        grad = QLinearGradient(pt(0.22, 0.70), pt(0.40, 0.90))
-        grad.setColorAt(0.0, _WOOD_LIGHT)
-        grad.setColorAt(1.0, _WOOD)
-        filled(grad, _WOOD_EDGE)
-        p.drawPolygon(*body_pts)
-        filled(_METAL, _WOOD_EDGE, 1.3)
-        p.drawPolygon(pt(0.62, 0.22), pt(0.74, 0.36), pt(0.80, 0.30), pt(0.68, 0.16))
-        # 筆尖與石墨
-        filled(_WOOD_LIGHT, _WOOD_EDGE, 1.3)
-        p.drawPolygon(pt(0.14, 0.92), pt(0.22, 0.70), pt(0.30, 0.86))
-        filled(_INK, _INK, 1.0)
-        p.drawPolygon(pt(0.14, 0.92), pt(0.185, 0.80), pt(0.235, 0.865))
-        p.setPen(QPen(QColor("#ffffff"), 1.4, Qt.SolidLine, Qt.RoundCap))
-        p.drawLine(pt(0.29, 0.68), pt(0.68, 0.30))
-
-    elif kind == 'history':
-        # 時鐘 + 逆時針箭頭（還原的意象）
-        margin = 0.20
-        filled(_FACE, _RIM, 3.0)
-        p.drawEllipse(px(margin), px(margin), px(1 - margin * 2), px(1 - margin * 2))
-        p.setPen(QPen(_INK, 3.0, Qt.SolidLine, Qt.RoundCap))
-        p.drawLine(pt(0.50, 0.50), pt(0.50, 0.32))
-        p.drawLine(pt(0.50, 0.50), pt(0.65, 0.57))
-        p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(_ACCENT, 3.4, Qt.SolidLine, Qt.RoundCap))
-        p.drawArc(px(0.07), px(0.07), px(0.52), px(0.52), 30 * 16, 200 * 16)
-        filled(_ACCENT, _ACCENT, 1.0)
-        p.drawPolygon(pt(0.04, 0.26), pt(0.22, 0.24), pt(0.11, 0.40))
-
-    p.end()
-    return QIcon(pix)
-
 
 def _inherit_font(dialog, parent):
     """讓對話框沿用開啟它的面板字型。
@@ -280,7 +144,7 @@ class EntityEditDialog(QDialog):
 
     def _maybe_split_pasted_name(self):
         """名稱欄符合「團體 (作者[、作者…])」格式時，自動拆成團體名 + 旗下作者關聯。"""
-        parsed = _parse_circle_author(self.name_edit.text())
+        parsed = parse_circle_author(self.name_edit.text())
         if parsed is None:
             return
         circle_name, author_names = parsed
@@ -461,18 +325,18 @@ class AuthorsPanel(QWidget):
         self._actions = []
         self._selection_actions = []
         specs = (
-            (_make_glyph_icon('add_author'), '新增作者', '新增作者',
+            (make_glyph_icon('add_author'), '新增作者', '新增作者',
              lambda: self._add_entity(authors_db.AUTHOR), False),
-            (_make_glyph_icon('add_circle'), '新增團體', '新增團體',
+            (make_glyph_icon('add_circle'), '新增團體', '新增團體',
              lambda: self._add_entity(authors_db.CIRCLE), False),
             (None, None, None, None, None),
-            (_make_glyph_icon('edit'), '編輯', '編輯選取項目', self._edit_selected, True),
+            (make_glyph_icon('edit'), '編輯', '編輯選取項目', self._edit_selected, True),
             (make_trash_icon(self._toolbar_icon_size), '刪除',
              '刪除選取項目（可還原）', self._delete_selected, True),
             (None, None, None, None, None),
             (make_refresh_icon(self._toolbar_icon_size), '重新整理',
              '重新整理', self.reload, False),
-            (_make_glyph_icon('history'), '變更', '最近變更／還原', self._open_changes, False),
+            (make_glyph_icon('history'), '變更', '最近變更／還原', self._open_changes, False),
         )
         for icon, text, tooltip, slot, needs_selection in specs:
             if icon is None:

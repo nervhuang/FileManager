@@ -19,7 +19,7 @@ from PyQt5.QtGui import QKeySequence, QIcon, QFont, QStandardItem
 
 from . import font_scaling, gui_bridge, icons, paths, settings
 from .search import query as search_query, results as search_results
-from .authors_panel import AuthorsPanel
+from .authors.panel import AuthorsPanel
 from .checker.panel import CheckerPanel, make_checker_icon
 from .search.everything import EverythingSDK
 from .models import FileSystemSortProxyModel
