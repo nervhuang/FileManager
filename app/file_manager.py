@@ -1379,60 +1379,20 @@ class FileManager(QMainWindow):
             QMessageBox.warning(self, "建立捷徑失敗", f"無法建立捷徑：{ex}")
 
     def _perform_file_op(self, src_paths, target_dir, op):
-        """使用 Windows SHFileOperationW 執行複製或移動。"""
-        class SHFILEOPSTRUCTW(ctypes.Structure):
-            _fields_ = [
-                ("hwnd", wt.HWND),
-                ("wFunc", wt.UINT),
-                ("pFrom", ctypes.c_wchar_p),
-                ("pTo", ctypes.c_wchar_p),
-                ("fFlags", ctypes.c_ushort),
-                ("fAnyOperationsAborted", wt.BOOL),
-                ("hNameMappings", ctypes.c_void_p),
-                ("lpszProgressTitle", ctypes.c_wchar_p),
-            ]
-
-        FO_MOVE = 0x0001
-        FO_COPY = 0x0002
-        FOF_SIMPLEPROGRESS = 0x0100
-
-        target_dir = os.path.normpath(target_dir)
-        valid_sources = []
-        for src in src_paths:
-            src = os.path.normpath(src)
-            if not os.path.exists(src):
-                continue
-            dest = os.path.join(target_dir, os.path.basename(src))
-            if os.path.abspath(src) == os.path.abspath(dest):
-                continue
-            valid_sources.append(src)
-
-        if not valid_sources:
+        """以 Windows shell 執行複製或移動。"""
+        outcome = shell_ops.move_or_copy(int(self.winId()), src_paths, target_dir, op)
+        if not outcome.ran:
             return
-
-        from_buf = ctypes.create_unicode_buffer("\0".join(valid_sources) + "\0\0")
-        to_buf = ctypes.create_unicode_buffer(target_dir + "\0")
-
-        op_struct = SHFILEOPSTRUCTW()
-        op_struct.hwnd = int(self.winId())
-        op_struct.wFunc = FO_MOVE if op == "move" else FO_COPY
-        op_struct.pFrom = ctypes.cast(from_buf, ctypes.c_wchar_p)
-        op_struct.pTo = ctypes.cast(to_buf, ctypes.c_wchar_p)
-        op_struct.fFlags = FOF_SIMPLEPROGRESS
-        op_struct.lpszProgressTitle = "正在處理檔案..."
-
-        result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op_struct))
-        if result != 0 and not op_struct.fAnyOperationsAborted:
-            QMessageBox.warning(self, "拖曳作業失敗", f"Windows 檔案作業失敗，錯誤碼: {result}")
+        if outcome.code != 0 and not outcome.aborted:
+            QMessageBox.warning(self, "拖曳作業失敗",
+                                f"Windows 檔案作業失敗，錯誤碼: {outcome.code}")
             return False
-
-        if result == 0 and not op_struct.fAnyOperationsAborted:
+        if outcome.code == 0 and not outcome.aborted:
             # 不可同步刷新：拖放來源（如搜尋面板 listView2）的 drag.exec_() 巢狀
             # 事件迴圈可能仍在堆疊上，立即重設其 model 會造成原生層存取已釋放物件
             # 而導致程式崩潰自關。改以延遲排程，等拖曳迴圈解開後再刷新。
             self._schedule_panel_refreshes((600, 1500), full_search=True)
             return True
-
         return False
 
     def _watch_mid_dir(self, dir_path: str):

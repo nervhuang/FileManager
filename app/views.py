@@ -103,49 +103,13 @@ class _ShellDropMixin:
             QMessageBox.warning(self, "建立捷徑失敗", f"無法建立捷徑：{ex}")
 
     def _apply_drop_operation(self, src_paths, target_dir, op):
-        class SHFILEOPSTRUCTW(ctypes.Structure):
-            _fields_ = [
-                ("hwnd", wt.HWND),
-                ("wFunc", wt.UINT),
-                ("pFrom", ctypes.c_wchar_p),
-                ("pTo", ctypes.c_wchar_p),
-                ("fFlags", ctypes.c_ushort),
-                ("fAnyOperationsAborted", wt.BOOL),
-                ("hNameMappings", ctypes.c_void_p),
-                ("lpszProgressTitle", ctypes.c_wchar_p),
-            ]
-
-        FO_MOVE = 0x0001
-        FO_COPY = 0x0002
-        FOF_SIMPLEPROGRESS = 0x0100
-
-        valid_sources = []
-        for src in src_paths:
-            if not os.path.exists(src):
-                continue
-            dest = os.path.join(target_dir, os.path.basename(src))
-            if os.path.abspath(src) == os.path.abspath(dest):
-                continue
-            valid_sources.append(src)
-
-        if not valid_sources:
-            return
-
-        from_buf = ctypes.create_unicode_buffer("\0".join(valid_sources) + "\0\0")
-        to_buf = ctypes.create_unicode_buffer(target_dir + "\0")
-
-        op_struct = SHFILEOPSTRUCTW()
-        op_struct.hwnd = int(self.winId())
-        op_struct.wFunc = FO_MOVE if op == "move" else FO_COPY
-        op_struct.pFrom = ctypes.cast(from_buf, ctypes.c_wchar_p)
-        op_struct.pTo = ctypes.cast(to_buf, ctypes.c_wchar_p)
-        op_struct.fFlags = FOF_SIMPLEPROGRESS
-        op_struct.lpszProgressTitle = "正在處理檔案..."
-
-        result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op_struct))
-        if result != 0 and not op_struct.fAnyOperationsAborted:
-            QMessageBox.warning(self, "拖曳作業失敗", f"Windows 檔案作業失敗，錯誤碼: {result}")
-        self._notify_search_refresh_delayed(valid_sources, target_dir)
+        """以 Windows shell 搬移或複製拖進來的檔案。"""
+        target_dir, sources = shell_ops.plan_move_or_copy(src_paths, target_dir)
+        outcome = shell_ops.move_or_copy(int(self.winId()), sources, target_dir, op)
+        if outcome.code != 0 and not outcome.aborted:
+            QMessageBox.warning(self, "拖曳作業失敗",
+                                f"Windows 檔案作業失敗，錯誤碼: {outcome.code}")
+        self._notify_search_refresh_delayed(sources, target_dir)
 
     def _notify_search_refresh_delayed(self, src_paths=None, target_dir=""):
         wnd = self.window()

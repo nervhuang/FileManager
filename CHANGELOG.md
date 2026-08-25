@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-26
+- Fix left-button drag-and-drop silently failing to move or copy anything
+  - Drop sources come from `QUrl.toLocalFile()`, which on Windows returns forward slashes (`D:/a/b.txt`). `SHFileOperationW` does not accept those: measured directly, it returns error 183 and leaves the file where it was
+  - The main window's `_perform_file_op` normalised its paths; `views._apply_drop_operation` did not. The two are otherwise identical line for line — duplicated code that drifted apart, and the half without the fix is the half that runs on every left-button drop
+  - Found while surveying the file-operations domain before extracting it: the two implementations were diffed against each other and the only difference was the missing `os.path.normpath`
+  - The regression test drops a file using Qt-style forward-slash paths and asserts it actually moved. It also stubs out `QMessageBox.warning`, which is modal — without that the failing case hangs the test run instead of failing it
+
 ## 2026-08-24
 - Survive a malformed `config.ini` instead of refusing to start
   - `configparser`'s `fallback=` only applies when the key is *absent*. A key that is present but holds a value of the wrong type — a hand-edited file, a truncated write — makes `getint` / `getboolean` raise, `load_config` aborts, and the application will not open at all
