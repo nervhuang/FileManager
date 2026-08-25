@@ -1,8 +1,20 @@
 # 檔案操作域
 
-目標位置 `app/fileops/`。現況全部在 [`app/file_manager.py`](../../app/file_manager.py)
-（約 25 個方法，是拆分工作量最大的一塊）＋ [`app/views.py`](../../app/views.py) 的
-`_ShellDropMixin`。
+[`app/fileops/`](../../app/fileops/) 收下所有原生呼叫；編排仍在
+[`app/file_manager.py`](../../app/file_manager.py) 與 [`app/views.py`](../../app/views.py)
+的 `_ShellDropMixin`。
+
+| 檔案 | 依賴 Qt | 職責 |
+|---|---|---|
+| `shell.py` | 否 | `SHFileOperationW`（搬移／複製／回收筒）、原生右鍵選單、右鍵拖放、建立捷徑 |
+| `drag_menu.py` | 是 | `IDropTarget` 不可用時的後備選單 |
+
+`shell.py` 只認路徑與視窗代號（hwnd），成功與否用回傳值表達。訊息呈現與後續
+刷新都留在呼叫端——同一個失敗在主視窗與在拖放時的措辭不同，要刷新的東西也不同。
+
+**兩個面板不再各有一份實作。** `SHFILEOPSTRUCTW` 曾經被定義三次，
+建立捷徑、右鍵拖放、後備選單也各有兩份。重複的程式碼分頭演化，FOP-15a 記的
+那個 bug 就是這樣來的。
 
 **這一域大部分行為在 CI 上驗不了**：Windows shell COM、原生右鍵選單、右鍵拖放、
 回收筒，全部需要真實 shell。凡是 **[手動]** 的條文，自動測試只能覆蓋路徑計算與前置判斷，
@@ -121,9 +133,10 @@ Qt 給的路徑是正斜線：`QUrl.toLocalFile()` 與 `QFileSystemModel.filePat
 
 ---
 
-## 拆分注意
+## 尚未完成的部分
 
-- 本域是唯一大量使用 `ctypes` / `pywin32` 的地方。拆分後 shell 呼叫集中在
-  `app/fileops/shell.py`，其餘邏輯（路徑計算、選取解析、衝突判定）保持純函式且可測。
-- 這條界線就是「CI 測得到」與「只能手動驗收」的分界線，愈多邏輯落在純函式那側愈好。
-- `_ShellDropMixin` 目前混在 `views.py` 裡，應隨本域移走。
+- `_ShellDropMixin` 還在 `views.py` 裡。它是拖放的 Qt 事件處理，應隨本域移走。
+- 剪貼簿、選取解析、重新命名的衝突判定仍在外殼裡。其中能算成純函式的
+  （路徑正規化、衝突判定）都該像 `plan_move_or_copy` 一樣抽出來——
+  那條界線就是「CI 測得到」與「只能手動驗收」的分界線，落在純函式那側的愈多愈好。
+- `file_manager.py` 與 `views.py` 現在都不再匯入 `ctypes` 或 `pywin32`。

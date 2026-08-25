@@ -1,97 +1,35 @@
 import os
-import ctypes
-import ctypes.wintypes as wt
 import traceback
 
-from PyQt5.QtWidgets import QTreeView, QApplication, QMessageBox, QMenu
+from PyQt5.QtWidgets import QTreeView, QApplication, QMessageBox
 from PyQt5.QtCore import Qt, QItemSelection, QItemSelectionModel, QMimeData, QUrl, QTimer, QPersistentModelIndex
-from PyQt5.QtGui import QDrag, QPixmap, QPainter, QColor, QIcon, QFont
+from PyQt5.QtGui import QDrag, QPixmap, QPainter, QColor, QIcon
 
-from .fileops import shell as shell_ops
+from .fileops import drag_menu, shell as shell_ops
 
 
 class _ShellDropMixin:
     """共用的 Windows Shell 拖放方法，供 SearchListView 與 FileListView 繼承使用。"""
 
     def _shell_right_drag_drop(self, src_paths, target_dir, event):
-        """呼叫 Windows Shell IDropTarget::Drop(MK_RBUTTON) 顯示原生右鍵拖曳選單。
-        Shell 自動顯示選單、執行操作並回傳結果。
-        失敗時 fallback 到符合 Windows 樣式的 Qt 選單。
-        回傳 True 表示已完成（含使用者選取後執行），False 表示取消。"""
+        """右鍵拖放：交給 Shell 顯示原生選單並執行。失敗時退回自訂 Qt 選單。"""
+        gpos = self.mapToGlobal(event.pos())
         try:
-            from win32com.shell import shell
-            import pythoncom
-
-            pythoncom.CoInitialize()
-            try:
-                hwnd = int(self.winId())
-                desktop = shell.SHGetDesktopFolder()
-
-                src_parent = os.path.normpath(os.path.dirname(os.path.abspath(src_paths[0])))
-                src_parent_pidl = shell.SHParseDisplayName(src_parent, 0)[0]
-                src_sf = desktop.BindToObject(src_parent_pidl, None, shell.IID_IShellFolder)
-
-                child_pidls = []
-                for p in src_paths:
-                    r = src_sf.ParseDisplayName(hwnd, None, os.path.basename(p))
-                    child_pidls.append(r[1])
-
-                data_obj = src_sf.GetUIObjectOf(
-                    hwnd, child_pidls, pythoncom.IID_IDataObject, 0
-                )[1]
-
-                tdir = os.path.normpath(target_dir)
-                tparent = os.path.dirname(tdir)
-                tname = os.path.basename(tdir)
-                tparent_pidl = shell.SHParseDisplayName(tparent, 0)[0]
-                tparent_sf = desktop.BindToObject(tparent_pidl, None, shell.IID_IShellFolder)
-                tdir_pidl = tparent_sf.ParseDisplayName(hwnd, None, tname)[1]
-
-                drop_target = tparent_sf.GetUIObjectOf(
-                    hwnd, [tdir_pidl], pythoncom.IID_IDropTarget, 0
-                )[1]
-
-                MK_RBUTTON = 2
-                DROPEFFECT_NONE = 0
-                DROPEFFECT_ALL = 7
-
-                gpos = self.viewport().mapToGlobal(event.pos())
-                pt = (gpos.x(), gpos.y())
-
-                drop_target.DragEnter(data_obj, MK_RBUTTON, pt, DROPEFFECT_ALL)
-                result_effect = drop_target.Drop(data_obj, MK_RBUTTON, pt, DROPEFFECT_ALL)
-                return result_effect != DROPEFFECT_NONE
-            finally:
-                pythoncom.CoUninitialize()
+            return shell_ops.right_drag_drop(int(self.winId()), src_paths, target_dir,
+                                             gpos.x(), gpos.y())
         except Exception:
             traceback.print_exc()
             return self._fallback_right_drag_menu(src_paths, target_dir, event)
 
     def _fallback_right_drag_menu(self, src_paths, target_dir, event):
-        """Shell IDropTarget 不可用時，以符合 Windows 檔案總管風格的 Qt 選單處理右鍵拖曳。"""
-        menu = QMenu(self)
-
-        font_bold = QFont(menu.font())
-        font_bold.setBold(True)
-
-        act_move = menu.addAction("移動到這裡(&M)")
-        act_move.setFont(font_bold)
-        act_copy = menu.addAction("複製到這裡(&C)")
-        act_link = menu.addAction("建立捷徑到這裡(&S)")
-        menu.addSeparator()
-        menu.addAction("取消")
-
-        gpos = self.viewport().mapToGlobal(event.pos())
-        chosen = menu.exec_(gpos)
-
-        if chosen == act_move:
-            self._apply_drop_operation(src_paths, target_dir, "move")
-            return True
-        if chosen == act_copy:
-            self._apply_drop_operation(src_paths, target_dir, "copy")
-            return True
-        if chosen == act_link:
+        """Shell IDropTarget 不可用時的後備 Qt 選單。"""
+        action = drag_menu.ask_right_drag_action(
+            self, self.viewport().mapToGlobal(event.pos()))
+        if action == drag_menu.LINK:
             self._create_shortcuts(src_paths, target_dir)
+            return True
+        if action is not drag_menu.CANCELLED:
+            self._apply_drop_operation(src_paths, target_dir, action)
             return True
         return False
 

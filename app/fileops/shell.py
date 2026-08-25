@@ -146,3 +146,129 @@ def delete_to_recycle_bin(hwnd, paths):
 
     code = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
     return Outcome(True, code, bool(op.fAnyOperationsAborted))
+
+
+# show_context_menu 的三種結果。
+NOTHING_CHOSEN = None
+CHOSE_RENAME = 'rename'          # 使用者選了「重新命名」，但**沒有**執行
+INVOKED = 'invoked'              # 已執行使用者選的命令
+
+
+def show_context_menu(hwnd, paths, x, y):
+    """顯示 Windows 原生的右鍵選單（與檔案總管完全相同的那一份）。
+
+    回傳 NOTHING_CHOSEN / CHOSE_RENAME / INVOKED。Qt 端的後續動作（重新命名、
+    延遲刷新）留給呼叫端——這一層不認得 Qt。
+
+    **rename 不由這裡執行。** Shell 的 InvokeCommand("rename") 會送 WM_CLOSE 給
+    hwnd，把 Qt 主視窗關掉。所以偵測到 rename verb 就回報，讓呼叫端改用自己的
+    F2 重新命名流程（docs/spec/fileops.md 的 FOP-20）。
+    """
+    from win32com.shell import shell, shellcon
+    import win32con
+    import win32gui
+    import pythoncom
+
+    pythoncom.CoInitialize()
+    try:
+        # GetUIObjectOf 要求所有項目同一個父目錄，因此依第一個路徑的父目錄分組。
+        parent_dir = os.path.normpath(os.path.dirname(os.path.abspath(paths[0])))
+        norm_parent = os.path.normcase(parent_dir)
+        same_parent = [
+            p for p in paths
+            if os.path.normcase(
+                os.path.normpath(os.path.dirname(os.path.abspath(p)))
+            ) == norm_parent
+        ]
+
+        desktop = shell.SHGetDesktopFolder()
+        # SHParseDisplayName 在這個 pywin32 版本只接受兩個參數：(name, sfgaoMask)
+        parent_pidl = shell.SHParseDisplayName(parent_dir, 0)[0]
+        # BindToObject 的 pbc 傳 None 代表 NULL
+        parent_sf = desktop.BindToObject(parent_pidl, None, shell.IID_IShellFolder)
+
+        # ParseDisplayName 回傳 (eaten, pidl, attrs)，取 index 1
+        child_pidls = [parent_sf.ParseDisplayName(hwnd, None, os.path.basename(p))[1]
+                       for p in same_parent]
+
+        # GetUIObjectOf 回傳 (reserved, IContextMenu)，取 index 1
+        icm = parent_sf.GetUIObjectOf(hwnd, child_pidls, shell.IID_IContextMenu, 0)[1]
+
+        hmenu = win32gui.CreatePopupMenu()
+        icm.QueryContextMenu(hmenu, 0, 1, 0x7FFF,
+                             shellcon.CMF_EXPLORE | shellcon.CMF_CANRENAME)
+        try:
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+
+        cmd = win32gui.TrackPopupMenu(
+            hmenu,
+            win32con.TPM_LEFTALIGN | win32con.TPM_RIGHTBUTTON | win32con.TPM_RETURNCMD,
+            x, y, 0, hwnd, None)
+        win32gui.PostMessage(hwnd, win32con.WM_NULL, 0, 0)
+        win32gui.DestroyMenu(hmenu)
+
+        if cmd <= 0:
+            return NOTHING_CHOSEN
+
+        try:
+            verb = icm.GetCommandString(cmd - 1, shellcon.GCS_VERBW)
+        except Exception:
+            verb = ''
+        if verb.lower() == 'rename':
+            return CHOSE_RENAME
+
+        icm.InvokeCommand((0, hwnd, cmd - 1, None, None, win32con.SW_SHOWNORMAL, 0, None))
+        return INVOKED
+    finally:
+        pythoncom.CoUninitialize()
+
+
+# IDropTarget::Drop 用的滑鼠鍵與拖放效果旗標。
+MK_RBUTTON = 2
+DROPEFFECT_NONE = 0
+DROPEFFECT_ALL = 7
+
+
+def right_drag_drop(hwnd, src_paths, target_dir, screen_x, screen_y):
+    """以 Shell 的 `IDropTarget::Drop(MK_RBUTTON)` 模擬右鍵拖放。
+
+    Shell 會自己跳出原生選單（移動／複製／建立捷徑／取消）並執行使用者選的動作，
+    我們不必自己畫那個選單，也不必自己判斷該做什麼。
+
+    回傳 True 代表已完成，False 代表使用者取消。失敗時直接拋出——呼叫端各自有
+    自己的後備 Qt 選單（docs/spec/fileops.md 的 FOP-16、FOP-17）。
+
+    座標要的是**螢幕座標**，不是 viewport 座標。呼叫端各自的 viewport 不同，
+    換算留在那一側。
+    """
+    from win32com.shell import shell
+    import pythoncom
+
+    pythoncom.CoInitialize()
+    try:
+        desktop = shell.SHGetDesktopFolder()
+
+        # 來源 IDataObject
+        src_parent = os.path.normpath(os.path.dirname(os.path.abspath(src_paths[0])))
+        src_parent_pidl = shell.SHParseDisplayName(src_parent, 0)[0]
+        src_sf = desktop.BindToObject(src_parent_pidl, None, shell.IID_IShellFolder)
+        child_pidls = [src_sf.ParseDisplayName(hwnd, None, os.path.basename(p))[1]
+                       for p in src_paths]
+        data_obj = src_sf.GetUIObjectOf(
+            hwnd, child_pidls, pythoncom.IID_IDataObject, 0)[1]
+
+        # 目標資料夾的 IDropTarget
+        tdir = os.path.normpath(target_dir)
+        tparent_pidl = shell.SHParseDisplayName(os.path.dirname(tdir), 0)[0]
+        tparent_sf = desktop.BindToObject(tparent_pidl, None, shell.IID_IShellFolder)
+        tdir_pidl = tparent_sf.ParseDisplayName(hwnd, None, os.path.basename(tdir))[1]
+        drop_target = tparent_sf.GetUIObjectOf(
+            hwnd, [tdir_pidl], pythoncom.IID_IDropTarget, 0)[1]
+
+        point = (screen_x, screen_y)
+        drop_target.DragEnter(data_obj, MK_RBUTTON, point, DROPEFFECT_ALL)
+        return drop_target.Drop(data_obj, MK_RBUTTON, point, DROPEFFECT_ALL) != DROPEFFECT_NONE
+    finally:
+        pythoncom.CoUninitialize()

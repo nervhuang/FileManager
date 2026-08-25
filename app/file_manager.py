@@ -24,7 +24,7 @@ from .models import FileSystemSortProxyModel
 from .search.models import SearchResultsModel, SearchSortProxyModel
 from .views import SearchListView, FileListView
 from . import columns
-from .fileops import shell as shell_ops
+from .fileops import drag_menu, shell as shell_ops
 from .tabs.bar import PathTabBar
 from .tabs.breadcrumb import BreadcrumbBar
 
@@ -1150,83 +1150,14 @@ class FileManager(QMainWindow):
             menu.exec_(global_pos)
 
     def _invoke_shell_context_menu(self, hwnd, paths, x, y, after_fn=None):
-        """Show the Windows Shell context menu (identical to Explorer right-click)."""
-        from win32com.shell import shell, shellcon
-        import win32gui
-        import win32con
-        import pythoncom
-
-        pythoncom.CoInitialize()
-        do_rename = False
-        try:
-            # 依第一個路徑的父目錄分組（GetUIObjectOf 要求相同父目錄）
-            parent_dir = os.path.normpath(os.path.dirname(os.path.abspath(paths[0])))
-            norm_parent = os.path.normcase(parent_dir)
-            same_parent = [
-                p for p in paths
-                if os.path.normcase(
-                    os.path.normpath(os.path.dirname(os.path.abspath(p)))
-                ) == norm_parent
-            ]
-
-            # 取得桌面 IShellFolder
-            desktop = shell.SHGetDesktopFolder()
-
-            # SHParseDisplayName 在此 pywin32 版本只接受 2 個參數: (name, sfgaoMask)
-            parent_pidl = shell.SHParseDisplayName(parent_dir, 0)[0]
-
-            # BindToObject: pbc 用 None 代表 NULL
-            parent_sf = desktop.BindToObject(parent_pidl, None, shell.IID_IShellFolder)
-
-            # 取得每個檔案相對於父目錄的子 PIDL
-            # ParseDisplayName 回傳 (eaten, pidl, attrs)，取 index 1 為 PIDL
-            child_pidls = []
-            for p in same_parent:
-                result = parent_sf.ParseDisplayName(hwnd, None, os.path.basename(p))
-                child_pidls.append(result[1])
-
-            # GetUIObjectOf 回傳 (reserved, IContextMenu)，取 index 1 為實際介面
-            icm = parent_sf.GetUIObjectOf(
-                hwnd, child_pidls, shell.IID_IContextMenu, 0
-            )[1]
-
-            # 建立彈出選單並填入 Shell 命令
-            hmenu = win32gui.CreatePopupMenu()
-            icm.QueryContextMenu(
-                hmenu, 0, 1, 0x7FFF,
-                shellcon.CMF_EXPLORE | shellcon.CMF_CANRENAME
-            )
-
-            try:
-                win32gui.SetForegroundWindow(hwnd)
-            except Exception:
-                pass
-
-            cmd = win32gui.TrackPopupMenu(
-                hmenu,
-                win32con.TPM_LEFTALIGN | win32con.TPM_RIGHTBUTTON | win32con.TPM_RETURNCMD,
-                x, y, 0, hwnd, None
-            )
-            win32gui.PostMessage(hwnd, win32con.WM_NULL, 0, 0)
-            win32gui.DestroyMenu(hmenu)
-
-            if cmd > 0:
-                # 偵測 rename verb：Shell InvokeCommand("rename") 會傳送 WM_CLOSE 給 hwnd，
-                # 導致 Qt 主視窗關閉。改為觸發我們自己的 F2 重命名。
-                try:
-                    verb = icm.GetCommandString(cmd - 1, shellcon.GCS_VERBW)
-                except Exception:
-                    verb = ""
-                if verb.lower() == "rename":
-                    do_rename = True
-                else:
-                    ci = (0, hwnd, cmd - 1, None, None, win32con.SW_SHOWNORMAL, 0, None)
-                    icm.InvokeCommand(ci)
-                    QTimer.singleShot(800, after_fn if after_fn is not None else self._refresh_search_results_existence)
-        finally:
-            pythoncom.CoUninitialize()
-        if do_rename:
+        """顯示 Windows 原生右鍵選單，並接手它做不了的後續動作。"""
+        outcome = shell_ops.show_context_menu(hwnd, paths, x, y)
+        if outcome == shell_ops.CHOSE_RENAME:
+            # Shell 的 rename 會送 WM_CLOSE 關掉主視窗，改走自己的 F2 流程。
             QTimer.singleShot(0, self._rename_selected_focused_item)
+        elif outcome == shell_ops.INVOKED:
+            QTimer.singleShot(800, after_fn if after_fn is not None
+                              else self._refresh_search_results_existence)
 
     def _refresh_search_results_existence(self):
         """移除搜尋結果中已不存在的檔案列。"""
@@ -1262,83 +1193,24 @@ class FileManager(QMainWindow):
         return ""
 
     def _shell_right_drag_drop_to(self, src_paths, target_dir, viewport_pos):
-        """從中間面板 viewport 座標呼叫 Shell IDropTarget::Drop(MK_RBUTTON)。
-        顯示原生右鍵拖曳選單，失敗時 fallback 到自訂 Qt 選單。
-        回傳 True 表示已完成（含使用者選擇後執行），False 表示取消。"""
+        """右鍵拖放：交給 Shell 顯示原生選單並執行。失敗時退回自訂 Qt 選單。"""
+        gpos = self.listView.viewport().mapToGlobal(viewport_pos)
         try:
-            from win32com.shell import shell
-            import pythoncom
-
-            pythoncom.CoInitialize()
-            try:
-                hwnd = int(self.winId())
-                desktop = shell.SHGetDesktopFolder()
-
-                # --- 建立來源 IDataObject ---
-                src_parent = os.path.normpath(os.path.dirname(os.path.abspath(src_paths[0])))
-                src_parent_pidl = shell.SHParseDisplayName(src_parent, 0)[0]
-                src_sf = desktop.BindToObject(src_parent_pidl, None, shell.IID_IShellFolder)
-                child_pidls = []
-                for p in src_paths:
-                    r = src_sf.ParseDisplayName(hwnd, None, os.path.basename(p))
-                    child_pidls.append(r[1])
-                data_obj = src_sf.GetUIObjectOf(
-                    hwnd, child_pidls, pythoncom.IID_IDataObject, 0
-                )[1]
-
-                # --- 取得目標資料夾的 IDropTarget ---
-                tdir = os.path.normpath(target_dir)
-                tparent = os.path.dirname(tdir)
-                tname = os.path.basename(tdir)
-                tparent_pidl = shell.SHParseDisplayName(tparent, 0)[0]
-                tparent_sf = desktop.BindToObject(tparent_pidl, None, shell.IID_IShellFolder)
-                tdir_pidl = tparent_sf.ParseDisplayName(hwnd, None, tname)[1]
-                drop_target = tparent_sf.GetUIObjectOf(
-                    hwnd, [tdir_pidl], pythoncom.IID_IDropTarget, 0
-                )[1]
-
-                # --- 模擬右鍵拖放 ---
-                MK_RBUTTON = 2
-                DROPEFFECT_NONE = 0
-                DROPEFFECT_ALL = 7
-
-                gpos = self.listView.viewport().mapToGlobal(viewport_pos)
-                pt = (gpos.x(), gpos.y())
-
-                drop_target.DragEnter(data_obj, MK_RBUTTON, pt, DROPEFFECT_ALL)
-                result_effect = drop_target.Drop(data_obj, MK_RBUTTON, pt, DROPEFFECT_ALL)
-                return result_effect != DROPEFFECT_NONE
-            finally:
-                pythoncom.CoUninitialize()
+            return shell_ops.right_drag_drop(int(self.winId()), src_paths, target_dir,
+                                             gpos.x(), gpos.y())
         except Exception:
             traceback.print_exc()
-            # COM 路徑失敗：fallback 到 Qt 選單
             return self._fallback_right_drag_menu_fm(src_paths, target_dir, viewport_pos)
 
     def _fallback_right_drag_menu_fm(self, src_paths, target_dir, viewport_pos):
-        """Shell IDropTarget 不可用時，以符合 Windows 風格的 Qt 選單處理右鍵拖曳。"""
-        menu = QMenu(self)
-        font_bold = QFont(menu.font())
-        font_bold.setBold(True)
-
-        act_move = menu.addAction("移動到這裡(&M)")
-        act_move.setFont(font_bold)
-        act_copy = menu.addAction("複製到這裡(&C)")
-        act_link = menu.addAction("建立捷徑到這裡(&S)")
-        menu.addSeparator()
-        menu.addAction("取消")
-
-        gpos = self.listView.viewport().mapToGlobal(viewport_pos)
-        chosen = menu.exec_(gpos)
-
-        if chosen == act_move:
-            self._perform_file_op(src_paths, target_dir, "move")
-            return True
-        if chosen == act_copy:
-            self._perform_file_op(src_paths, target_dir, "copy")
-            return True
-        if chosen == act_link:
+        """Shell IDropTarget 不可用時的後備 Qt 選單。"""
+        action = drag_menu.ask_right_drag_action(
+            self, self.listView.viewport().mapToGlobal(viewport_pos))
+        if action == drag_menu.LINK:
             self._create_shortcuts_fm(src_paths, target_dir)
+            return True
+        if action is not drag_menu.CANCELLED:
+            self._perform_file_op(src_paths, target_dir, action)
             return True
         return False
 
