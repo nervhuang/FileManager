@@ -7,7 +7,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QStandardItem
 from PyQt5.QtWidgets import QTreeView
 
-from app.models import SearchResultsModel, SearchSortProxyModel
+from app.search.models import SearchResultsModel, SearchSortProxyModel
 
 pytestmark = pytest.mark.gui
 

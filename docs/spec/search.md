@@ -1,9 +1,20 @@
 # 搜尋域
 
-目標位置 `app/search/`。現況：[`app/search_query.py`](../../app/search_query.py)（純函式，
-已抽出，不依賴 Qt）＋ [`app/everything_sdk.py`](../../app/everything_sdk.py) ＋
-[`app/models.py`](../../app/models.py) 的搜尋模型與排序 proxy ＋
-[`app/file_manager.py`](../../app/file_manager.py) 裡約 20 個方法。
+[`app/search/`](../../app/search/)，分兩層。
+
+| 檔案 | 依賴 Qt | 職責 |
+|---|---|---|
+| `query.py` | 否 | 關鍵字解析、查詢組裝、比對、排除、`extract_keywords` |
+| `everything.py` | 否 | Everything 的 IPC 介面 |
+| `models.py` | 是 | 結果模型與排序 proxy |
+| `results.py` | 否 | 結果呈現（`format_size`）|
+
+不依賴 Qt 的那兩個是**服務層**：GUI、Hermes MCP server、CLI 是三個獨立進程，
+其中兩個沒有 QApplication，三者搜出來的結果必須一致。更新檢查器的掃描器也走
+這一層找本機藏書。
+
+搜尋面板的 UI 編排（`execute_search_command`、`update_search_results`、
+結果重新整理）仍在 [`app/file_manager.py`](../../app/file_manager.py)，尚未搬。
 
 **關鍵約束**：搜尋邏輯必須是純函式、不依賴 Qt。GUI、MCP server、CLI 是三個獨立進程，
 其中兩個沒有 QApplication，三者搜出來的結果必須完全一致。
@@ -110,10 +121,11 @@
 
 ---
 
-## 拆分注意
+## 尚未完成的部分
 
-- `search_query.py` 已經是正確形態，拆分時原樣移入 `app/search/query.py`。
-- `everything_sdk` **每執行緒各自持有實例**，否則視窗類別名稱會衝突。
-  拆分後這條約束要在測試中明示。
+- 搜尋面板的 UI 編排還在外殼裡：`execute_search_command`（頁籤資料與 MRU 歷史）、
+  `_do_search`、`update_search_results`（59 行的建列邏輯）、結果重新整理。
+- `everything` **每執行緒各自持有實例**，否則視窗類別名稱會衝突（INT-19）。
+  這條約束目前只有註解，沒有測試。
 - Everything 本體在 CI 上不存在。搜尋引擎必須是可注入的介面，
   單元測試餵假引擎；真實 Everything 的行為列為 **[手動]**。

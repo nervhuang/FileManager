@@ -3,7 +3,7 @@
   "limit": 600,
   "files": {
     "app/authors_panel.py": 667,
-    "app/file_manager.py": 2513,
+    "app/file_manager.py": 2447,
     "app/views.py": 705,
     "app/widgets.py": 858
   }

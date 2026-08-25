@@ -42,8 +42,13 @@ Windows 桌面檔案管理程式（PyQt5 + Everything 索引）。
 2. **不得再往 `app/file_manager.py` 加方法。** 它是外殼，只准做三件事：
    建立面板、把訊號接到槽、管理版面。任何牽涉某個域商業規則的 `if`
    都代表那段程式碼放錯地方。
-3. **域與域不得互相 import。** 跨域互動一律走 Qt 訊號，由外殼接線。
-   既有正確範例：`AuthorsPanel.search_requested`、`CheckerPanel.detail_requested`。
+3. **域與域不得互相 import 對方的 UI。** 面板之間的互動一律走 Qt 訊號，
+   由外殼接線。既有正確範例：`AuthorsPanel.search_requested`、
+   `CheckerPanel.detail_requested`。
+   不依賴 Qt 的**服務層**可以被別的域直接呼叫（更新檢查器的掃描器用
+   `search.query.run_search` 找本機藏書），但方向必須無環，而且只能往
+   服務層呼叫，不能反過來。掃描器跑在背景執行緒、沒有 Qt 事件圈，
+   硬要它走訊號只會把簡單的事弄複雜。
 4. **每個域只讀寫屬於自己的設定鍵。**
 5. **單檔上限 600 行。** 既有五個超標檔記在 `.line-limit-baseline.json`，
    只准變短。拆小之後跑 `python scripts/check_line_limits.py --update`。

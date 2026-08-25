@@ -219,3 +219,37 @@ def run_search(everything, search_command, exclude_norm=(), under_dir=None, ext=
         'capped': capped,
     }
     return page, info
+
+
+# 括號成對：全形與 CJK 的各式括號都要認得，使用者的檔名裡什麼都有。
+OPEN_BRACKETS = "([{（［｛【〔「『〈《〖｟"
+CLOSE_BRACKETS = ")]}）］｝】〕」』〉》〗｠"
+
+
+def extract_keywords(file_name):
+    """從檔名取出**括號內**的文字，作為自動搜尋的關鍵字（SRCH-8）。
+
+    同人誌的檔名慣例是 `[團體 (作者)] 標題 [語言]`，真正有用的檢索詞都在括號裡。
+    巢狀括號在遇到內層開括號時把外層已累積的內容先收下來，
+    `[團體 (作者)]` 因此會得到「團體」與「作者」兩個關鍵字。
+    """
+    keywords = []
+    stack = []
+    is_inside_brackets = False
+
+    for char in file_name:
+        if char in OPEN_BRACKETS:
+            if not is_inside_brackets:
+                is_inside_brackets = True
+            elif stack:
+                keywords.append(''.join(stack))
+                stack = []
+        elif char in CLOSE_BRACKETS:
+            is_inside_brackets = False
+            if stack:
+                keywords.append(''.join(stack))
+            stack = []
+        elif is_inside_brackets:
+            stack.append(char)
+
+    return [keyword.strip() for keyword in keywords if keyword.strip()]

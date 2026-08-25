@@ -16,8 +16,8 @@ from PyQt5.QtCore import Qt, QItemSelectionModel
 from PyQt5.QtGui import QStandardItem
 from PyQt5.QtWidgets import QTreeView
 
-from app.everything_sdk import SearchResult
-from app.models import SearchResultsModel, SearchSortProxyModel
+from app.search.everything import SearchResult
+from app.search.models import SearchResultsModel, SearchSortProxyModel
 
 pytestmark = pytest.mark.gui
 

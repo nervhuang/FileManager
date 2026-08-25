@@ -17,11 +17,13 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QDir, Qt, QSize, QFileInfo, QEvent, QTimer, QFileSystemWatcher, QItemSelectionModel, QMimeData, QUrl
 from PyQt5.QtGui import QKeySequence, QIcon, QFont, QStandardItem
 
-from . import font_scaling, gui_bridge, icons, paths, search_query, settings
+from . import font_scaling, gui_bridge, icons, paths, settings
+from .search import query as search_query, results as search_results
 from .authors_panel import AuthorsPanel
 from .checker.panel import CheckerPanel, make_checker_icon
-from .everything_sdk import EverythingSDK
-from .models import SearchSortProxyModel, SearchResultsModel, FileSystemSortProxyModel
+from .search.everything import EverythingSDK
+from .models import FileSystemSortProxyModel
+from .search.models import SearchResultsModel, SearchSortProxyModel
 from .views import SearchListView, FileListView
 from .widgets import PathTabBar, BreadcrumbBar, build_column_visibility_menu
 
@@ -522,7 +524,7 @@ class FileManager(QMainWindow):
 
         if not self.file_proxy.isDir(index):
             file_name = self.file_proxy.fileName(index)
-            keywords = self.extract_keywords(file_name)
+            keywords = search_query.extract_keywords(file_name)
             global_keywords = keywords
 
             if keywords:
@@ -611,33 +613,6 @@ class FileManager(QMainWindow):
     # 全形括弧（（）［］｛｝）、CJK 角括弧（【】〔〕「」『』〈〉《》）在檔名中
     # 與半形括弧同樣常用來標註，原本只認半形 ([{ )]}，導致全形括弧內的文字
     # （如「【tsf-saeki】」）點擊時無法被擷取為搜尋關鍵字。
-    _OPEN_BRACKETS = "([{（［｛【〔「『〈《〖｟"
-    _CLOSE_BRACKETS = ")]}）］｝】〕」』〉》〗｠"
-
-    def extract_keywords(self, file_name):
-        # 自定义解析文件名以提取多个参数，只提取括号内的文字
-        keywords = []
-        stack = []
-        is_inside_brackets = False
-
-        for char in file_name:
-            if char in self._OPEN_BRACKETS:
-                if not is_inside_brackets:
-                    is_inside_brackets = True
-                elif stack:
-                    keywords.append("".join(stack))
-                    stack = []
-            elif char in self._CLOSE_BRACKETS:
-                is_inside_brackets = False
-                if stack:
-                    keywords.append("".join(stack))
-                stack = []
-            elif is_inside_brackets:
-                stack.append(char)
-
-        keywords = [keyword.strip() for keyword in keywords if keyword.strip()]
-        return keywords
-
     def _open_exclude_dialog(self):
         dialog = ExcludeSettingsDialog(self._exclude_enabled, self._exclude_dirs, self)
         if dialog.exec_() == QDialog.Accepted:
@@ -818,40 +793,9 @@ class FileManager(QMainWindow):
         # 3. 執行實際查詢
         self._do_search(search_command)
 
-    # 以下搜尋解析邏輯的實作已移至 app/search_query.py，供 GUI 與 Hermes MCP
-    # server（獨立進程、無 Qt）共用；這裡保留同名薄包裝，呼叫點不需改動。
-
-    def _normalize_search_command(self, search_command):
-        return search_query.normalize_search_command(search_command)
-
-    def _split_search_terms(self, search_command):
-        return search_query.split_terms(search_command)
-
-    def _strip_search_term_quotes(self, term):
-        return search_query.strip_term_quotes(term)
-
-    def _normalize_plain_keyword_text(self, text):
-        return search_query.normalize_text(text)
-
-    def _plain_keyword_tokens(self, term):
-        return search_query.keyword_tokens(term)
-
-    def _build_plain_keyword_queries(self, term):
-        return search_query.build_queries(term)
-
-    def _path_matches_plain_keyword(self, path, term):
-        return search_query.path_matches(path, term)
-
-    def _is_plain_keyword_term(self, term):
-        return search_query.is_plain_keyword_term(term)
-
-    def _search_plain_keyword_terms(self, terms):
-        # 第二個回傳值是「Everything 端是否撈滿上限」，GUI 不使用
-        return search_query.search_plain_keyword_terms(self.everything, terms)[0]
-
     def _do_search(self, search_command):
         """只執行 Everything 查詢並更新展示，不修改頁籤資料或 combobox 歷史。復原搜尋用。"""
-        normalized_command = self._normalize_search_command(search_command)
+        normalized_command = search_query.normalize_search_command(search_command)
         if self.everything.is_available():
             results, _capped = search_query.query_everything(self.everything, search_command)
             self.update_search_results(results)
@@ -902,7 +846,7 @@ class FileManager(QMainWindow):
             date_item.setEditable(False)
             date_item.setData(mtime, Qt.UserRole)
 
-            size_str = '' if (is_dir or not size) else self._format_size(size)
+            size_str = '' if (is_dir or not size) else search_results.format_size(size)
 
             size_item = QStandardItem(size_str)
             size_item.setEditable(False)
@@ -941,16 +885,6 @@ class FileManager(QMainWindow):
             icon = self._search_icon_provider.icon(QFileInfo(filepath))
             self._search_icon_cache[cache_key] = icon
         return icon
-
-    def _format_size(self, size):
-        if size < 1024:
-            return f"{size} B"
-        elif size < 1024 * 1024:
-            return f"{size / 1024:.1f} KB"
-        elif size < 1024 * 1024 * 1024:
-            return f"{size / (1024 * 1024):.1f} MB"
-        else:
-            return f"{size / (1024 * 1024 * 1024):.1f} GB"
 
     def on_listView2_doubleClicked(self, index):
         source_index = self.search_proxy.mapToSource(index)

@@ -55,7 +55,7 @@ class ScanWorker(QThread):
 
     def run(self):
         from .. import authors_db
-        from ..everything_sdk import EverythingSDK
+        from ..search.everything import EverythingSDK
 
         try:
             # EverythingSDK 在建構時會建立一個訊息視窗，而視窗的訊息佇列屬於

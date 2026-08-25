@@ -21,8 +21,9 @@ from contextlib import closing
 
 from mcp.server import MCPServer
 
-from . import authors_db, gui_bridge, paths, search_query
-from .everything_sdk import EverythingSDK
+from . import authors_db, gui_bridge, paths
+from .search import query as search_query
+from .search.everything import EverythingSDK
 
 server = MCPServer(
     name='filemanager',

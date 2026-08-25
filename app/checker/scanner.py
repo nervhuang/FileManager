@@ -32,7 +32,8 @@ def _parse_posted(text):
 
 def everything_lookup(everything, exclude_norm=()):
     """回傳一個 local_lookup 函式，走與 authors-stats 相同的搜尋管線。"""
-    from .. import authors_db, search_query
+    from .. import authors_db
+    from ..search import query as search_query
 
     def lookup(entity):
         terms = authors_db.search_terms_for(entity)
