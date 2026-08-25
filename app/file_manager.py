@@ -3,9 +3,6 @@ import subprocess
 import os
 import ctypes
 import ctypes.wintypes as wt
-import base64
-import configparser
-import json
 import traceback
 from datetime import datetime
 
@@ -36,14 +33,6 @@ global_keywords = []
 # 路徑解析實作已移至 app/paths.py（不依賴 Qt，MCP server 也用同一份）。
 _bundle_root = paths.bundle_root
 _runtime_root = paths.runtime_root
-
-
-def _int_list(raw):
-    """把 config.ini 的 '460,150' 解析成 [460, 150]；壞掉就當沒設定。"""
-    try:
-        return [int(x) for x in (raw or '').split(',') if x.strip()]
-    except ValueError:
-        return []
 
 
 class ExcludeSettingsDialog(QDialog):
@@ -2220,7 +2209,7 @@ class FileManager(QMainWindow):
             return
         cache = self._col_width_cache.setdefault(key, {})
 
-        raw_widths = cfg.get('Columns', f'{key}_col_widths', fallback='')
+        raw_widths = cfg.get_str('Columns', f'{key}_col_widths')
         if raw_widths:
             try:
                 for i, w in enumerate(raw_widths.split(',')):
@@ -2231,19 +2220,20 @@ class FileManager(QMainWindow):
             except Exception:
                 pass
 
-        raw_hidden = cfg.get('Columns', f'{key}_col_hidden', fallback=None)
         hidden = set(self.DEFAULT_HIDDEN_COLUMNS.get(key, ()))
-        if raw_hidden is not None:
-            # 鍵存在但為空字串代表「全部顯示」，與鍵不存在（採用預設值）不同。
+        # 鍵存在但為空字串代表「全部顯示」，與鍵不存在（採用預設值）不同，
+        # 所以要問 has() 而不是看值是不是空的（SET-10）。
+        if cfg.has('Columns', f'{key}_col_hidden'):
+            raw_hidden = cfg.get_str('Columns', f'{key}_col_hidden')
             try:
                 hidden = {int(x) for x in raw_hidden.split(',') if x.strip()}
-            except Exception:
+            except ValueError:
                 pass
         hidden -= set(self.LOCKED_COLUMNS)
         for i in range(header.count()):
             view.setColumnHidden(i, i in hidden)
 
-        raw_order = cfg.get('Columns', f'{key}_col_order', fallback='')
+        raw_order = cfg.get_str('Columns', f'{key}_col_order')
         if raw_order:
             try:
                 for vi, li in enumerate(int(x) for x in raw_order.split(',')):
@@ -2279,115 +2269,83 @@ class FileManager(QMainWindow):
         return os.path.join(_runtime_root(), 'config.ini')
 
     def load_config(self):
-        """從 config.ini 讀取參數並還原狀態。"""
-        cfg = configparser.ConfigParser()
-        cfg.read(self._config_path(), encoding='utf-8')
+        """從 config.ini 還原狀態。
 
-        # 還原主視窗大小與狀態
-        saved_geometry = cfg.get('Layout', 'window_geometry', fallback='')
-        if saved_geometry:
-            try:
-                geometry_bytes = base64.b64decode(saved_geometry.encode('ascii'))
-                self.restoreGeometry(geometry_bytes)
-            except Exception:
-                pass
-        saved_window_state = cfg.get('Layout', 'window_state', fallback='normal')
-        if saved_window_state == 'maximized':
+        這裡只做編排：取值與型別轉換在 app/settings，套用到 widget 在這裡，
+        面板內部的版面由面板自己的 restore_* 負責。
+        """
+        cfg = settings.ConfigStore.load(self._config_path())
+
+        geometry = cfg.get_bytes('Layout', 'window_geometry')
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        window_state = cfg.get_str('Layout', 'window_state', 'normal')
+        if window_state == 'maximized':
             self.setWindowState(self.windowState() | Qt.WindowMaximized)
-        elif saved_window_state == 'fullscreen':
+        elif window_state == 'fullscreen':
             self.setWindowState(self.windowState() | Qt.WindowFullScreen)
 
-        # 還原字型大小
-        saved_font_size = settings.cfg_int(cfg, 'General', 'font_size', 10)
-        self._apply_font_size(max(6, min(saved_font_size, 72)))
+        self._apply_font_size(cfg.get_int('General', 'font_size', 10, minimum=6, maximum=72))
         self.update_status_bar()
 
-        # 還原排除目錄設定（須在還原頁籤觸發搜尋之前，過濾才會生效）
-        self._exclude_enabled = settings.cfg_bool(cfg, 'Exclude', 'enabled', False)
-        raw_exclude = cfg.get('Exclude', 'dirs', fallback='')
-        if raw_exclude:
-            try:
-                loaded = json.loads(raw_exclude)
-                self._exclude_dirs = [str(d) for d in loaded if d]
-            except Exception:
-                self._exclude_dirs = []
+        # 排除設定須在還原頁籤觸發搜尋之前就位，過濾才會生效
+        self._exclude_enabled = cfg.get_bool('Exclude', 'enabled', False)
+        excluded = cfg.get_json('Exclude', 'dirs', [])
+        self._exclude_dirs = ([str(d) for d in excluded if d]
+                              if isinstance(excluded, list) else [])
         self._apply_exclude_settings()
 
-        # 還原分割器大小
-        right_splitter_sizes = cfg.get('Layout', 'right_splitter_sizes', fallback='')
-        if right_splitter_sizes:
-            try:
-                self._right_splitter_sizes_by_orientation[Qt.Orientation.Horizontal] = [int(x) for x in right_splitter_sizes.split(',')]
-            except Exception:
-                pass
-        right_splitter_vertical_sizes = cfg.get('Layout', 'right_splitter_vertical_sizes', fallback='')
-        if right_splitter_vertical_sizes:
-            try:
-                self._right_splitter_sizes_by_orientation[Qt.Orientation.Vertical] = [int(x) for x in right_splitter_vertical_sizes.split(',')]
-            except Exception:
-                pass
-        right_splitter_orientation = cfg.get('Layout', 'right_splitter_orientation', fallback='horizontal').lower()
-        self._set_right_panel_layout(Qt.Orientation.Vertical if right_splitter_orientation == 'vertical' else Qt.Orientation.Horizontal)
+        # 兩種配置的分割尺寸各自保存。讀不到就沿用建構時的預設，不要覆蓋成空清單。
+        for orientation, option in (
+            (Qt.Orientation.Horizontal, 'right_splitter_sizes'),
+            (Qt.Orientation.Vertical, 'right_splitter_vertical_sizes'),
+        ):
+            sizes = cfg.get_int_list('Layout', option)
+            if sizes:
+                self._right_splitter_sizes_by_orientation[orientation] = sizes
+        orientation = cfg.get_str('Layout', 'right_splitter_orientation', 'horizontal').lower()
+        self._set_right_panel_layout(Qt.Orientation.Vertical if orientation == 'vertical'
+                                     else Qt.Orientation.Horizontal)
 
-        # 還原左側作者清單面板的顯示狀態與寬度
-        self._authors_panel_width = max(settings.cfg_int(cfg, 'Layout', 'authors_panel_width', 660), 80)
-        self._set_authors_panel_visible(settings.cfg_bool(cfg, 'Layout', 'authors_panel_visible', True))
+        self._authors_panel_width = cfg.get_int('Layout', 'authors_panel_width', 660, minimum=80)
+        self._set_authors_panel_visible(cfg.get_bool('Layout', 'authors_panel_visible', True))
 
-        # 還原右側更新檢查器面板：外層寬度與顯示與否由主視窗管，面板內部的
-        # splitter 與欄寬由面板自己還原（見 CheckerPanel.restore_layout）。
-        self._checker_panel_width = max(settings.cfg_int(cfg, 'Layout', 'checker_panel_width', 520), 80)
-        self._set_checker_panel_visible(settings.cfg_bool(cfg, 'Layout', 'checker_panel_visible', False))
+        # 更新檢查器：外層寬度與顯隱由主視窗管，面板內部的 splitter 與欄寬
+        # 由面板自己還原（見 CheckerPanel.restore_layout）。
+        self._checker_panel_width = cfg.get_int('Layout', 'checker_panel_width', 520, minimum=80)
+        self._set_checker_panel_visible(cfg.get_bool('Layout', 'checker_panel_visible', False))
         if self.checker_panel is not None:
             self.checker_panel.restore_layout(
-                split=_int_list(cfg.get('Layout', 'checker_split_sizes', fallback='')),
-                columns=_int_list(cfg.get('Layout', 'checker_col_widths', fallback='')))
+                split=cfg.get_int_list('Layout', 'checker_split_sizes'),
+                columns=cfg.get_int_list('Layout', 'checker_col_widths'))
 
-        # 還原兩個面板的欄位寬度、顯示與否，以及欄序
         for key, view in self._column_views():
             self._restore_columns(cfg, key, view)
 
-        # 還原中間 listView 排序方式
-        mid_sort_col = cfg.get('Sort', 'mid_sort_column', fallback='')
-        mid_sort_ord = cfg.get('Sort', 'mid_sort_order', fallback='')
-        if mid_sort_col and mid_sort_ord:
-            try:
-                col = int(mid_sort_col)
-                order = Qt.SortOrder.AscendingOrder if int(mid_sort_ord) == 0 else Qt.SortOrder.DescendingOrder
-                self.listView.sortByColumn(col, order)
-            except Exception:
-                pass
+        for key, view in (('mid', self.listView), ('right', self.listView2)):
+            column = cfg.get_int('Sort', f'{key}_sort_column', -1)
+            order = cfg.get_int('Sort', f'{key}_sort_order', -1)
+            if column >= 0 and order >= 0:
+                view.sortByColumn(column, Qt.SortOrder.AscendingOrder if order == 0
+                                  else Qt.SortOrder.DescendingOrder)
 
-        # 還原右側 listView2 排序方式
-        right_sort_col = cfg.get('Sort', 'right_sort_column', fallback='')
-        right_sort_ord = cfg.get('Sort', 'right_sort_order', fallback='')
-        if right_sort_col and right_sort_ord:
-            try:
-                col = int(right_sort_col)
-                order = Qt.SortOrder.AscendingOrder if int(right_sort_ord) == 0 else Qt.SortOrder.DescendingOrder
-                self.listView2.sortByColumn(col, order)
-            except Exception:
-                pass
-
-        # 還原兩個面板的頁籤資訊
         for key, tab_widget in (('mid', self.mid_tab_bar), ('right', self.right_tab_bar)):
-            raw = cfg.get('Tabs', f'{key}_tabs', fallback='')
-            current = settings.cfg_int(cfg, 'Tabs', f'{key}_tabs_current', 0)
-            if raw:
+            tabs = cfg.get_json('Tabs', f'{key}_tabs', None)
+            if isinstance(tabs, list) and tabs:
                 try:
-                    tabs = [(d, l) for d, l in json.loads(raw)]
-                    tab_widget.restore_tabs(tabs, current)
-                except Exception:
+                    tab_widget.restore_tabs([(d, l) for d, l in tabs],
+                                            cfg.get_int('Tabs', f'{key}_tabs_current', 0))
+                except (TypeError, ValueError):
                     pass
 
-        # 啟動時導覽至檔案面板當前頁籤的目錄（restore_tabs 不觸發 tab_switched）；
-        # 無有效路徑則顯示所有磁碟機。
+        # restore_tabs 不觸發 tab_switched，兩個面板的內容都得在這裡主動補上
+        # （見 docs/spec/settings.md 的 SET-12）。
         initial_dir = self.mid_tab_bar.current_data()
         if initial_dir and os.path.isdir(initial_dir):
             QTimer.singleShot(0, lambda d=initial_dir: self._navigate_to_path(d))
         else:
             QTimer.singleShot(0, self._show_all_drives)
 
-        # 啟動時主動執行右側當前頁籤的搜尋，補上 restore_tabs 不觸發 tab_switched 的缺口
         initial_keyword = self.right_tab_bar.current_data()
         if initial_keyword:
             self.right_info_combo.lineEdit().setText(initial_keyword)
@@ -2395,48 +2353,26 @@ class FileManager(QMainWindow):
 
         self._sync_breadcrumb(self.mid_tab_bar.current_data())
 
-        # 載入搜尋歷史至右側 combobox
-        raw_history = cfg.get('General', 'search_history', fallback='')
-        if raw_history:
-            try:
-                history = json.loads(raw_history)
-                self.right_info_combo.blockSignals(True)
-                for item in reversed(history):  # reversed 使最新的在頂
-                    self.right_info_combo.insertItem(0, item)
-                self.right_info_combo.blockSignals(False)
-            except Exception:
-                pass
+        history = cfg.get_json('General', 'search_history', [])
+        if isinstance(history, list):
+            self.right_info_combo.blockSignals(True)
+            for item in reversed(history):      # reversed 使最新的在頂
+                self.right_info_combo.insertItem(0, item)
+            self.right_info_combo.blockSignals(False)
 
     def save_config(self):
         """將目前狀態寫入 config.ini。"""
-        cfg = configparser.ConfigParser()
-        cfg.read(self._config_path(), encoding='utf-8')
+        cfg = settings.ConfigStore.load(self._config_path())
 
-        if not cfg.has_section('General'):
-            cfg.add_section('General')
-        if not cfg.has_section('Layout'):
-            cfg.add_section('Layout')
-        if not cfg.has_section('Columns'):
-            cfg.add_section('Columns')
-        if not cfg.has_section('Sort'):
-            cfg.add_section('Sort')
-        if not cfg.has_section('Tabs'):
-            cfg.add_section('Tabs')
-        if not cfg.has_section('Exclude'):
-            cfg.add_section('Exclude')
+        cfg.set_bool('Exclude', 'enabled', self._exclude_enabled)
+        cfg.set_json('Exclude', 'dirs', self._exclude_dirs)
 
-        # 儲存排除目錄設定
-        cfg.set('Exclude', 'enabled', 'true' if self._exclude_enabled else 'false')
-        cfg.set('Exclude', 'dirs', json.dumps(self._exclude_dirs, ensure_ascii=False))
+        history = [self.right_info_combo.itemText(i)
+                   for i in range(self.right_info_combo.count())]
+        cfg.set_json('General', 'search_history', history[:20])   # 最多留 20 筆
+        cfg.set('General', 'font_size', self._current_font_size())
 
-        # 儲存右側 combobox 歷史（最多 20 筆）
-        history = [self.right_info_combo.itemText(i) for i in range(self.right_info_combo.count())]
-        cfg.set('General', 'search_history', json.dumps(history[:20], ensure_ascii=False))
-
-        cfg.set('General', 'font_size', str(self._current_font_size()))
-
-        # 儲存主視窗大小與狀態
-        cfg.set('Layout', 'window_geometry', base64.b64encode(self.saveGeometry().data()).decode('ascii'))
+        cfg.set_bytes('Layout', 'window_geometry', self.saveGeometry().data())
         if self.isFullScreen():
             window_state = 'fullscreen'
         elif self.isMaximized():
@@ -2445,69 +2381,47 @@ class FileManager(QMainWindow):
             window_state = 'normal'
         cfg.set('Layout', 'window_state', window_state)
 
-        # 儲存分割器大小
-        self._right_splitter_sizes_by_orientation[self.right_splitter.orientation()] = self.right_splitter.sizes()
-        cfg.set('Layout', 'right_splitter_orientation', 'vertical' if self.right_splitter.orientation() == Qt.Orientation.Vertical else 'horizontal')
-        cfg.set('Layout', 'right_splitter_sizes', ','.join(str(s) for s in self._right_splitter_sizes_by_orientation.get(Qt.Orientation.Horizontal, [])))
-        cfg.set('Layout', 'right_splitter_vertical_sizes', ','.join(str(s) for s in self._right_splitter_sizes_by_orientation.get(Qt.Orientation.Vertical, [])))
+        current_orientation = self.right_splitter.orientation()
+        self._right_splitter_sizes_by_orientation[current_orientation] = self.right_splitter.sizes()
+        cfg.set('Layout', 'right_splitter_orientation',
+                'vertical' if current_orientation == Qt.Orientation.Vertical else 'horizontal')
+        cfg.set_int_list('Layout', 'right_splitter_sizes',
+                         self._right_splitter_sizes_by_orientation.get(Qt.Orientation.Horizontal, []))
+        cfg.set_int_list('Layout', 'right_splitter_vertical_sizes',
+                         self._right_splitter_sizes_by_orientation.get(Qt.Orientation.Vertical, []))
 
-        # 左側作者清單面板：隱藏時 sizes()[0] 為 0，沿用先前記住的寬度
-        if self.main_splitter is not None and self._authors_panel_visible:
-            current_width = self.main_splitter.sizes()[0]
-            if current_width > 0:
-                self._authors_panel_width = current_width
-        cfg.set('Layout', 'authors_panel_visible', 'true' if self._authors_panel_visible else 'false')
-        cfg.set('Layout', 'authors_panel_width', str(self._authors_panel_width))
+        # 面板隱藏時 main_splitter 給的寬度是 0，沿用先前記住的值
+        for index, visible_attr, width_attr, prefix in (
+            (0, '_authors_panel_visible', '_authors_panel_width', 'authors_panel'),
+            (2, '_checker_panel_visible', '_checker_panel_width', 'checker_panel'),
+        ):
+            if self.main_splitter is not None and getattr(self, visible_attr):
+                width = self.main_splitter.sizes()[index]
+                if width > 0:
+                    setattr(self, width_attr, width)
+            cfg.set_bool('Layout', f'{prefix}_visible', getattr(self, visible_attr))
+            cfg.set('Layout', f'{prefix}_width', getattr(self, width_attr))
 
-        # 右側更新檢查器面板：同樣地，隱藏時 sizes()[2] 為 0，沿用先前記住的寬度
-        if self.main_splitter is not None and self._checker_panel_visible:
-            current_width = self.main_splitter.sizes()[2]
-            if current_width > 0:
-                self._checker_panel_width = current_width
-        cfg.set('Layout', 'checker_panel_visible', 'true' if self._checker_panel_visible else 'false')
-        cfg.set('Layout', 'checker_panel_width', str(self._checker_panel_width))
         if self.checker_panel is not None:
             state = self.checker_panel.layout_state()
-            cfg.set('Layout', 'checker_split_sizes',
-                    ','.join(str(x) for x in state['split']))
-            cfg.set('Layout', 'checker_col_widths',
-                    ','.join(str(x) for x in state['columns']))
+            cfg.set_int_list('Layout', 'checker_split_sizes', state['split'])
+            cfg.set_int_list('Layout', 'checker_col_widths', state['columns'])
 
-        # 儲存兩個面板的欄位寬度、顯示與否，以及欄序
         for key, view in self._column_views():
             self._save_columns(cfg, key, view)
 
-        # 儲存中間 listView 排序方式
-        mid_header = self.listView.header()
-        if mid_header is not None:
-            cfg.set('Sort', 'mid_sort_column', str(mid_header.sortIndicatorSection()))
-            cfg.set('Sort', 'mid_sort_order', str(int(mid_header.sortIndicatorOrder())))
+        for key, view in (('mid', self.listView), ('right', self.listView2)):
+            header = view.header()
+            if header is not None:
+                cfg.set('Sort', f'{key}_sort_column', header.sortIndicatorSection())
+                cfg.set('Sort', f'{key}_sort_order', int(header.sortIndicatorOrder()))
 
-        # 儲存右側 listView2 排序方式
-        right_header = self.listView2.header()
-        if right_header is not None:
-            cfg.set('Sort', 'right_sort_column', str(right_header.sortIndicatorSection()))
-            cfg.set('Sort', 'right_sort_order', str(int(right_header.sortIndicatorOrder())))
-
-        # 儲存兩個面板的頁籤資訊
         for key, tab_widget in (('mid', self.mid_tab_bar), ('right', self.right_tab_bar)):
             tabs, current = tab_widget.get_all_tabs()
-            cfg.set('Tabs', f'{key}_tabs', json.dumps(tabs, ensure_ascii=False))
-            cfg.set('Tabs', f'{key}_tabs_current', str(current))
+            cfg.set_json('Tabs', f'{key}_tabs', tabs)
+            cfg.set('Tabs', f'{key}_tabs_current', current)
 
-        # 清除三面板時代遺留的設定鍵
-        for section, option in (
-            ('General', 'left_dir'),
-            ('Layout', 'splitter_sizes'),
-            ('Columns', 'left_col_widths'),
-            ('Tabs', 'left_tabs'),
-            ('Tabs', 'left_tabs_current'),
-        ):
-            if cfg.has_option(section, option):
-                cfg.remove_option(section, option)
-
-        with open(self._config_path(), 'w', encoding='utf-8') as f:
-            cfg.write(f)
+        cfg.save()
 
     def closeEvent(self, event):
         self.save_config()

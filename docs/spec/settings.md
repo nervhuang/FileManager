@@ -1,9 +1,16 @@
 # 設定層
 
-目標位置 `app/settings/`。現況散在 [`app/file_manager.py`](../../app/file_manager.py) 的
-`load_config`（129 行）與 `save_config`（102 行），以及 [`app/paths.py`](../../app/paths.py)。
-這是**第一個要拆的域**：每個功能域都伸手進這兩個方法讀寫自己的設定，不先拆它，
-後面每個域都還是得回頭依賴主視窗。
+[`app/settings/`](../../app/settings/)，不依賴 Qt。
+
+| 檔案 | 職責 |
+|---|---|
+| `config.py` | 型別化讀取的容錯（`cfg_int` / `cfg_bool` / `cfg_int_list`）|
+| `store.py` | `ConfigStore`：一份 `config.ini` 的讀寫、段落與舊鍵管理 |
+| [`app/paths.py`](../../app/paths.py) | 檔案位置解析（先於本套件存在，維持原位）|
+
+設定層只回答兩件事：**檔案裡寫了什麼**，以及**拿不到時該用什麼**。
+把值套到 widget 上不屬於這裡。`FileManager.load_config` / `save_config`
+現在只做編排，面板內部的版面由面板自己的 `restore_layout` / `layout_state` 負責。
 
 ---
 
@@ -99,9 +106,9 @@
 
 ---
 
-## 拆分注意
+## 尚未完成的部分
 
-- `load_config` 目前混雜「讀設定」與「套用設定到 widget」兩件事。拆分後設定層只負責
-  讀寫與型別轉換，套用交給各功能域自己的 `apply_settings()`。
-- `save_config` 同理，改為各域提供 `collect_settings()`。
-- 拆分 commit 必須行為零變更：以既有 `config.ini` 讀入、寫出，前後檔案內容應等價。
+- 各功能域還沒有自己的 `apply_settings()` / `collect_settings()`。`load_config` 仍然
+  知道每一個鍵屬於誰；等域拆出來之後，這裡應該只剩「問每個域要它的設定」。
+- 欄位的還原與寫出（`_restore_columns` / `_save_columns`）仍在外殼裡。它們依賴
+  `QHeaderView`，不能放進這個不依賴 Qt 的套件，應隨檔案面板一起搬。

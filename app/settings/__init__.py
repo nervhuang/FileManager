@@ -7,5 +7,6 @@
 """
 
 from .config import cfg_bool, cfg_int, cfg_int_list
+from .store import ConfigStore
 
-__all__ = ['cfg_bool', 'cfg_int', 'cfg_int_list']
+__all__ = ['ConfigStore', 'cfg_bool', 'cfg_int', 'cfg_int_list']
