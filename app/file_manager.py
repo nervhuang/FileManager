@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QDir, Qt, QSize, QFileInfo, QEvent, QTimer, QFileSystemWatcher, QItemSelectionModel, QMimeData, QUrl
 from PyQt5.QtGui import QKeySequence, QIcon, QFont, QStandardItem
 
-from . import font_scaling, gui_bridge, icons, paths, search_query
+from . import font_scaling, gui_bridge, icons, paths, search_query, settings
 from .authors_panel import AuthorsPanel
 from .checker.panel import CheckerPanel, make_checker_icon
 from .everything_sdk import EverythingSDK
@@ -2298,12 +2298,12 @@ class FileManager(QMainWindow):
             self.setWindowState(self.windowState() | Qt.WindowFullScreen)
 
         # 還原字型大小
-        saved_font_size = cfg.getint('General', 'font_size', fallback=10)
+        saved_font_size = settings.cfg_int(cfg, 'General', 'font_size', 10)
         self._apply_font_size(max(6, min(saved_font_size, 72)))
         self.update_status_bar()
 
         # 還原排除目錄設定（須在還原頁籤觸發搜尋之前，過濾才會生效）
-        self._exclude_enabled = cfg.getboolean('Exclude', 'enabled', fallback=False)
+        self._exclude_enabled = settings.cfg_bool(cfg, 'Exclude', 'enabled', False)
         raw_exclude = cfg.get('Exclude', 'dirs', fallback='')
         if raw_exclude:
             try:
@@ -2330,13 +2330,13 @@ class FileManager(QMainWindow):
         self._set_right_panel_layout(Qt.Orientation.Vertical if right_splitter_orientation == 'vertical' else Qt.Orientation.Horizontal)
 
         # 還原左側作者清單面板的顯示狀態與寬度
-        self._authors_panel_width = max(cfg.getint('Layout', 'authors_panel_width', fallback=660), 80)
-        self._set_authors_panel_visible(cfg.getboolean('Layout', 'authors_panel_visible', fallback=True))
+        self._authors_panel_width = max(settings.cfg_int(cfg, 'Layout', 'authors_panel_width', 660), 80)
+        self._set_authors_panel_visible(settings.cfg_bool(cfg, 'Layout', 'authors_panel_visible', True))
 
         # 還原右側更新檢查器面板：外層寬度與顯示與否由主視窗管，面板內部的
         # splitter 與欄寬由面板自己還原（見 CheckerPanel.restore_layout）。
-        self._checker_panel_width = max(cfg.getint('Layout', 'checker_panel_width', fallback=520), 80)
-        self._set_checker_panel_visible(cfg.getboolean('Layout', 'checker_panel_visible', fallback=False))
+        self._checker_panel_width = max(settings.cfg_int(cfg, 'Layout', 'checker_panel_width', 520), 80)
+        self._set_checker_panel_visible(settings.cfg_bool(cfg, 'Layout', 'checker_panel_visible', False))
         if self.checker_panel is not None:
             self.checker_panel.restore_layout(
                 split=_int_list(cfg.get('Layout', 'checker_split_sizes', fallback='')),
@@ -2371,7 +2371,7 @@ class FileManager(QMainWindow):
         # 還原兩個面板的頁籤資訊
         for key, tab_widget in (('mid', self.mid_tab_bar), ('right', self.right_tab_bar)):
             raw = cfg.get('Tabs', f'{key}_tabs', fallback='')
-            current = cfg.getint('Tabs', f'{key}_tabs_current', fallback=0)
+            current = settings.cfg_int(cfg, 'Tabs', f'{key}_tabs_current', 0)
             if raw:
                 try:
                     tabs = [(d, l) for d, l in json.loads(raw)]

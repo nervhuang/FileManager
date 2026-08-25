@@ -1,6 +1,11 @@
 # Changelog
 
 ## 2026-08-24
+- Survive a malformed `config.ini` instead of refusing to start
+  - `configparser`'s `fallback=` only applies when the key is *absent*. A key that is present but holds a value of the wrong type — a hand-edited file, a truncated write — makes `getint` / `getboolean` raise, `load_config` aborts, and the application will not open at all
+  - Seven keys were exposed this way: font size, exclude-enabled, both panels' visibility and width, and the current tab index. The JSON- and comma-parsed keys were already guarded; only the typed getters were not
+  - A broken settings file should cost the user their settings, not the application. Each key now falls back on any parse failure, independently of the others
+  - Found by the settings characterization tests written before extracting the settings layer — the corrupt-config case had never been exercised
 - Draw every toolbar icon; no Qt system icons remain
   - Three visual languages were sharing one toolbar: line art with no fill (cut, copy, paste, rename), filled-and-outlined drawings (folder, layout, refresh), and Windows system icons (back, forward, new folder, trash). Side by side it is immediately obvious they are not one set
   - The four system icons are replaced by drawings in the established language — filled, dark-outlined, with a highlight: green back/forward arrows from the same family as the up-folder's green arrow, a folder with the green plus badge the authors panel already uses for "add", and a metal bin
