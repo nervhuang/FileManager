@@ -4,7 +4,7 @@
 Qt 不會放大來源 pixmap，而且 Windows 系統圖示的立體光澤風格與這裡的實心填色
 語彙搭不起來。
 
-原本這些函式散在三個地方——widgets.py 一個、file_manager.initUI 裡兩個閉包、
+原本這些函式散在三個地方——app/widgets.py 一個、file_manager.initUI 裡兩個閉包、
 再一個閉包在工具列那段。集中在這裡才看得出它們共用同一套調色盤，也才有地方
 放「新圖示要長什麼樣」這件事。
 

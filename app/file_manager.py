@@ -25,7 +25,9 @@ from .search.everything import EverythingSDK
 from .models import FileSystemSortProxyModel
 from .search.models import SearchResultsModel, SearchSortProxyModel
 from .views import SearchListView, FileListView
-from .widgets import PathTabBar, BreadcrumbBar, build_column_visibility_menu
+from . import columns
+from .tabs.bar import PathTabBar
+from .tabs.breadcrumb import BreadcrumbBar
 
 ref_s = 0
 ref_e = 1
@@ -2105,7 +2107,7 @@ class FileManager(QMainWindow):
                 lambda pos, k=key, v=view: self._show_column_menu(k, v, pos))
 
     def _show_column_menu(self, key, view, pos):
-        menu = build_column_visibility_menu(
+        menu = columns.build_column_visibility_menu(
             view,
             locked_columns=self.LOCKED_COLUMNS,
             on_toggled=lambda col, visible, k=key, v=view: self._set_column_visible(k, v, col, visible),
@@ -2134,70 +2136,14 @@ class FileManager(QMainWindow):
             view.setColumnWidth(column, cache.get(column, self.DEFAULT_COLUMN_WIDTH))
 
     def _restore_columns(self, cfg, key, view):
-        """還原單一面板的欄寬、隱藏欄與欄序。
-
-        順序固定為「寬度 → 隱藏 → 欄序」：先把寬度套到所有欄位（含隨後要隱藏的），
-        QHeaderView 才會記住隱藏欄的原始寬度，使用者日後勾回來時寬度才正確。"""
-        header = view.header()
-        if header is None:
-            return
-        cache = self._col_width_cache.setdefault(key, {})
-
-        raw_widths = cfg.get_str('Columns', f'{key}_col_widths')
-        if raw_widths:
-            try:
-                for i, w in enumerate(raw_widths.split(',')):
-                    # 舊版 config 把隱藏欄的寬度存成 0，直接沿用會讓欄位勾回來仍是 0 寬。
-                    width = int(w) or self.DEFAULT_COLUMN_WIDTH
-                    cache[i] = width
-                    view.setColumnWidth(i, width)
-            except Exception:
-                pass
-
-        hidden = set(self.DEFAULT_HIDDEN_COLUMNS.get(key, ()))
-        # 鍵存在但為空字串代表「全部顯示」，與鍵不存在（採用預設值）不同，
-        # 所以要問 has() 而不是看值是不是空的（SET-10）。
-        if cfg.has('Columns', f'{key}_col_hidden'):
-            raw_hidden = cfg.get_str('Columns', f'{key}_col_hidden')
-            try:
-                hidden = {int(x) for x in raw_hidden.split(',') if x.strip()}
-            except ValueError:
-                pass
-        hidden -= set(self.LOCKED_COLUMNS)
-        for i in range(header.count()):
-            view.setColumnHidden(i, i in hidden)
-
-        raw_order = cfg.get_str('Columns', f'{key}_col_order')
-        if raw_order:
-            try:
-                for vi, li in enumerate(int(x) for x in raw_order.split(',')):
-                    cur = header.visualIndex(li)
-                    if cur != vi:
-                        header.moveSection(cur, vi)
-            except Exception:
-                pass
+        columns.restore(cfg, key, view, self._col_width_cache.setdefault(key, {}),
+                        default_width=self.DEFAULT_COLUMN_WIDTH,
+                        default_hidden=self.DEFAULT_HIDDEN_COLUMNS,
+                        locked=self.LOCKED_COLUMNS)
 
     def _save_columns(self, cfg, key, view):
-        """寫出單一面板的欄寬、欄序與隱藏欄。隱藏欄的 columnWidth() 恆為 0，
-        改寫入快取中最後一次的可見寬度，下次啟動勾回來才有合理寬度。"""
-        header = view.header()
-        if header is None:
-            return
-        cache = self._col_width_cache.setdefault(key, {})
-        widths = []
-        hidden = []
-        for i in range(header.count()):
-            if view.isColumnHidden(i):
-                hidden.append(str(i))
-                width = cache.get(i, self.DEFAULT_COLUMN_WIDTH)
-            else:
-                width = view.columnWidth(i) or cache.get(i, self.DEFAULT_COLUMN_WIDTH)
-                cache[i] = width
-            widths.append(str(width))
-        cfg.set('Columns', f'{key}_col_widths', ','.join(widths))
-        cfg.set('Columns', f'{key}_col_order',
-                ','.join(str(header.logicalIndex(i)) for i in range(header.count())))
-        cfg.set('Columns', f'{key}_col_hidden', ','.join(hidden))
+        columns.save(cfg, key, view, self._col_width_cache.setdefault(key, {}),
+                     default_width=self.DEFAULT_COLUMN_WIDTH)
 
     def _config_path(self):
         return os.path.join(_runtime_root(), 'config.ini')

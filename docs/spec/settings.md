@@ -110,5 +110,5 @@
 
 - 各功能域還沒有自己的 `apply_settings()` / `collect_settings()`。`load_config` 仍然
   知道每一個鍵屬於誰；等域拆出來之後，這裡應該只剩「問每個域要它的設定」。
-- 欄位的還原與寫出（`_restore_columns` / `_save_columns`）仍在外殼裡。它們依賴
-  `QHeaderView`，不能放進這個不依賴 Qt 的套件，應隨檔案面板一起搬。
+- 欄位的還原與寫出已移到 [`app/columns.py`](../../app/columns.py)。它們依賴
+  `QHeaderView`，不能放進這個不依賴 Qt 的套件；等檔案面板域拆出來時再隨它搬。

@@ -56,5 +56,5 @@ def test_shl_11_every_toolbar_icon_actually_renders_at_64px(main_window):
     assert total > 0, "沒有找到任何工具列圖示按鈕，測試本身可能失效了"
     assert not undersized, (
         "以下圖示在 64px 工具列裡畫不到 64×64（Qt 不會放大來源 pixmap，"
-        "改用自繪圖示，見 widgets.make_refresh_icon）：\n  "
+        "改用自繪圖示，見 icons.make_refresh_icon）：\n  "
         + '\n  '.join(undersized))

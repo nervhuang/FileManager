@@ -7,7 +7,7 @@
 2. **視覺語彙**。三條工具列共用同一套風格：實心填色 ＋ 深色描邊 ＋ 高光，
    不是線稿。系統圖示混進來會很突兀。
 
-沿用 `widgets.make_refresh_icon()` 建立的作法。
+沿用 `icons.make_refresh_icon()` 建立的作法。
 """
 
 import math
@@ -40,7 +40,7 @@ def _ring_arrow_path(cx, cy, mid_r, band, start_deg, span_deg, tip_deg):
 
     分成兩個圖形畫的話，接合處無論怎麼對齊都會留下看得見的縫。箭尖落在環的
     中心線上，整個箭頭因此都在圓弧範圍內，不會往外突出。作法沿用
-    `widgets.make_refresh_icon()`。
+    `icons.make_refresh_icon()`。
     """
     arrow_half = band * 1.7          # 箭頭底邊半寬，比環寬才看得出是箭頭
     outer_r, inner_r = mid_r + band, mid_r - band
@@ -93,7 +93,7 @@ def make_stop_icon(size=64):
 
     不能用 QStyle 的 SP_MediaStop——這個樣式只提供到 32×32，擺進 64px 工具列
     只會置中顯示 32px，看起來是鄰居的一半大。這正是當初 SP_BrowserReload 的
-    同一個問題（見 widgets.make_refresh_icon）。
+    同一個問題（見 icons.make_refresh_icon）。
 
     用方塊而非圓形：它與旁邊的「重新整理」圓環在剪影上就分得開，工具列縮成
     小圖示時仍認得出來。

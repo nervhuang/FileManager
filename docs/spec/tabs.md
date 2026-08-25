@@ -1,8 +1,10 @@
 # 分頁與導覽域
 
-目標位置 `app/tabs/`。現況 [`app/widgets.py`](../../app/widgets.py) 的
-`FixedWidthTabBar` / `PathTabBar` / `BreadcrumbBar` ＋
-[`app/file_manager.py`](../../app/file_manager.py) 的導覽與歷史方法。
+[`app/tabs/`](../../app/tabs/)：`bar.py`（分頁列與自訂拖曳重排）、
+`breadcrumb.py`（麵包屑位址列與路徑分段）。導覽與歷史仍在
+[`app/file_manager.py`](../../app/file_manager.py)。
+
+這個域**沒有服務層**，它就是 UI，全部依賴 Qt。
 
 兩個面板各有一組分頁列：檔案面板的分頁存**目錄路徑**，搜尋面板的分頁存**關鍵字**。
 
@@ -44,7 +46,7 @@
 
 **TAB-13** 沒有資料的分頁退回顯示其標籤（`本機` / `新頁籤`）。
 
-**TAB-14** 選單的建構與顯示分開，以便測試（見 `widgets.py` 的 `_build_all_tabs_menu`）。
+**TAB-14** 選單的建構與顯示分開，以便測試（見 `tabs/bar.py` 的 `_build_all_tabs_menu`）。
 
 ---
 
@@ -82,9 +84,9 @@
 
 ---
 
-## 拆分注意
+## 尚未完成的部分
 
-- `widgets.py` 目前 917 行，混了分頁列、麵包屑、代理樣式、`KeepOpenMenu` 與圖示繪製。
-  分頁與麵包屑移入本域，代理樣式與圖示繪製屬外殼。
+- 導覽與歷史（上一頁／下一頁／上一層、`_record_history`）還在外殼裡。
+  它們與分頁是同一件事的兩面，應該一起搬。
 - 本域對外只發「切換到某路徑」「切換到某關鍵字」的訊號，
-  不得直接呼叫搜尋域或檔案操作域。
+  不得直接呼叫搜尋域或檔案操作域。這條目前成立。
