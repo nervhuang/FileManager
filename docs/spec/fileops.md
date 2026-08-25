@@ -68,12 +68,25 @@
 **FOP-15** 左鍵拖放：交由 Qt 內建機制偵測並呼叫 `startDrag()`（多選情況見 FOP-2）。
 
 **FOP-15a** 交給 `SHFileOperationW` 的路徑**必須先 `os.path.normpath`**。
-拖放的來源來自 `QUrl.toLocalFile()`，在 Windows 上回的是正斜線（`D:/a/b.txt`），
-而 shell API 不吃正斜線——實測回錯誤碼 183，檔案原地不動。
+
+Qt 給的路徑是正斜線：`QUrl.toLocalFile()` 與 `QFileSystemModel.filePath()`
+在 Windows 上都回 `D:/a/b.txt`。實測結果：
+
+| `pFrom` | `pTo` | 結果 |
+|---|---|---|
+| 反斜線 | 反斜線 | 成功 |
+| **正斜線** | 反斜線 | 成功 |
+| 反斜線 | **正斜線** | **錯誤碼 183，檔案不動** |
+| 正斜線 | 正斜線 | **錯誤碼 183，檔案不動** |
+
+**關鍵是 `pTo`（目標目錄）**，`pFrom` 容忍正斜線。這也解釋了為什麼刪除到回收筒
+不受影響——`FO_DELETE` 的 `pTo` 是 `None`。
 
 > 這條規則曾經只有一半成立：主視窗的 `_perform_file_op` 有正規化，
-> `views._apply_drop_operation` 沒有，於是左鍵拖放搬檔案一直是失敗的。
+> `views._apply_drop_operation` 沒有，於是左鍵拖放搬檔案一直是失敗的，
+> 而且錯誤碼 183 走的是「已存在」分支，連警告都不跳。
 > 兩份實作除了這一行以外完全相同——重複的程式碼分頭演化，正是這樣出事的。
+> 現在只有 `fileops.shell.move_or_copy` 一份實作。
 
 **FOP-16** 右鍵拖放：叫出 Windows 原生的「複製到／移動到／建立捷徑」選單。 **[手動]**
 

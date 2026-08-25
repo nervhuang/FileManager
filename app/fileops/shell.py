@@ -3,9 +3,11 @@
 只認路徑與視窗代號（hwnd），成功與否用回傳值表達，錯誤訊息的呈現留給呼叫端
 ——同一個操作在主視窗與在拖放時要顯示的措辭不同。
 
-**所有交給 shell API 的路徑都必須先 `os.path.normpath`。** Qt 給的路徑是正斜線
-（`QUrl.toLocalFile()` 回 `D:/a/b.txt`），shell API 不吃，實測會回錯誤碼 183
-並且什麼都不做。見 docs/spec/fileops.md 的 FOP-15a。
+**交給 shell API 的路徑都要先 `os.path.normpath`。** Qt 給的是正斜線
+（`QUrl.toLocalFile()` 與 `QFileSystemModel.filePath()` 都回 `D:/a/b.txt`）。
+實測：關鍵是 `pTo`——目標目錄帶正斜線時回錯誤碼 183 且什麼都不做；`pFrom`
+反而容忍。`FO_DELETE` 因為 `pTo` 是 None，不受影響。見 docs/spec/fileops.md
+的 FOP-15a。
 """
 
 import ctypes
