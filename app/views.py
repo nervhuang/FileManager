@@ -7,6 +7,8 @@ from PyQt5.QtWidgets import QTreeView, QApplication, QMessageBox, QMenu
 from PyQt5.QtCore import Qt, QItemSelection, QItemSelectionModel, QMimeData, QUrl, QTimer, QPersistentModelIndex
 from PyQt5.QtGui import QDrag, QPixmap, QPainter, QColor, QIcon, QFont
 
+from .fileops import shell as shell_ops
+
 
 class _ShellDropMixin:
     """共用的 Windows Shell 拖放方法，供 SearchListView 與 FileListView 繼承使用。"""
@@ -96,27 +98,7 @@ class _ShellDropMixin:
     def _create_shortcuts(self, src_paths, target_dir):
         """在 target_dir 建立 src_paths 的 Windows 捷徑（.lnk）。"""
         try:
-            import pythoncom
-            from win32com.shell import shell
-
-            pythoncom.CoInitialize()
-            try:
-                for src in src_paths:
-                    if not os.path.exists(src):
-                        continue
-                    base = os.path.splitext(os.path.basename(src))[0]
-                    lnk_path = os.path.join(target_dir, f"{base} - 捷徑.lnk")
-                    link = pythoncom.CoCreateInstance(
-                        shell.CLSID_ShellLink, None,
-                        pythoncom.CLSCTX_INPROC_SERVER,
-                        shell.IID_IShellLink
-                    )
-                    link.SetPath(src)
-                    link.SetWorkingDirectory(os.path.dirname(src))
-                    persist = link.QueryInterface(pythoncom.IID_IPersistFile)
-                    persist.Save(lnk_path, True)
-            finally:
-                pythoncom.CoUninitialize()
+            shell_ops.create_shortcuts(src_paths, target_dir)
         except Exception as ex:
             QMessageBox.warning(self, "建立捷徑失敗", f"無法建立捷徑：{ex}")
 

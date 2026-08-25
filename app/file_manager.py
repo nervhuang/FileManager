@@ -26,6 +26,7 @@ from .models import FileSystemSortProxyModel
 from .search.models import SearchResultsModel, SearchSortProxyModel
 from .views import SearchListView, FileListView
 from . import columns
+from .fileops import shell as shell_ops
 from .tabs.bar import PathTabBar
 from .tabs.breadcrumb import BreadcrumbBar
 
@@ -1373,27 +1374,7 @@ class FileManager(QMainWindow):
     def _create_shortcuts_fm(self, src_paths, target_dir):
         """在 target_dir 建立 src_paths 的 Windows 捷徑（.lnk）。"""
         try:
-            import pythoncom
-            from win32com.shell import shell
-
-            pythoncom.CoInitialize()
-            try:
-                for src in src_paths:
-                    if not os.path.exists(src):
-                        continue
-                    base = os.path.splitext(os.path.basename(src))[0]
-                    lnk_path = os.path.join(target_dir, f"{base} - 捷徑.lnk")
-                    link = pythoncom.CoCreateInstance(
-                        shell.CLSID_ShellLink, None,
-                        pythoncom.CLSCTX_INPROC_SERVER,
-                        shell.IID_IShellLink
-                    )
-                    link.SetPath(src)
-                    link.SetWorkingDirectory(os.path.dirname(src))
-                    persist = link.QueryInterface(pythoncom.IID_IPersistFile)
-                    persist.Save(lnk_path, True)
-            finally:
-                pythoncom.CoUninitialize()
+            shell_ops.create_shortcuts(src_paths, target_dir)
         except Exception as ex:
             QMessageBox.warning(self, "建立捷徑失敗", f"無法建立捷徑：{ex}")
 
