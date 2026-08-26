@@ -5,9 +5,12 @@
 """
 
 import os
+from datetime import datetime
 
 from PyQt5.QtCore import Qt, QSortFilterProxyModel, QMimeData, QUrl
-from PyQt5.QtGui import QStandardItemModel
+from PyQt5.QtGui import QStandardItem, QStandardItemModel
+
+from .results import format_size
 
 
 class SearchSortProxyModel(QSortFilterProxyModel):
@@ -106,3 +109,61 @@ class SearchResultsModel(QStandardItemModel):
 
     def supportedDragActions(self):
         return Qt.CopyAction | Qt.MoveAction | Qt.LinkAction
+
+
+def build_rows(results, icon_for):
+    """把 `SearchResult` 清單做成模型的列。
+
+    `icon_for(filepath, is_dir)` 由呼叫端提供——圖示要快取，而快取是誰的
+    生命週期就歸誰管。
+
+    中繼資料（大小、時間、是否為目錄）直接用 Everything 給的，不逐筆 os.stat
+    （docs/spec/search.md 的 SRCH-15）。只有檔名欄可編輯，其餘三欄鎖住。
+    """
+    rows = []
+    for filepath, is_dir, size, mtime in results:
+        name_item = QStandardItem(os.path.basename(filepath))
+        name_item.setData(filepath, Qt.UserRole + 1)
+        # 資料夾旗標供 SearchSortProxyModel 讓資料夾恆排於檔案之上（SRCH-14）
+        name_item.setData(is_dir, SearchResultsModel.IS_DIR_ROLE)
+        name_item.setIcon(icon_for(filepath, is_dir))
+
+        dir_item = QStandardItem(os.path.dirname(filepath))
+        dir_item.setEditable(False)
+
+        try:
+            date_text = (datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
+                         if mtime else '')
+        except (OverflowError, OSError, ValueError):
+            # Everything 偶爾會給出無法轉成本地時間的時間戳（0、負數、超出範圍）
+            date_text = ''
+        date_item = QStandardItem(date_text)
+        date_item.setEditable(False)
+        date_item.setData(mtime, Qt.UserRole)
+
+        size_item = QStandardItem('' if (is_dir or not size) else format_size(size))
+        size_item.setEditable(False)
+        size_item.setData(size, Qt.UserRole)
+
+        rows.append([name_item, dir_item, date_item, size_item])
+    return rows
+
+
+def populate(model, proxy, rows):
+    """把列批次填進模型。
+
+    **不可用 `blockSignals` 包住結構性變更**：`SearchSortProxyModel` 靠
+    `rowsRemoved` / `rowsInserted` 維護「proxy 列 ↔ 來源列」的對應表，擋掉訊號
+    會讓對應表指向已刪除的 item，之後點擊搜尋結果就會解參考已釋放記憶體而崩潰
+    （SRCH-18）。
+
+    **填入期間要關掉動態排序**：proxy 預設 `dynamicSortFilter=True` 且 view 已
+    啟用排序，逐筆 `appendRow` 會讓 proxy 每次都重找插入位置（O(n) 比較），
+    2000 筆就退化成 O(n²)，新增／刪除／改名後 GUI 凍結兩三秒（SRCH-17）。
+    關的是排序不是訊號，`rowsInserted` 照常發出，對應表不會失效。
+    """
+    proxy.setDynamicSortFilter(False)
+    model.removeRows(0, model.rowCount())
+    for row in rows:
+        model.appendRow(row)
+    proxy.setDynamicSortFilter(True)

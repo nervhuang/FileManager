@@ -2,7 +2,6 @@ import sys
 import subprocess
 import os
 import traceback
-from datetime import datetime
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QFileSystemModel, QWidget,
@@ -13,7 +12,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QActionGroup, QShortcut, QFrame,
 )
 from PyQt5.QtCore import QDir, Qt, QSize, QFileInfo, QEvent, QTimer, QFileSystemWatcher, QItemSelectionModel, QMimeData, QUrl
-from PyQt5.QtGui import QKeySequence, QIcon, QFont, QStandardItem
+from PyQt5.QtGui import QKeySequence, QIcon, QFont
 
 from . import font_scaling, gui_bridge, icons, paths, settings
 from .search import query as search_query, results as search_results
@@ -21,6 +20,7 @@ from .authors.panel import AuthorsPanel
 from .checker.panel import CheckerPanel, make_checker_icon
 from .search.everything import EverythingSDK
 from .models import FileSystemSortProxyModel
+from .search import models as search_models
 from .search.models import SearchResultsModel, SearchSortProxyModel
 from .views import SearchListView, FileListView
 from . import columns
@@ -815,62 +815,21 @@ class FileManager(QMainWindow):
         subprocess.Popen('"Everything.exe" -search "' + normalized_command.replace('"', '\\"') + '"', shell=True)
 
     def update_search_results(self, results):
-        """results 為 everything_sdk.SearchResult 清單，中繼資料由 Everything
-        查詢直接回傳，不需逐筆 os.stat。"""
+        """把 Everything 回來的結果填進搜尋面板。
+
+        results 是 search.everything.SearchResult 的清單。
+        """
         if self.search_model is None:
             return
-        # 排除設定啟用時，濾掉落在被排除目錄（及其子路徑）下的結果。
         if self._exclude_norm:
+            # 排除設定啟用時，濾掉落在被排除目錄（及其子路徑）下的結果（SRCH-9）
             results = [r for r in results if not self._is_path_excluded(r.path)]
+
+        # 這面旗標擋掉 itemChanged 接的改名處理：批次填入不是使用者在改名。
         self._search_model_updating = True
-        rows = []
-        for filepath, is_dir, size, mtime in results:
-
-            name_item = QStandardItem(os.path.basename(filepath))
-            name_item.setData(filepath, Qt.UserRole + 1)
-            # 是否為資料夾旗標：供 SearchSortProxyModel 讓資料夾恆排於檔案之上
-            name_item.setData(is_dir, SearchResultsModel.IS_DIR_ROLE)
-            name_item.setIcon(self._icon_for_search_result(filepath, is_dir))
-
-            dir_item = QStandardItem(os.path.dirname(filepath))
-            dir_item.setEditable(False)
-
-            if mtime:
-                try:
-                    dt_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
-                except Exception:
-                    dt_str = ''
-            else:
-                dt_str = ''
-
-            date_item = QStandardItem(dt_str)
-            date_item.setEditable(False)
-            date_item.setData(mtime, Qt.UserRole)
-
-            size_str = '' if (is_dir or not size) else search_results.format_size(size)
-
-            size_item = QStandardItem(size_str)
-            size_item.setEditable(False)
-            size_item.setData(size, Qt.UserRole)
-
-            rows.append([name_item, dir_item, date_item, size_item])
-
-        # 不可用 blockSignals 包住結構性變更：SearchSortProxyModel 靠 rowsRemoved/
-        # rowsInserted 訊號維護「proxy 列 ↔ 來源列」對應表，擋掉訊號會讓對應表指向
-        # 已刪除的 item，之後點擊搜尋結果映射時即解參考已釋放記憶體而崩潰。
-        # itemChanged 連線的 _on_search_result_name_changed 已用 _search_model_updating
-        # 旗標擋掉，無須再 blockSignals。
-        #
-        # 效能關鍵：search_proxy 預設 dynamicSortFilter=True，且 listView2 已啟用排序，
-        # 因此每次 appendRow 都會觸發 proxy 重新尋找排序插入位置（O(n) 比較），
-        # 大量結果（可達 2000 筆）逐筆插入即退化成 O(n²)，造成新增/刪除/改名後 GUI
-        # 凍結 2~3 秒。改為批次插入前關閉動態排序，全部插入後再開啟、僅排序一次。
-        # 關閉的是「排序」而非訊號，rowsInserted 仍正常發出，對應表不會失效。
-        self.search_proxy.setDynamicSortFilter(False)
-        self.search_model.removeRows(0, self.search_model.rowCount())
-        for row in rows:
-            self.search_model.appendRow(row)
-        self.search_proxy.setDynamicSortFilter(True)
+        search_models.populate(
+            self.search_model, self.search_proxy,
+            search_models.build_rows(results, self._icon_for_search_result))
         self._search_model_updating = False
 
     def _icon_for_search_result(self, filepath, is_dir=None):

@@ -6,7 +6,7 @@
 |---|---|---|
 | `query.py` | 否 | 關鍵字解析、查詢組裝、比對、排除、`extract_keywords` |
 | `everything.py` | 否 | Everything 的 IPC 介面 |
-| `models.py` | 是 | 結果模型與排序 proxy |
+| `models.py` | 是 | 結果模型、排序 proxy、把結果做成列並批次填入 |
 | `results.py` | 否 | 結果呈現（`format_size`）|
 
 不依賴 Qt 的那兩個是**服務層**：GUI、Hermes MCP server、CLI 是三個獨立進程，
@@ -124,7 +124,8 @@
 ## 尚未完成的部分
 
 - 搜尋面板的 UI 編排還在外殼裡：`execute_search_command`（頁籤資料與 MRU 歷史）、
-  `_do_search`、`update_search_results`（59 行的建列邏輯）、結果重新整理。
+  `_do_search`（Everything 不可用時的退路）、結果重新整理與存在性對帳。
+  `update_search_results` 已經只剩排除過濾與一次委派。
 - `everything` **每執行緒各自持有實例**，否則視窗類別名稱會衝突（INT-19）。
   這條約束目前只有註解，沒有測試。
 - Everything 本體在 CI 上不存在。搜尋引擎必須是可注入的介面，
