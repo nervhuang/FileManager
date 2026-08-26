@@ -20,8 +20,12 @@ Windows 桌面檔案管理程式（PyQt5 + Everything 索引）。
 
 ## 架構
 
-**功能域拆包。** 每個域一個套件，自己管自己的 UI、邏輯與持久化。
-[`app/checker/`](app/checker/) 是正確範例。
+**功能域拆包。** 每個域一個套件。多數域分兩層：**不依賴 Qt 的服務層**
+（資料、純函式、原生 API）與依賴 Qt 的 UI 層。分層不是潔癖——MCP server 與
+CLI 是沒有 `QApplication` 的獨立進程，它們要用得到服務層。
+
+因此**各域的 `__init__.py` 一律不做 re-export**：一旦在那裡 import UI 層，
+沒有 Qt 的進程連服務層都匯入不了。
 
 | 域 | 套件 | 規格 |
 |---|---|---|
@@ -34,7 +38,11 @@ Windows 桌面檔案管理程式（PyQt5 + Everything 索引）。
 | 對外整合 | `hermes_mcp.py`、`cli.py`、`gui_bridge.py` | [integration.md](docs/spec/integration.md) |
 | 外殼 | `app/file_manager.py` | [ui-shell.md](docs/spec/ui-shell.md) |
 
-拆分尚未完成，上表多半還是目標位置。這不是放行的理由。
+橫切關注點另放：`app/icons.py`（工具列圖示）、`app/font_scaling.py`（字型縮放）、
+`app/columns.py`（表頭欄位）、`app/paths.py`（執行期路徑）。
+
+六個域都已建立，但外殼裡還有屬於它們的編排程式碼。各域規格的「尚未完成的部分」
+記著還欠什麼。
 
 ### 硬規則
 
@@ -50,8 +58,13 @@ Windows 桌面檔案管理程式（PyQt5 + Everything 索引）。
    服務層呼叫，不能反過來。掃描器跑在背景執行緒、沒有 Qt 事件圈，
    硬要它走訊號只會把簡單的事弄複雜。
 4. **每個域只讀寫屬於自己的設定鍵。**
-5. **單檔上限 600 行。** 既有五個超標檔記在 `.line-limit-baseline.json`，
-   只准變短。拆小之後跑 `python scripts/check_line_limits.py --update`。
+5. **單檔上限 600 行。** 目前只剩 `app/file_manager.py` 超標，記在
+   `.line-limit-baseline.json`，只准變短。拆小之後跑
+   `python scripts/check_line_limits.py --update`。
+
+   **棘輪擋下你的修改時，它多半是對的。** 已經發生五次：每次的第一反應都是
+   「往外殼再加幾行」，每次照它的意思先把更多東西搬出去之後，落點都更正確。
+   要往外殼加東西，就得先從外殼拿走更多。
 
 ### 橫切關注點不准寫成手寫清單
 
@@ -149,5 +162,8 @@ windows runner 是 cp1252。兩者都印不出這個專案的中文訊息，會�
 
 - 執行期資料目錄（`config.ini`、`authors.db`）由 `app/paths.py` 決定，
   可用 `FILEMANAGER_HOME` 覆寫。GUI、MCP server、CLI 三個進程必須指向同一份。
-- `app/paths.py`、`app/search_query.py`、`app/authors_db.py`、`app/checker/` 的
-  資料層**不依賴 Qt**，因為 MCP server 與 CLI 沒有 `QApplication`。保持這樣。
+- 這些**不依賴 Qt**，因為 MCP server 與 CLI 沒有 `QApplication`：
+  `app/paths.py`、`app/settings/`、`app/search/query.py`、`app/search/everything.py`、
+  `app/search/results.py`、`app/authors/db.py`、`app/authors/names.py`、
+  `app/fileops/shell.py`、`app/checker/` 的資料層。保持這樣。
+  改完可以這樣驗：匯入它們之後 `'PyQt5' in sys.modules` 必須是 False。
