@@ -24,7 +24,7 @@ from .search import models as search_models
 from .search.models import SearchResultsModel, SearchSortProxyModel
 from .views import SearchListView, FileListView
 from . import columns, toolbar
-from .fileops import drag_menu, shell as shell_ops
+from .fileops import drag_menu, rename, shell as shell_ops
 from .tabs.bar import PathTabBar
 from .tabs.breadcrumb import BreadcrumbBar
 
@@ -979,7 +979,14 @@ class FileManager(QMainWindow):
             return True
         return False
 
+    def _revert_search_item_text(self, item, text):
+        """把該列的顯示文字還原，且不觸發自己這個改名處理。"""
+        self._search_item_rename_in_progress = True
+        item.setText(text)
+        self._search_item_rename_in_progress = False
+
     def _on_search_result_name_changed(self, item):
+        """搜尋面板就地改名。判定在 fileops.rename，這裡只負責做與呈現。"""
         if self._search_model_updating or self._search_item_rename_in_progress:
             return
         if item is None or item.column() != 0:
@@ -988,46 +995,25 @@ class FileManager(QMainWindow):
         old_path = item.data(Qt.UserRole + 1)
         if not old_path or not os.path.exists(old_path):
             return
-
         old_name = os.path.basename(old_path)
-        new_name = item.text().strip()
-        if not new_name or new_name == old_name:
-            self._search_item_rename_in_progress = True
-            item.setText(old_name)
-            self._search_item_rename_in_progress = False
-            return
-        if any(ch in new_name for ch in '\\/:*?"<>|'):
-            QMessageBox.warning(self, "重新命名失敗", "檔名包含無效字元。")
-            self._search_item_rename_in_progress = True
-            item.setText(old_name)
-            self._search_item_rename_in_progress = False
-            return
 
-        new_path = os.path.join(os.path.dirname(old_path), new_name)
-        # Windows 上 os.path.exists 不分大小寫：把「同一檔案僅改大小寫」（如
-        # Report.txt → report.txt）誤判為目標已存在而報錯。改名為自己（含純大小寫
-        # 變更）不算衝突，交給 os.rename 處理；只有指向「不同」檔案時才視為已存在。
-        same_file = (os.path.normcase(os.path.normpath(new_path)) ==
-                     os.path.normcase(os.path.normpath(old_path)))
-        if not same_file and os.path.exists(new_path):
-            QMessageBox.warning(self, "重新命名失敗", "目標名稱已存在。")
-            self._search_item_rename_in_progress = True
-            item.setText(old_name)
-            self._search_item_rename_in_progress = False
+        plan = rename.plan_rename(old_path, item.text())
+        if plan.new_path is None:
+            if plan.error:
+                QMessageBox.warning(self, "重新命名失敗", plan.error)
+            self._revert_search_item_text(item, old_name)
             return
 
         try:
-            os.rename(old_path, new_path)
-        except Exception as ex:
+            os.rename(old_path, plan.new_path)
+        except Exception as ex:      # 維持搬移前的攔截範圍；要收窄請另開 commit
             QMessageBox.warning(self, "重新命名失敗", f"無法重新命名: {ex}")
-            self._search_item_rename_in_progress = True
-            item.setText(old_name)
-            self._search_item_rename_in_progress = False
+            self._revert_search_item_text(item, old_name)
             return
 
         self._search_item_rename_in_progress = True
-        item.setData(new_path, Qt.UserRole + 1)
-        item.setText(os.path.basename(new_path))
+        item.setData(plan.new_path, Qt.UserRole + 1)
+        item.setText(os.path.basename(plan.new_path))
         self._search_item_rename_in_progress = False
         # 該列已就地更新為新名稱／新路徑，無須重跑整個 Everything 查詢並重建模型
         # （那會造成 GUI 凍結）。只需刷新中間面板反映檔案系統異動即可。

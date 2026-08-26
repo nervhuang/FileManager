@@ -7,6 +7,7 @@
 | 檔案 | 依賴 Qt | 職責 |
 |---|---|---|
 | `shell.py` | 否 | `SHFileOperationW`（搬移／複製／回收筒）、原生右鍵選單、右鍵拖放、建立捷徑 |
+| `rename.py` | 否 | 改名的判定（該不該做、目標是什麼、不行的話為什麼）|
 | `drag_menu.py` | 是 | `IDropTarget` 不可用時的後備選單 |
 
 `shell.py` 只認路徑與視窗代號（hwnd），成功與否用回傳值表達。訊息呈現與後續
@@ -67,6 +68,11 @@
 
 **FOP-12** **僅大小寫不同的更名必須成立**。Windows 的 `os.path.exists` 大小寫不敏感，
 正在被改名的檔案本身不得被當成名稱衝突。
+
+> 這一條曾經是壞的，修好之後一直沒有測試守著。判定現在在
+> [`app/fileops/rename.py`](../../app/fileops/rename.py)，由
+> `tests/fileops/test_fop_10_12_rename.py` 涵蓋——包含「目標是另一個檔案時，
+> 大小寫不同也要擋」這個反向情境，否則測試會被一個「永遠放行」的實作騙過去。
 
 **FOP-13** 程式自身觸發的更名不得再遞迴觸發模型的變更處理
 （以 `_search_item_rename_in_progress` 旗標阻擋）。
@@ -136,7 +142,7 @@ Qt 給的路徑是正斜線：`QUrl.toLocalFile()` 與 `QFileSystemModel.filePat
 ## 尚未完成的部分
 
 - `_ShellDropMixin` 還在 `views.py` 裡。它是拖放的 Qt 事件處理，應隨本域移走。
-- 剪貼簿、選取解析、重新命名的衝突判定仍在外殼裡。其中能算成純函式的
-  （路徑正規化、衝突判定）都該像 `plan_move_or_copy` 一樣抽出來——
+- 剪貼簿與選取解析仍在外殼裡。其中能算成純函式的都該像 `plan_move_or_copy`
+  與 `plan_rename` 一樣抽出來——
   那條界線就是「CI 測得到」與「只能手動驗收」的分界線，落在純函式那側的愈多愈好。
 - `file_manager.py` 與 `views.py` 現在都不再匯入 `ctypes` 或 `pywin32`。
