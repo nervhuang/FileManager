@@ -25,6 +25,7 @@ from .search.models import SearchResultsModel, SearchSortProxyModel
 from .views import SearchListView, FileListView
 from . import columns, toolbar
 from .fileops import drag_menu, rename, shell as shell_ops
+from .tabs import history
 from .tabs.bar import PathTabBar
 from .tabs.breadcrumb import BreadcrumbBar
 
@@ -133,8 +134,7 @@ class FileManager(QMainWindow):
         self._exclude_norm = ()
         self._search_drag_button = Qt.NoButton
         self._toolbar_icon_size = QSize(64, 64)
-        self._nav_history = []
-        self._nav_history_index = -1
+        self._nav_history = history.NavigationHistory()
         self._search_model_updating = False
         self._search_item_rename_in_progress = False
         self._search_icon_provider = QFileIconProvider()
@@ -1513,22 +1513,17 @@ class FileManager(QMainWindow):
         self.right_header_spacer.setFixedHeight(spacer_height)
 
     def _record_history(self, path):
+        """記下一次導覽。走歷史（上一頁／下一頁）不會經過這裡（TAB-24）。"""
         if not path or not os.path.isdir(path):
             return
-        if self._nav_history_index >= 0 and self._nav_history[self._nav_history_index] == path:
-            self._update_nav_buttons()
-            return
-        if self._nav_history_index < len(self._nav_history) - 1:
-            self._nav_history = self._nav_history[:self._nav_history_index + 1]
-        self._nav_history.append(path)
-        self._nav_history_index = len(self._nav_history) - 1
+        self._nav_history.record(path)
         self._update_nav_buttons()
 
     def _update_nav_buttons(self):
-        can_back = self._nav_history_index > 0
-        can_forward = 0 <= self._nav_history_index < len(self._nav_history) - 1
+        can_back = self._nav_history.can_go_back
+        can_forward = self._nav_history.can_go_forward
         current_dir = self._current_dir()
-        can_up = bool(current_dir and os.path.dirname(os.path.normpath(current_dir)) and os.path.dirname(os.path.normpath(current_dir)) != current_dir)
+        can_up = history.parent_of(current_dir) is not None
         can_new_folder = bool(current_dir)
         buttons = getattr(self, 'mid_nav_buttons', [])
         if len(buttons) >= 4:
@@ -1608,21 +1603,18 @@ class FileManager(QMainWindow):
             self._update_nav_buttons()
 
     def _navigate_back(self):
-        if self._nav_history_index > 0:
-            self._nav_history_index -= 1
-            self._navigate_to_path(self._nav_history[self._nav_history_index], record_history=False)
+        path = self._nav_history.go_back()
+        if path:
+            self._navigate_to_path(path, record_history=False)
 
     def _navigate_forward(self):
-        if self._nav_history_index < len(self._nav_history) - 1:
-            self._nav_history_index += 1
-            self._navigate_to_path(self._nav_history[self._nav_history_index], record_history=False)
+        path = self._nav_history.go_forward()
+        if path:
+            self._navigate_to_path(path, record_history=False)
 
     def _navigate_up(self):
-        current_dir = self._current_dir()
-        if not current_dir:
-            return
-        parent_dir = os.path.dirname(os.path.normpath(current_dir))
-        if parent_dir and parent_dir != current_dir and os.path.isdir(parent_dir):
+        parent_dir = history.parent_of(self._current_dir())
+        if parent_dir and os.path.isdir(parent_dir):
             self._navigate_to_path(parent_dir)
 
     def _create_folder_in_current_dir(self):
