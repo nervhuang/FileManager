@@ -24,7 +24,7 @@ from .search import models as search_models
 from .search.models import SearchResultsModel, SearchSortProxyModel
 from .views import SearchListView, FileListView
 from . import columns, toolbar
-from .fileops import drag_menu, rename, shell as shell_ops
+from .fileops import clipboard, drag_menu, rename, shell as shell_ops
 from .tabs import history
 from .tabs.bar import PathTabBar
 from .tabs.breadcrumb import BreadcrumbBar
@@ -139,7 +139,7 @@ class FileManager(QMainWindow):
         self._search_item_rename_in_progress = False
         self._search_icon_provider = QFileIconProvider()
         self._search_icon_cache = {}
-        self._clipboard_file_op = "copy"
+        self._clipboard_file_op = clipboard.COPY
         self._clipboard_paths = ()
         self._pending_new_folder_path = ""
         self._combo_auto_search_timer = QTimer(self)
@@ -846,9 +846,6 @@ class FileManager(QMainWindow):
         view = self._focused_file_view()
         return view if view in (self.listView, self.listView2) else None
 
-    def _normalize_clipboard_paths(self, paths):
-        return tuple(os.path.normcase(os.path.normpath(path)) for path in paths if path)
-
     def _get_selected_paths_for_view(self, view):
         if view is self.listView2:
             return self._get_selected_search_paths()
@@ -897,7 +894,7 @@ class FileManager(QMainWindow):
 
         QApplication.clipboard().setMimeData(mime)
         self._clipboard_file_op = op
-        self._clipboard_paths = self._normalize_clipboard_paths(paths)
+        self._clipboard_paths = clipboard.normalise(paths)
         return True
 
     def _copy_selected_paths_from_focused_view(self):
@@ -909,7 +906,7 @@ class FileManager(QMainWindow):
         if not paths:
             return False
 
-        return self._set_clipboard_file_paths(paths, "copy")
+        return self._set_clipboard_file_paths(paths, clipboard.COPY)
 
     def _cut_selected_paths_from_focused_view(self):
         view = self._focused_shortcut_view()
@@ -920,7 +917,7 @@ class FileManager(QMainWindow):
         if not paths:
             return False
 
-        return self._set_clipboard_file_paths(paths, "move")
+        return self._set_clipboard_file_paths(paths, clipboard.MOVE)
 
     def _paste_into_current_dir_from_clipboard(self):
         # 鍵盤 Ctrl+V：需有清單取得焦點才貼上（與其他快捷鍵一致）
@@ -936,24 +933,17 @@ class FileManager(QMainWindow):
         if not target_dir or not os.path.isdir(target_dir):
             return False
 
-        clipboard = QApplication.clipboard()
-        mime = clipboard.mimeData() if clipboard is not None else None
+        board = QApplication.clipboard()
+        mime = board.mimeData() if board is not None else None
         if mime is None or not mime.hasUrls():
             return False
 
-        src_paths = []
-        seen = set()
-        for url in mime.urls():
-            local_path = url.toLocalFile()
-            if not local_path or local_path in seen:
-                continue
-            seen.add(local_path)
-            src_paths.append(local_path)
+        src_paths = clipboard.unique_paths(url.toLocalFile() for url in mime.urls())
         if not src_paths:
             return False
 
-        clipboard_paths = self._normalize_clipboard_paths(src_paths)
-        op = "move" if (self._clipboard_file_op == "move" and clipboard_paths == self._clipboard_paths) else "copy"
+        op = clipboard.decide_paste_op(
+            self._clipboard_file_op, self._clipboard_paths, src_paths)
         self.track_file_operation(src_paths, target_dir)
         self._perform_file_op(src_paths, target_dir, op)
         return True
@@ -1548,9 +1538,9 @@ class FileManager(QMainWindow):
             sel = view.selectionModel() if view is not None else None
             if sel is not None:
                 sel.selectionChanged.connect(lambda *_: self._update_action_buttons_state())
-        clipboard = QApplication.clipboard()
-        if clipboard is not None:
-            clipboard.dataChanged.connect(self._update_action_buttons_state)
+        board = QApplication.clipboard()
+        if board is not None:
+            board.dataChanged.connect(self._update_action_buttons_state)
         self._update_action_buttons_state()
 
     def _update_action_buttons_state(self):
@@ -1561,8 +1551,8 @@ class FileManager(QMainWindow):
         paths = self._get_selected_paths_for_view(view) if view is not None else []
         has_selection = bool(paths)
         single_selection = len(paths) == 1
-        clipboard = QApplication.clipboard()
-        mime = clipboard.mimeData() if clipboard is not None else None
+        board = QApplication.clipboard()
+        mime = board.mimeData() if board is not None else None
         can_paste = bool(mime and mime.hasUrls()) and bool(self._current_dir())
         self.act_cut.setEnabled(has_selection)
         self.act_copy.setEnabled(has_selection)
