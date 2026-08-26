@@ -6,7 +6,7 @@ import traceback
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QFileSystemModel, QWidget,
     QHBoxLayout, QVBoxLayout, QAction, QMessageBox,
-    QToolButton, QToolBar, QSplitter, QSizePolicy, QFileIconProvider,
+    QSplitter, QSizePolicy, QFileIconProvider,
     QAbstractItemView, QMenu, QComboBox,
     QDialog, QCheckBox, QListWidget, QFileDialog, QDialogButtonBox,
     QPushButton, QLabel, QActionGroup, QShortcut, QFrame,
@@ -23,7 +23,7 @@ from .models import FileSystemSortProxyModel
 from .search import models as search_models
 from .search.models import SearchResultsModel, SearchSortProxyModel
 from .views import SearchListView, FileListView
-from . import columns
+from . import columns, toolbar
 from .fileops import drag_menu, shell as shell_ops
 from .tabs.bar import PathTabBar
 from .tabs.breadcrumb import BreadcrumbBar
@@ -225,45 +225,7 @@ class FileManager(QMainWindow):
         horizontal_layout_icon = self._make_layout_icon(Qt.Orientation.Horizontal, active=True)
         vertical_layout_icon = self._make_layout_icon(Qt.Orientation.Vertical)
 
-        def make_panel_nav_button(icon, tooltip, handler):
-            button = QToolButton(self)
-            button.setIcon(icon)
-            button.setIconSize(self._toolbar_icon_size)
-            button.setToolTip(tooltip)
-            button.setAutoRaise(True)
-            # 工具列按鈕不搶走清單焦點，_focused_file_view() 才能持續抓到操作面板
-            button.setFocusPolicy(Qt.NoFocus)
-            button.clicked.connect(handler)
-            return button
-
-        def build_panel_toolbar(button_specs):
-            """建立面板工具列。
-
-            用 QToolBar 而非固定的 QHBoxLayout：後者的最小寬度等於所有按鈕寬度
-            總和（加大圖示與文字後高達 1500px），會把中間面板的最小寬度一起撐到
-            那麼寬，導致左側作者面板的分隔線在一般視窗寬度下根本拖不動。QToolBar
-            在寬度不足時會把排不下的按鈕收進溢位選單，最小寬度僅一顆按鈕。
-            """
-            bar = QToolBar(self)
-            bar.setFloatable(False)
-            bar.setMovable(False)
-            bar.setFocusPolicy(Qt.NoFocus)
-            bar.setIconSize(self._toolbar_icon_size)
-            bar.setContentsMargins(2, 2, 2, 2)
-            bar.setStyleSheet("QToolBar { spacing: 6px; }")  # 加大圖示後放寬按鈕間距
-            buttons = []
-            for spec in button_specs:
-                if spec is None:  # 群組之間的分隔線
-                    bar.addSeparator()
-                    continue
-                icon, tooltip, handler = spec
-                btn = make_panel_nav_button(icon, tooltip, handler)
-                bar.addWidget(btn)
-                buttons.append(btn)
-            return bar, buttons
-
-        # 使用 QToolButton 並將其明確命名（以便後續啟用/停用）
-        # 创建右侧的文件列表视图
+        # 兩個面板的清單：中間是檔案，右邊是搜尋結果。右鍵選單都走原生 shell 選單。
         self.listView = FileListView(self)
         self.listView.setSortingEnabled(True)
         self.listView.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -276,50 +238,44 @@ class FileManager(QMainWindow):
         self.listView2.customContextMenuRequested.connect(self._show_search_context_menu)
 
         # 中間面板：加入多重頁籤列
-        self.mid_panel_toolbar, self.mid_nav_buttons = build_panel_toolbar([
+        self.mid_panel_toolbar, self.mid_nav_buttons = toolbar.build(self, self._toolbar_icon_size, [
             (icons.make_back_icon(self._toolbar_icon_size), "前一頁", self._navigate_back),
             (icons.make_forward_icon(self._toolbar_icon_size), "後一頁", self._navigate_forward),
             (up_folder_icon, "回到上一層目錄", self._navigate_up),
-            None,  # 導覽 ┃ 新增+排列
+            toolbar.SEPARATOR,       # 導覽 ┃ 新增+排列
             (icons.make_new_folder_icon(self._toolbar_icon_size), "新增資料夾",
              self._create_folder_in_current_dir),
         ])
         # 更新檢查器的入口固定放在這條工具列上：面板本身預設收起，沒有這顆按鈕
         # 就只剩選單能叫出來，等於藏起來了。
-        self.checker_toolbar_button = make_panel_nav_button(
-            make_checker_icon(), "更新檢查器：比對站上新書與本機藏書",
-            self._toggle_checker_panel)
+        self.checker_toolbar_button = toolbar.make_nav_button(
+            self, make_checker_icon(), "更新檢查器：比對站上新書與本機藏書",
+            self._toggle_checker_panel, self._toolbar_icon_size)
         self.mid_panel_toolbar.addSeparator()
         self.mid_panel_toolbar.addWidget(self.checker_toolbar_button)
 
-        # Phase B：檔案總管風格的操作按鈕（圖示＋文字），作用於目前焦點面板。
-        def make_action_button(icon, text, handler):
-            btn = QToolButton(self)
-            btn.setIcon(icon)
-            btn.setIconSize(self._toolbar_icon_size)
-            btn.setText(text)
-            btn.setToolTip(text)
-            # 文字置於圖示下方，與左側作者面板工具列同一種排法與高度
-            btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
-            btn.setAutoRaise(True)
-            btn.setFocusPolicy(Qt.NoFocus)
-            # 文字與加大的圖示等比放大，避免頭大身小
-            f = btn.font()
-            f.setPointSize(14)
-            btn.setFont(f)
-            btn.clicked.connect(handler)
-            return btn
-
-        self.act_cut = make_action_button(icons.make_file_action_icon("cut", self._toolbar_icon_size), "剪下", self._cut_selected_paths_from_focused_view)
-        self.act_copy = make_action_button(icons.make_file_action_icon("copy", self._toolbar_icon_size), "複製", self._copy_selected_paths_from_focused_view)
-        self.act_paste = make_action_button(icons.make_file_action_icon("paste", self._toolbar_icon_size), "貼上", self._paste_from_toolbar)
-        self.act_rename = make_action_button(icons.make_file_action_icon("rename", self._toolbar_icon_size), "重新命名", self._rename_selected_focused_item)
-        self.act_delete = make_action_button(icons.make_trash_icon(self._toolbar_icon_size), "刪除", self._delete_selected_focused_items)
-        self.act_refresh = make_action_button(icons.make_refresh_icon(self._toolbar_icon_size), "重新整理", lambda: self.refresh_mid_panel(force=True))
+        self.act_cut = toolbar.make_action_button(self, icons.make_file_action_icon("cut", self._toolbar_icon_size), "剪下",
+            self._cut_selected_paths_from_focused_view, self._toolbar_icon_size)
+        self.act_copy = toolbar.make_action_button(self, icons.make_file_action_icon("copy", self._toolbar_icon_size), "複製",
+            self._copy_selected_paths_from_focused_view, self._toolbar_icon_size)
+        self.act_paste = toolbar.make_action_button(self, icons.make_file_action_icon("paste", self._toolbar_icon_size), "貼上",
+            self._paste_from_toolbar, self._toolbar_icon_size)
+        self.act_rename = toolbar.make_action_button(self, icons.make_file_action_icon("rename", self._toolbar_icon_size), "重新命名",
+            self._rename_selected_focused_item, self._toolbar_icon_size)
+        self.act_delete = toolbar.make_action_button(self, icons.make_trash_icon(self._toolbar_icon_size), "刪除",
+            self._delete_selected_focused_items, self._toolbar_icon_size)
+        self.act_refresh = toolbar.make_action_button(self, icons.make_refresh_icon(self._toolbar_icon_size), "重新整理",
+            lambda: self.refresh_mid_panel(force=True), self._toolbar_icon_size)
         # 上下/左右排列鈕緊接「新增資料夾」，排在操作按鈕左邊
-        self.layout_horizontal_button = make_panel_nav_button(horizontal_layout_icon, "左右排列", lambda: self._set_right_panel_layout(Qt.Orientation.Horizontal))
+        self.layout_horizontal_button = toolbar.make_nav_button(
+            self, horizontal_layout_icon, "左右排列",
+            lambda: self._set_right_panel_layout(Qt.Orientation.Horizontal),
+            self._toolbar_icon_size)
         self.mid_panel_toolbar.addWidget(self.layout_horizontal_button)
-        self.layout_vertical_button = make_panel_nav_button(vertical_layout_icon, "上下排列", lambda: self._set_right_panel_layout(Qt.Orientation.Vertical))
+        self.layout_vertical_button = toolbar.make_nav_button(
+            self, vertical_layout_icon, "上下排列",
+            lambda: self._set_right_panel_layout(Qt.Orientation.Vertical),
+            self._toolbar_icon_size)
         self.mid_panel_toolbar.addWidget(self.layout_vertical_button)
         # 新增+排列 ┃ 操作
         self.mid_panel_toolbar.addSeparator()
