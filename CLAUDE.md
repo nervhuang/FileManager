@@ -98,7 +98,7 @@ CLI 是沒有 `QApplication` 的獨立進程，它們要用得到服務層。
 ### CHANGELOG
 
 `feat:` 與 `fix:` 必須同步更新 [CHANGELOG.md](CHANGELOG.md)，寫**為什麼**，
-不只是寫改了什麼。CHANGELOG 用英文（沿用該檔既有書寫），`docs/spec/` 用中文。
+不只是寫改了什麼。CHANGELOG 與 `docs/spec/` 都用中文。
 
 ---
 
