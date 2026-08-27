@@ -6,7 +6,7 @@ from PyQt5.QtCore import Qt, QItemSelection, QItemSelectionModel, QMimeData, QUr
 from PyQt5.QtGui import QDrag
 
 from .fileops import drag_menu, drag_preview, shell as shell_ops
-from .fileops.selection import ManualDragGuardMixin
+from .fileops.selection import ManualDragGuardMixin, NameColumnSelectionMixin
 
 
 class _ShellDropMixin:
@@ -68,7 +68,7 @@ class _ShellDropMixin:
             QTimer.singleShot(600, wnd.refresh_mid_panel)
 
 
-class SearchListView(_ShellDropMixin, ManualDragGuardMixin, QTreeView):
+class SearchListView(_ShellDropMixin, NameColumnSelectionMixin, QTreeView):
     """QTreeView 子類別，支援鍵盤創點定錨點的 Shift 區間選取和 Ctrl 切換選取。
     Shift+點擊從第一次按下的項目開始延伸，不會因後續 Shift+點擊而變更錨點。"""
 
@@ -111,6 +111,9 @@ class SearchListView(_ShellDropMixin, ManualDragGuardMixin, QTreeView):
         if not index.isValid() or sel is None:
             self._anchor = None
             super().mousePressEvent(event)
+            return
+
+        if self._handle_blank_zone_press(event):
             return
 
         if modifiers & Qt.ShiftModifier:
@@ -176,6 +179,8 @@ class SearchListView(_ShellDropMixin, ManualDragGuardMixin, QTreeView):
 
     def mouseMoveEvent(self, event):
         if self._swallow_move_after_manual_drag(event):
+            return
+        if self._handle_blank_zone_move(event):
             return
         # 多選左鍵拖曳：press 落在「多選之一」時，Qt 因留在 NoState 會把移動當成
         # 框選（rubber band）而改寫選取，只剩游標下的項目被拖。故此處自行偵測門檻
@@ -329,6 +334,8 @@ class SearchListView(_ShellDropMixin, ManualDragGuardMixin, QTreeView):
                                   first.data(Qt.DecorationRole), len(rows))
 
     def mouseReleaseEvent(self, event):
+        if self._handle_blank_zone_release(event):
+            return
         # 在「多選之一」上按下後直接放開（沒有拖曳）：比照一般檔案總管行為，
         # 收斂為僅選取被點的那一項。若期間已啟動拖曳，_press_on_selected 已於
         # mouseMoveEvent 清空，不會進入此分支。
@@ -430,7 +437,7 @@ class SearchListView(_ShellDropMixin, ManualDragGuardMixin, QTreeView):
         return "move" if src_drive and src_drive == dst_drive else "copy"
 
 
-class FileListView(_ShellDropMixin, ManualDragGuardMixin, QTreeView):
+class FileListView(_ShellDropMixin, NameColumnSelectionMixin, QTreeView):
     """QTreeView for the middle file panel with Shell right-click context menu and right-drag support."""
 
     def __init__(self, parent=None):
@@ -444,10 +451,14 @@ class FileListView(_ShellDropMixin, ManualDragGuardMixin, QTreeView):
         self._press_pos = event.pos()
         self._press_button = event.button()
         self._clear_manual_drag_guard()
+        if self._handle_blank_zone_press(event):
+            return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         if self._swallow_move_after_manual_drag(event):
+            return
+        if self._handle_blank_zone_move(event):
             return
         if (self._press_pos is not None
                 and self._press_button == Qt.RightButton
@@ -479,6 +490,8 @@ class FileListView(_ShellDropMixin, ManualDragGuardMixin, QTreeView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self._handle_blank_zone_release(event):
+            return
         self._clear_manual_drag_guard()
         super().mouseReleaseEvent(event)
         self._press_pos = None
