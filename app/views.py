@@ -3,9 +3,9 @@ import traceback
 
 from PyQt5.QtWidgets import QTreeView, QApplication, QMessageBox
 from PyQt5.QtCore import Qt, QItemSelection, QItemSelectionModel, QMimeData, QUrl, QTimer, QPersistentModelIndex
-from PyQt5.QtGui import QDrag, QPixmap, QPainter, QColor, QIcon
+from PyQt5.QtGui import QDrag
 
-from .fileops import drag_menu, shell as shell_ops
+from .fileops import drag_menu, drag_preview, shell as shell_ops
 
 
 class _ShellDropMixin:
@@ -315,47 +315,12 @@ class SearchListView(_ShellDropMixin, QTreeView):
         sel = self.selectionModel()
         if sel is None:
             return None
-
         rows = sel.selectedRows(0)
         if not rows:
             return None
-
         first = rows[0]
-        name = first.data(Qt.DisplayRole) or ""
-        icon = first.data(Qt.DecorationRole)
-        count = len(rows)
-
-        secondary = f"{count} 個項目" if count > 1 else ""
-        w = 260
-        h = 52 if secondary else 40
-        pix = QPixmap(w, h)
-        pix.fill(Qt.transparent)
-
-        p = QPainter(pix)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.setBrush(QColor(32, 32, 32, 215))
-        p.setPen(Qt.NoPen)
-        p.drawRoundedRect(0, 0, w - 1, h - 1, 8, 8)
-
-        x = 10
-        if isinstance(icon, QIcon):
-            pm = icon.pixmap(20, 20)
-            if not pm.isNull():
-                p.drawPixmap(x, (h - 20) // 2, pm)
-                x += 26
-
-        p.setPen(QColor("white"))
-        fm = p.fontMetrics()
-        text_w = w - x - 10
-        title = fm.elidedText(name, Qt.ElideRight, text_w)
-        if secondary:
-            p.drawText(x, 20, title)
-            p.setPen(QColor(210, 210, 210))
-            p.drawText(x, 38, secondary)
-        else:
-            p.drawText(x, 26, title)
-        p.end()
-        return pix
+        return drag_preview.build(first.data(Qt.DisplayRole) or "",
+                                  first.data(Qt.DecorationRole), len(rows))
 
     def mouseReleaseEvent(self, event):
         # 在「多選之一」上按下後直接放開（沒有拖曳）：比照一般檔案總管行為，
