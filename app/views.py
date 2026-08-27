@@ -6,6 +6,7 @@ from PyQt5.QtCore import Qt, QItemSelection, QItemSelectionModel, QMimeData, QUr
 from PyQt5.QtGui import QDrag
 
 from .fileops import drag_menu, drag_preview, shell as shell_ops
+from .fileops.selection import ManualDragGuardMixin
 
 
 class _ShellDropMixin:
@@ -67,7 +68,7 @@ class _ShellDropMixin:
             QTimer.singleShot(600, wnd.refresh_mid_panel)
 
 
-class SearchListView(_ShellDropMixin, QTreeView):
+class SearchListView(_ShellDropMixin, ManualDragGuardMixin, QTreeView):
     """QTreeView 子類別，支援鍵盤創點定錨點的 Shift 區間選取和 Ctrl 切換選取。
     Shift+點擊從第一次按下的項目開始延伸，不會因後續 Shift+點擊而變更錨點。"""
 
@@ -86,6 +87,7 @@ class SearchListView(_ShellDropMixin, QTreeView):
         self._press_pos = event.pos()
         self._press_button = event.button()
         self._press_on_selected = None
+        self._clear_manual_drag_guard()
 
         if event.button() == Qt.RightButton:
             index = self.indexAt(event.pos())
@@ -173,6 +175,8 @@ class SearchListView(_ShellDropMixin, QTreeView):
             self._notify_search_refresh_delayed(dragged_paths)
 
     def mouseMoveEvent(self, event):
+        if self._swallow_move_after_manual_drag(event):
+            return
         # 多選左鍵拖曳：press 落在「多選之一」時，Qt 因留在 NoState 會把移動當成
         # 框選（rubber band）而改寫選取，只剩游標下的項目被拖。故此處自行偵測門檻
         # 並啟動拖曳，startDrag 會讀取完整選取，確保一次拖曳所有選取的檔案。
@@ -182,6 +186,7 @@ class SearchListView(_ShellDropMixin, QTreeView):
                 and (event.pos() - self._press_pos).manhattanLength() >= QApplication.startDragDistance()):
             self._press_on_selected = None
             self.startDrag(Qt.CopyAction | Qt.MoveAction | Qt.LinkAction)
+            self._note_manual_drag_finished()
             self._press_pos = None
             self._press_button = Qt.NoButton
             return
@@ -203,6 +208,7 @@ class SearchListView(_ShellDropMixin, QTreeView):
                 if wnd is not None and hasattr(wnd, "_search_drag_button"):
                     wnd._search_drag_button = Qt.RightButton
                 result_action = drag.exec_(Qt.CopyAction | Qt.MoveAction | Qt.LinkAction, Qt.CopyAction)
+                self._note_manual_drag_finished()
                 if wnd is not None and hasattr(wnd, "_search_drag_button"):
                     wnd._search_drag_button = Qt.NoButton
                 self._suppress_next_context_menu = True
@@ -344,6 +350,7 @@ class SearchListView(_ShellDropMixin, QTreeView):
                 sel.setCurrentIndex(index, QItemSelectionModel.NoUpdate)
             return
         self._press_on_selected = None
+        self._clear_manual_drag_guard()
         super().mouseReleaseEvent(event)
         self._press_pos = None
         self._press_button = Qt.NoButton
@@ -423,7 +430,7 @@ class SearchListView(_ShellDropMixin, QTreeView):
         return "move" if src_drive and src_drive == dst_drive else "copy"
 
 
-class FileListView(_ShellDropMixin, QTreeView):
+class FileListView(_ShellDropMixin, ManualDragGuardMixin, QTreeView):
     """QTreeView for the middle file panel with Shell right-click context menu and right-drag support."""
 
     def __init__(self, parent=None):
@@ -436,9 +443,12 @@ class FileListView(_ShellDropMixin, QTreeView):
     def mousePressEvent(self, event):
         self._press_pos = event.pos()
         self._press_button = event.button()
+        self._clear_manual_drag_guard()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self._swallow_move_after_manual_drag(event):
+            return
         if (self._press_pos is not None
                 and self._press_button == Qt.RightButton
                 and (event.pos() - self._press_pos).manhattanLength() >= QApplication.startDragDistance()):
@@ -455,6 +465,7 @@ class FileListView(_ShellDropMixin, QTreeView):
                 self._suppress_next_context_menu = True
                 self._drag_in_progress = True
                 drag.exec_(Qt.CopyAction | Qt.MoveAction | Qt.LinkAction, Qt.CopyAction)
+                self._note_manual_drag_finished()
                 self._drag_in_progress = False
                 if wnd is not None and hasattr(wnd, "_search_drag_button"):
                     wnd._search_drag_button = Qt.NoButton
@@ -468,6 +479,7 @@ class FileListView(_ShellDropMixin, QTreeView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        self._clear_manual_drag_guard()
         super().mouseReleaseEvent(event)
         self._press_pos = None
         self._press_button = Qt.NoButton
