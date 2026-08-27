@@ -81,9 +81,19 @@
 
 **INT-13** `linked_names` 為新增合併語意，見 [authors.md](authors.md) 的 AUT-7。
 
-**INT-13a** `fm_match_author` 與 `fm_authors_link` 的名稱參數（經 `_resolve_entity`）
-接受 `english_name`，可用英文名反查對應的日文／中文實體。
-`fm_authors_list` 的 keyword 過濾與回傳實體同樣涵蓋 `english_name`。
+**INT-13a** 這幾處接受 `english_name`，可用英文名反查對應的日文／中文實體：
+`fm_match_author`、`fm_authors_link(unlink=true)`（兩者都走 `_resolve_entity`），
+以及 `fm_authors_list` 的 keyword 過濾與回傳實體。
+
+**INT-13b** **[未驗]** `fm_authors_link` 的**建立**方向**不**認英文名。
+它走 `authors_db.link` → `_ensure_entity`，只比對名稱，找不到就建新的。
+於是 `fm_authors_link('Kou', '某團體')` 會安靜地多出一筆叫 `Kou` 的作者，
+而不是接到既有的「甲作者」——正是 INT-12 警告的「建出兩筆互不相關的資料」。
+
+> 建立與解除的行為不對稱。現況已由
+> `tests/integration/test_int_10_18_authors_and_bridge.py` 鎖住，
+> **但這比較像缺陷而非設計**。要改成一致的話先改這條規格與那支測試。
+> 原本的 INT-13a 把兩個方向寫成一樣，是鑑定時從 commit 訊息推的，不精確。
 
 ---
 
