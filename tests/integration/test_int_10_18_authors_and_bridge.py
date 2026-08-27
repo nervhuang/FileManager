@@ -149,7 +149,7 @@ def test_int_13a_unlink_resolves_by_english_name(mcp):
 
 
 def test_int_13b_linking_by_english_name_creates_a_duplicate(mcp):
-    """**[未驗]** 建立關聯與解除關聯的行為不對稱，這裡鎖住的是現況。
+    """INT-13b **[未驗]** 建立關聯與解除關聯的行為不對稱，這裡鎖住的是現況。
 
     解除走 _resolve_entity（認得英文名），建立走 _ensure_entity（只認名稱，
     找不到就建）。於是用英文名建立關聯會安靜地多出一筆叫 Kou 的作者，

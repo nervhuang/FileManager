@@ -82,7 +82,7 @@ def test_tab_24_walking_back_does_not_grow_the_history(history):
 
 
 def test_navigating_somewhere_new_after_going_back_truncates_the_forward_entries(history):
-    """分支出去就回不到原來那條線，與瀏覽器一致。"""
+    """TAB-24a：分支出去就回不到原來那條線，與瀏覽器一致。"""
     for path in (r'C:\a', r'C:\b', r'C:\c'):
         history.record(path)
     history.go_back()                       # 回到 b，前方還有 c

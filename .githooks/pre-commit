@@ -24,6 +24,9 @@ export PYTHONIOENCODING=utf-8
 echo "pre-commit: 行數上限"
 "$PY" scripts/check_line_limits.py
 
+echo "pre-commit: 規格覆蓋"
+"$PY" scripts/check_spec_coverage.py > /dev/null
+
 echo "pre-commit: 純邏輯測試"
 "$PY" -m pytest -q -m logic
 

@@ -82,6 +82,10 @@ CLI 是沒有 `QApplication` 的獨立進程，它們要用得到服務層。
 - 加行為 → 先在規格加一條編號條文，再寫測試，再寫程式碼
 - 條文編號（`SET-3`、`SRCH-14`…）是測試檔名的依據：
   `tests/search/test_srch_14_folder_first_sort.py`
+- **每一條條文都要嘛有測試引用它，要嘛在條文段落裡標 `[手動]` 並寫明為什麼。**
+  `scripts/check_spec_coverage.py` 會擋，pre-commit 與 CI 都跑。
+  引用只要「測試檔案內容出現該編號」即可——檔名、docstring、assert 訊息都算，
+  重點是有人負責這條，不是格式。
 
 ### commit 粒度
 
@@ -151,8 +155,8 @@ windows runner 是 cp1252。兩者都印不出這個專案的中文訊息，會�
 
 ## 把關
 
-- **pre-commit**（`git config core.hooksPath .githooks`）：行數上限 + 純邏輯測試
-- **CI**（`.github/workflows/test.yml`，windows-latest）：行數上限 + 全部測試
+- **pre-commit**（`git config core.hooksPath .githooks`）：行數上限 + 規格覆蓋 + 純邏輯測試
+- **CI**（`.github/workflows/test.yml`，windows-latest）：行數上限 + 規格覆蓋 + 全部測試
 
 `--no-verify` 只是延後，CI 仍然會擋。
 

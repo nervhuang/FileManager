@@ -33,6 +33,9 @@ jobs:
       - name: 行數上限檢查
         run: python scripts/check_line_limits.py
 
+      - name: 規格覆蓋檢查
+        run: python scripts/check_spec_coverage.py
+
       - name: 測試
         env:
           # Qt 沒有桌面可用；offscreen 量得到 widget 狀態，量不到長相。

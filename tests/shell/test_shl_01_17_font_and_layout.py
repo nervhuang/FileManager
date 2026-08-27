@@ -1,4 +1,5 @@
-"""SHL-1、SHL-5 到 SHL-9、SHL-13 到 SHL-17：字級範圍、麵包屑、關閉鈕、版面。
+"""SHL-1、SHL-5 到 SHL-9、SHL-13 到 SHL-17、TAB-21、AUT-13：
+字級範圍、麵包屑、關閉鈕、版面與快捷鍵。
 
 字型的**範圍**（哪些 widget 要跟上）在 test_shl_02_font_applies_to_whole_app.py，
 圖示尺寸在 test_shl_11_toolbar_icon_sizes.py。這裡補其餘。

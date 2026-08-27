@@ -1,5 +1,8 @@
 """SRCH-9 到 SRCH-12：排除目錄、路徑／副檔名限縮，以及分頁欄位的語意。
 
+SRCH-10（同一份排除設定給 GUI、MCP、CLI 三個進程共用）另見
+tests/integration/test_int_10_18_authors_and_bridge.py。
+
 Everything 在 CI 上不存在，所以這裡餵一個假的搜尋引擎——規格說搜尋引擎必須是
 可注入的介面，這支測試就是那句話的兌現。
 

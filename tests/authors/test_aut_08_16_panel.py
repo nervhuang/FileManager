@@ -208,3 +208,45 @@ def test_aut_16_pending_link_text_is_committed_too(panel, qapp):
         assert '還沒按 Enter 的團體' in dialog.result_entry()['linked_names']
     finally:
         dialog.close()
+
+
+# ── AUT-17／AUT-17a：貼上拆分只在「新增」模式攔截 ──────────────────────
+
+def test_aut_17_pasting_a_circle_author_name_splits_it(panel, qapp):
+    """貼上「團體 (作者)」之後，名稱欄只剩團體名，作者進到關聯清單，
+    類型也自動切成團體。"""
+    dialog = EntityEditDialog(panel._conn, parent=panel)
+    try:
+        dialog.name_edit.setText('サイクロン (和泉、冷泉)')
+        dialog.name_edit.editingFinished.emit()
+        qapp.processEvents()
+
+        assert dialog.name_edit.text() == 'サイクロン'
+        assert dialog.type_combo.currentData() == authors_db.CIRCLE
+        links = [dialog.link_list.item(i).text()
+                 for i in range(dialog.link_list.count())]
+        assert links == ['和泉', '冷泉']
+    finally:
+        dialog.close()
+
+
+def test_aut_17a_editing_an_existing_entity_never_splits(panel, qapp):
+    """既有項目的名稱本來就可能合法地含括號，不該被這條規則誤拆。
+
+    做法是「編輯模式根本不接這條訊號」，所以這裡直接驗名稱沒被動過。
+    """
+    authors_db.upsert(panel._conn, [
+        {'name': '社團 (附註)', 'type': authors_db.CIRCLE}])
+    existing = authors_db.get_entity(
+        panel._conn,
+        authors_db.find_entity(panel._conn, '社團 (附註)', authors_db.CIRCLE)['id'])
+
+    dialog = EntityEditDialog(panel._conn, entity=existing, parent=panel)
+    try:
+        dialog.name_edit.editingFinished.emit()
+        qapp.processEvents()
+
+        assert dialog.name_edit.text() == '社團 (附註)', '編輯模式不該拆名稱'
+        assert dialog.link_list.count() == 0
+    finally:
+        dialog.close()

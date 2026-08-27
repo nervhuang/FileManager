@@ -116,8 +116,9 @@
 
 **SRCH-20** 拖放觸發的同步重新整理必須去重，不得重複執行。
 
-**SRCH-21** 不得用 `setRootPath("")` 破壞式重載檔案面板；
-交給 `QFileSystemModel` 內建 watcher 增量更新。
+**SRCH-21** **[手動]** 不得用 `setRootPath("")` 破壞式重載檔案面板；
+交給 `QFileSystemModel` 內建 watcher 增量更新。症狀是操作後整個面板閃一下並
+回到頂端，自動測試量不出「閃了一下」。
 
 ---
 
