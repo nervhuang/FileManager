@@ -86,6 +86,14 @@ def make_glyph_icon(kind):
         person(0.44, 0.42, 1.00, _BODY, _EDGE)
         plus_badge(0.78, 0.78, 0.17)
 
+    elif kind == 'group':
+        # 中間檔案面板工具列的「作者／團體清單」入口（SHL-15a）。
+        # 與 add_circle 同一組人形，去掉新增徽章——那顆鈕是「建一筆」，
+        # 這顆是「開面板」，徽章正是兩者唯一該有的差別。
+        person(0.28, 0.28, 0.92, _BODY_BACK, _EDGE.lighter(135))
+        person(0.62, 0.28, 0.92, _BODY_BACK, _EDGE.lighter(135))
+        person(0.45, 0.45, 1.16, _BODY, _EDGE)
+
     elif kind == 'edit':
         # 鉛筆：木身 + 金屬套環 + 筆尖，斜置由左下指向右上
         body_pts = [pt(0.30, 0.86), pt(0.22, 0.70), pt(0.66, 0.26), pt(0.78, 0.40)]

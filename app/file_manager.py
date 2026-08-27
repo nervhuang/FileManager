@@ -16,6 +16,7 @@ from PyQt5.QtGui import QKeySequence, QIcon, QFont
 
 from . import crashlog, font_scaling, gui_bridge, icons, paths, settings
 from .search import query as search_query, results as search_results
+from .authors import icons as authors_icons
 from .authors.panel import AuthorsPanel
 from .checker.panel import CheckerPanel, make_checker_icon
 from .search.everything import EverythingSDK
@@ -246,12 +247,19 @@ class FileManager(QMainWindow):
             (icons.make_new_folder_icon(self._toolbar_icon_size), "新增資料夾",
              self._create_folder_in_current_dir),
         ])
-        # 更新檢查器的入口固定放在這條工具列上：面板本身預設收起，沒有這顆按鈕
-        # 就只剩選單能叫出來，等於藏起來了。
+        # 兩個側邊面板的入口並列成一組（SHL-15a）：只靠選單與快捷鍵叫得出來的
+        # 面板等於藏起來了。更新檢查器預設就是收起的；作者面板雖然預設顯示，
+        # 關掉之後同樣只剩選單找得回來。
+        self.mid_panel_toolbar.addSeparator()
+        self.authors_toolbar_button = toolbar.make_nav_button(
+            self, authors_icons.make_glyph_icon('group'),
+            "作者／團體清單：切換左側面板顯示",
+            lambda: self._set_authors_panel_visible(not self._authors_panel_visible),
+            self._toolbar_icon_size)
+        self.mid_panel_toolbar.addWidget(self.authors_toolbar_button)
         self.checker_toolbar_button = toolbar.make_nav_button(
             self, make_checker_icon(), "更新檢查器：比對站上新書與本機藏書",
             self._toggle_checker_panel, self._toolbar_icon_size)
-        self.mid_panel_toolbar.addSeparator()
         self.mid_panel_toolbar.addWidget(self.checker_toolbar_button)
 
         self.act_cut = toolbar.make_action_button(self, icons.make_file_action_icon("cut", self._toolbar_icon_size), "剪下",
