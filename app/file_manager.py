@@ -8,14 +8,14 @@ from PyQt5.QtWidgets import (
     QHBoxLayout, QVBoxLayout, QAction, QMessageBox,
     QSplitter, QSizePolicy, QFileIconProvider,
     QAbstractItemView, QMenu, QComboBox,
-    QDialog, QCheckBox, QListWidget, QFileDialog, QDialogButtonBox,
-    QPushButton, QLabel, QActionGroup, QShortcut, QFrame,
+    QDialog, QActionGroup, QShortcut, QFrame,
 )
 from PyQt5.QtCore import QDir, Qt, QSize, QFileInfo, QEvent, QTimer, QFileSystemWatcher, QItemSelectionModel, QMimeData, QUrl
 from PyQt5.QtGui import QKeySequence, QIcon, QFont
 
 from . import crashlog, font_scaling, gui_bridge, icons, paths, settings
 from .search import query as search_query, results as search_results
+from .search.exclude_dialog import ExcludeSettingsDialog
 from .authors import icons as authors_icons
 from .authors.panel import AuthorsPanel
 from .checker.panel import CheckerPanel, make_checker_icon
@@ -38,71 +38,6 @@ global_keywords = []
 # 路徑解析實作已移至 app/paths.py（不依賴 Qt，MCP server 也用同一份）。
 _bundle_root = paths.bundle_root
 _runtime_root = paths.runtime_root
-
-
-class ExcludeSettingsDialog(QDialog):
-    """排除設定對話框：勾選是否啟用排除清單，並維護「不列出的目錄」清單。
-
-    被排除的目錄（及其子路徑）不會在中間檔案面板與右側搜尋結果中列出。"""
-
-    def __init__(self, enabled, dirs, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("排除設定")
-        self.resize(560, 420)
-
-        layout = QVBoxLayout(self)
-
-        self.enable_checkbox = QCheckBox("啟用排除清單", self)
-        self.enable_checkbox.setChecked(bool(enabled))
-        layout.addWidget(self.enable_checkbox)
-
-        layout.addWidget(QLabel("排除的目錄（這些目錄及其內容不會列出）：", self))
-
-        body = QHBoxLayout()
-        self.dir_list = QListWidget(self)
-        self.dir_list.addItems(list(dirs))
-        body.addWidget(self.dir_list, 1)
-
-        button_col = QVBoxLayout()
-        self.add_button = QPushButton("新增資料夾...", self)
-        self.remove_button = QPushButton("移除", self)
-        self.add_button.clicked.connect(self._on_add_folder)
-        self.remove_button.clicked.connect(self._on_remove)
-        button_col.addWidget(self.add_button)
-        button_col.addWidget(self.remove_button)
-        button_col.addStretch(1)
-        body.addLayout(button_col)
-        layout.addLayout(body)
-
-        self.dir_list.currentRowChanged.connect(self._update_buttons)
-        self._update_buttons()
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def _update_buttons(self, *args):
-        self.remove_button.setEnabled(self.dir_list.currentRow() >= 0)
-
-    def _on_add_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "選擇要排除的資料夾")
-        if not folder:
-            return
-        folder = os.path.normpath(folder)
-        existing = {os.path.normcase(self.dir_list.item(i).text())
-                    for i in range(self.dir_list.count())}
-        if os.path.normcase(folder) not in existing:
-            self.dir_list.addItem(folder)
-
-    def _on_remove(self):
-        row = self.dir_list.currentRow()
-        if row >= 0:
-            self.dir_list.takeItem(row)
-
-    def result_values(self):
-        dirs = [self.dir_list.item(i).text() for i in range(self.dir_list.count())]
-        return self.enable_checkbox.isChecked(), dirs
 
 
 class FileManager(QMainWindow):
