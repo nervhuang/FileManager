@@ -259,7 +259,10 @@ def scan_all(conn, entities, fetch, local_lookup, *,
                                  threshold=threshold,
                                  first_run_limit=limits.first_run,
                                  max_items=limits.max_items)
-        except fetcher.CookieExpired:
+        except fetcher.ScanAborted:
+            # 中止類的錯誤（憑證失效、連續限流、連續連線失敗）往上拋。
+            # 走下面那條「記在這位身上、換下一位」只會讓剩下的幾百位
+            # 全部記上同一個假的失敗。
             raise
         except fetcher.CheckerError as exc:
             result = {'entity_id': entity_id, 'name': entity.get('name'),

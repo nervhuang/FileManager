@@ -37,7 +37,16 @@ class CheckerError(Exception):
     """可直接顯示給使用者的錯誤。訊息保證不含 cookie 值。"""
 
 
-class CookieExpired(CheckerError):
+class ScanAborted(CheckerError):
+    """整輪掃描必須中止：連續限流、連續連線失敗、憑證失效。
+
+    與一般 `CheckerError` 分開，是因為 `scan_all` 把後者當成「這一位失敗、
+    換下一位」。若中止類的錯誤也走那條路，訊息說「已中止本輪掃描」，
+    程式卻默默繼續跑剩下的幾百位，每一位都記上同一個假的失敗。
+    """
+
+
+class CookieExpired(ScanAborted):
     """cookie 失效（sad panda）。整輪掃描應立即中止，不要繼續空轉。"""
 
 
@@ -124,17 +133,25 @@ class Fetcher:
             if exc.code in (429, 503):
                 self._failures += 1
                 if self._failures >= self._max_failures:
-                    raise CheckerError(
+                    raise ScanAborted(
                         f'連續 {self._failures} 次被站方限流（HTTP {exc.code}），已中止本輪掃描。'
                         '稍後再試即可，已掃描的部分都保留了。')
                 # 指數退避：4、8、16 秒。
                 self._sleep(self._delay * (2 ** self._failures))
                 return self._open(request)
             raise CheckerError(f'請求失敗：HTTP {exc.code}')
-        except urllib.error.URLError as exc:
+        except OSError as exc:
+            # 這裡接 OSError 而不是 URLError，是因為 `response.read()` 逾時拋的是
+            # TimeoutError——它不是 URLError，只接 URLError 會讓它整個穿過退避、
+            # 穿過 scan_all 的錯誤收斂，撞上工作執行緒最外層的「未預期的錯誤」。
+            # 實測跑到第 244／440 位時一次讀取逾時就報銷整輪 20 分鐘。
+            # URLError、TimeoutError、連線重置、SSL 錯誤都是 OSError 的子類，
+            # 而且對它們的正確反應是同一個：退避重試。
             self._failures += 1
             if self._failures >= self._max_failures:
-                raise CheckerError(f'連續 {self._failures} 次連線失敗，已中止本輪掃描。')
+                raise ScanAborted(
+                    f'連續 {self._failures} 次連線失敗（{exc}），已中止本輪掃描。'
+                    '已掃描的部分都保留了，稍後接著跑即可。')
             self._sleep(self._delay * (2 ** self._failures))
             return self._open(request)
 
