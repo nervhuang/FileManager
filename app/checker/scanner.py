@@ -12,13 +12,12 @@ import datetime
 import html
 import os
 
-from . import fetcher, matcher, titles
+from . import fetcher, limits as limits_settings, matcher, titles
 
-# 首次掃描每個 tag 取幾筆建立基準。取滿一頁：tag 頁本來就是一次回 25 筆、
-# gdata 的 API_BATCH 也是 25，所以 10 改 25 不多花任何一次請求。語系限縮會吃掉
-# 這個額度（實測約四分之一會被排除），額度太小會讓基準只剩個位數。
-FIRST_RUN_LIMIT = 25
-MAX_ITEMS = 50          # 動態追溯的上限（2 頁）
+# 預設值住在 limits.py，因為使用者調得動它（選項 → 更新檢查筆數）。
+# 這兩個名字留著當函式預設值，呼叫端沒特別指定時行為與以前一致。
+FIRST_RUN_LIMIT = limits_settings.FIRST_RUN_DEFAULT
+MAX_ITEMS = limits_settings.MAX_ITEMS_DEFAULT
 PAGE_SIZE = 25
 
 
@@ -59,11 +58,13 @@ def everything_lookup(everything, exclude_norm=()):
 
 
 def scan_entity(entity, fetch, local_lookup, *, last_scan_at=None,
-                threshold=matcher.DEFAULT_THRESHOLD):
+                threshold=matcher.DEFAULT_THRESHOLD,
+                first_run_limit=FIRST_RUN_LIMIT, max_items=MAX_ITEMS):
     """掃描單一作者／團體，回傳該實體的完整比對結果。
 
-    `last_scan_at` 為 None 代表首次掃描：只取 FIRST_RUN_LIMIT 筆建立基準，
-    不追溯歷史。有值時往回取到發布時間早於它為止，最多 MAX_ITEMS 筆。
+    `last_scan_at` 為 None 代表首次掃描：只取 `first_run_limit` 筆建立基準，
+    不追溯歷史。有值時往回取到發布時間早於它為止，最多 `max_items` 筆。
+    兩個上限由使用者設定（見 limits.py），這裡只收數字。
     """
     tag = fetcher.tag_for(entity)
     result = {
@@ -77,8 +78,12 @@ def scan_entity(entity, fetch, local_lookup, *, last_scan_at=None,
         return result
 
     # ── 決定要取幾筆 ────────────────────────────────────────────────────
-    wanted = FIRST_RUN_LIMIT if last_scan_at is None else MAX_ITEMS
-    collected, reached_cutoff = [], last_scan_at is None
+    first_run = last_scan_at is None
+    wanted = first_run_limit if first_run else max_items
+    # reached_cutoff 只回答「有沒有翻到頭」。首次掃描沒有上次掃描時間可追，
+    # 但仍然要照 wanted 翻頁——以前這裡預設 True，等於首次掃描永遠只翻一頁，
+    # 筆數寫死 25（＝一頁）時看不出來，一旦可調就會發現設 100 只拿到 25。
+    collected, reached_cutoff = [], False
     for page in range((wanted + PAGE_SIZE - 1) // PAGE_SIZE):
         rows = fetch.fetch_tag_page(tag, page=page)
         if not rows:
@@ -90,7 +95,7 @@ def scan_entity(entity, fetch, local_lookup, *, last_scan_at=None,
             result['newest_posted'] = rows[0][2]
         for gid, token, posted_text in rows:
             posted = _parse_posted(posted_text)
-            if last_scan_at is not None and posted and posted < last_scan_at:
+            if not first_run and posted and posted < last_scan_at:
                 reached_cutoff = True
                 break
             collected.append((gid, token))
@@ -101,9 +106,11 @@ def scan_entity(entity, fetch, local_lookup, *, last_scan_at=None,
                 reached_cutoff = True
             break
 
-    # 追到上限還沒接上上次掃描時間，代表這段期間的發布量超過 MAX_ITEMS，
-    # 中間可能有漏。明白標示出來，不靜默吞掉。
-    result['truncated'] = not reached_cutoff and len(collected) >= wanted
+    # 追到上限還沒接上上次掃描時間，代表這段期間的發布量超過 max_items，
+    # 中間可能有漏。明白標示出來，不靜默吞掉。調大上限就是使用者對這件事的回應。
+    # 首次掃描不算：那是在建基準，沒有「上次掃到哪」可以追，取滿就是取滿。
+    result['truncated'] = (not first_run and not reached_cutoff
+                           and len(collected) >= wanted)
 
     if not collected:
         return result
@@ -215,12 +222,16 @@ def aggregate(items):
 
 
 def scan_all(conn, entities, fetch, local_lookup, *,
-             threshold=matcher.DEFAULT_THRESHOLD, progress=None, on_result=None):
+             threshold=matcher.DEFAULT_THRESHOLD, progress=None, on_result=None,
+             limits=None):
     """依序掃描多個實體並把結果寫進資料庫，回傳每個實體的結果。
 
     錯誤分兩級：單一實體的抓取或解析失敗只記在該實體上、繼續掃下一個；
     cookie 失效與連續限流會往上拋，因為那兩種情況繼續跑也只是空轉，
     而且會讓後面幾百個實體全部記上假的失敗紀錄。
+
+    `limits` 是 `limits.Limits`；沒給就在這裡讀一次設定檔。**只讀一次**——
+    幾百個實體逐一去讀同一個檔案，讀到的還是同一份。
 
     `progress(index, total, entity)` 在每個實體開始前呼叫，
     `on_result(index, total, result)` 在該實體寫入資料庫後呼叫——前者讓呼叫端知道
@@ -230,6 +241,8 @@ def scan_all(conn, entities, fetch, local_lookup, *,
     from . import store
 
     store.ensure_schema(conn)
+    if limits is None:
+        limits = limits_settings.load()
     entities = list(entities)
     results = []
 
@@ -243,7 +256,9 @@ def scan_all(conn, entities, fetch, local_lookup, *,
         try:
             result = scan_entity(entity, fetch, local_lookup,
                                  last_scan_at=store.last_posted(conn, entity_id),
-                                 threshold=threshold)
+                                 threshold=threshold,
+                                 first_run_limit=limits.first_run,
+                                 max_items=limits.max_items)
         except fetcher.CookieExpired:
             raise
         except fetcher.CheckerError as exc:

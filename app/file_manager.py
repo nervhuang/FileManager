@@ -19,6 +19,7 @@ from .search.exclude_dialog import ExcludeSettingsDialog
 from .authors import icons as authors_icons
 from .authors.panel import AuthorsPanel
 from .checker.panel import CheckerPanel, make_checker_icon
+from .checker import limits_dialog as checker_limits_dialog
 from .search.everything import EverythingSDK
 from .models import FileSystemSortProxyModel
 from .search import models as search_models
@@ -1240,6 +1241,9 @@ class FileManager(QMainWindow):
         option_menu = menu_bar.addMenu("選項(&O)")
         self.action_exclude_settings = option_menu.addAction("排除設定(&E)…")
         self.action_exclude_settings.triggered.connect(self._open_exclude_dialog)
+        self.action_checker_limits = option_menu.addAction("更新檢查筆數(&C)…")
+        self.action_checker_limits.triggered.connect(
+            lambda: checker_limits_dialog.open_dialog(self))
 
     def _new_tab(self):
         """依目前操作焦點，在對應面板最左邊新增一個空白分頁。
