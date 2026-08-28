@@ -218,7 +218,8 @@ _PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>更新檢查器</title>
 <style>
-:root{--bg:#f6f7f9;--card:#fff;--ink:#1c1f23;--dim:#6b7280;--line:#e3e6ea;--accent:#2f66d0}
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1c1f23;--dim:#6b7280;--line:#e3e6ea;--accent:#2f66d0;
+ --cw:420px}
 @media(prefers-color-scheme:dark){:root{--bg:#16181c;--card:#1f2228;--ink:#e8eaed;--dim:#9aa1ab;--line:#31353c;--accent:#7aa8dc}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
@@ -233,12 +234,30 @@ h1{margin:0 0 10px;font-size:19px}
 .filters{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 input,select{background:var(--card);color:var(--ink);border:1px solid var(--line);
  border-radius:6px;padding:6px 10px;font:inherit}
-main{padding:18px 20px;display:grid;gap:14px;
- grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+main{padding:18px 20px;display:grid;column-gap:14px;row-gap:0;
+ grid-template-columns:repeat(auto-fill,minmax(var(--cw),1fr))}
+/* 卡片切成三格 subgrid（書名／按鈕／圖），三格的列高向父格線借：
+   同一橫排的卡片因此共用同一組列高，書名長的那張只會把整排的按鈕一起往下推，
+   不會只推歪自己那一張——按鈕與圖片橫看過去永遠在同一個高度。
+   排距改用卡片自己的 margin-bottom：父層的 row-gap 會被 subgrid 借走，
+   變成卡片內部書名／按鈕／圖之間的空隙。 */
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
- overflow:hidden;display:flex;flex-direction:column}
-.card img{width:100%;height:190px;object-fit:cover;background:var(--line);display:block}
-.body{padding:10px 12px;display:flex;flex-direction:column;gap:6px;flex:1}
+ overflow:hidden;display:grid;grid-row:span 3;grid-template-rows:subgrid;
+ margin-bottom:14px}
+@supports not (grid-template-rows:subgrid){
+  .card{display:flex;flex-direction:column;grid-row:auto}
+}
+/* 縮圖是 250×350 左右的直式封面。原本的固定高度 ＋ object-fit:cover 會把上下裁掉
+   一半以上，而封面正是判斷「這本我有沒有」的依據，不能裁。改成固定 5:7 的框
+   ＋ object-fit:contain：整張都看得到，而且每張圖佔一樣高。
+   缺圖時後端回的是 1×1 佔位 GIF，沒有這個框它會被撐成一個正方形大洞。 */
+.card img{width:100%;aspect-ratio:250/350;object-fit:contain;align-self:start;
+ background:var(--line);display:block;cursor:zoom-in;border-top:1px solid var(--line)}
+#lb{position:fixed;inset:0;z-index:50;display:none;align-items:center;justify-content:center;
+ background:rgba(0,0,0,.85);cursor:zoom-out}
+#lb.on{display:flex}
+#lb img{max-width:96vw;max-height:96vh;box-shadow:0 8px 40px rgba(0,0,0,.6)}
+.body{padding:10px 12px;display:flex;flex-direction:column;gap:6px}
 .title{font-weight:600;font-size:14px;word-break:break-word}
 .meta{color:var(--dim);font-size:12.5px;word-break:break-word}
 .tagrow{display:flex;gap:5px;flex-wrap:wrap}
@@ -258,10 +277,17 @@ a{color:var(--accent)}
   <div class="filters">
     <input id="q" placeholder="搜尋標題或作者…" size="26">
     <select id="cat"><option value="">全部分類</option></select>
+    <select id="cw" title="縮圖大小">
+      <option value="260">小圖</option>
+      <option value="340">中圖</option>
+      <option value="420">大圖</option>
+      <option value="560">特大</option>
+    </select>
     <span class="meta" id="shown"></span>
   </div>
 </header>
 <main id="grid"><div class="empty">載入中…</div></main>
+<div id="lb"><img alt=""></div>
 <script>
 const T = "__TOKEN__";
 let DATA = {items:[], counts:{}, order:[], labels:{}};
@@ -309,8 +335,9 @@ function card(i){
     ? `<div class="meta">缺少版本：${esc(i.missing_markers.map(m => m.replace(/^lang:/, "")).join("、"))}</div>` : "";
   const match = i.matched_local
     ? `<div class="match">本機：${esc(i.matched_local)}</div>` : "";
+  // 順序是「書名 → 按鈕 → 圖」：書名與按鈕高度固定，放在上面時每張卡的它們都對齊，
+  // 掃過一整列就找得到要按的那顆；圖高度隨原圖比例變動，只有擺最後才不會把下面的東西推歪。
   return `<article class="card" id="g${esc(i.gid)}">
-    <img loading="lazy" src="/thumb/${esc(i.gid)}?t=${encodeURIComponent(T)}" alt="">
     <div class="body">
       <div class="title">${esc(i.title_jpn || i.title)}</div>
       <div class="meta">${esc(i.entity_name||"")} · ${esc(i.category||"")} · ${esc(i.pages||"?")}頁 · ${date}</div>
@@ -320,7 +347,9 @@ function card(i){
       <button class="act" onclick="decide('${esc(i.gid)}','downloaded',${i.entity_id||"null"})">已下載</button>
       <button class="act" onclick="decide('${esc(i.gid)}','ignored',${i.entity_id||"null"})">忽略</button>
       <button class="act" onclick="window.open('${esc(i.url)}','_blank','noopener')">開啟</button>
-    </div></article>`;
+    </div>
+    <img loading="lazy" src="/thumb/${esc(i.gid)}?t=${encodeURIComponent(T)}" alt="">
+    </article>`;
 }
 
 async function decide(gid, state, entity_id){
@@ -333,6 +362,32 @@ async function decide(gid, state, entity_id){
   DATA.counts = res.counts;
   drawTabs(); draw();
 }
+
+// 縮圖大小是看的人的偏好，不是這一輪掃描的狀態，記在瀏覽器就好，不進 config.ini。
+const cwSel = document.getElementById("cw");
+function applyWidth(){
+  document.documentElement.style.setProperty("--cw", cwSel.value + "px");
+  try{ localStorage.setItem("checker_cw", cwSel.value); }catch(e){}
+}
+try{
+  const saved = localStorage.getItem("checker_cw");
+  if(saved && [...cwSel.options].some(o => o.value === saved)) cwSel.value = saved;
+}catch(e){}
+applyWidth();
+cwSel.onchange = applyWidth;
+
+// 點縮圖放到滿版：站方給的原圖只有 250px 寬，牆上再大也有限，
+// 要看清楚封面就得有一個佔滿視窗的檢視。
+const lb = document.getElementById("lb");
+document.getElementById("grid").addEventListener("click", e => {
+  if(e.target.tagName !== "IMG") return;
+  lb.querySelector("img").src = e.target.src;
+  lb.classList.add("on");
+});
+lb.onclick = () => lb.classList.remove("on");
+document.addEventListener("keydown", e => {
+  if(e.key === "Escape") lb.classList.remove("on");
+});
 
 document.getElementById("q").oninput = draw;
 document.getElementById("cat").onchange = draw;
