@@ -47,18 +47,32 @@ def test_thumb_opens_full_screen_view():
     assert 'Escape' in page, 'Esc 要能關掉滿版檢視'
 
 
-def test_card_order_is_title_then_buttons_then_image():
-    """卡片順序：書名 → 按鈕 → 縮圖。見 docs/spec/checker.md「縮圖 → 卡片順序」。"""
+def test_card_order_is_title_then_image_then_buttons():
+    """卡片順序：書名 → 縮圖 → 按鈕。見 docs/spec/checker.md「縮圖 → 卡片順序」。
+
+    按鈕貼著縮圖下緣：判斷「已下載／忽略」看的就是封面，決定與依據要在同一個
+    視線落點上。
+    """
     page = _page()
     card = page[page.index('<article class="card"'):page.index('</article>')]
-    assert (card.index('class="title"') < card.index('class="acts"')
-            < card.index('<img loading="lazy"')), '縮圖要排在書名與按鈕的下方'
+    assert (card.index('class="title"') < card.index('<img loading="lazy"')
+            < card.index('class="acts"')), '按鈕要排在縮圖下方'
+
+
+def test_all_three_buttons_sit_below_the_image():
+    """三顆都要在圖下面——只搬走其中一兩顆比原樣更糟。"""
+    page = _page()
+    card = page[page.index('<article class="card"'):page.index('</article>')]
+    image_at = card.index('<img loading="lazy"')
+    for label in ('已下載', '忽略', '開啟'):
+        assert card.index(label) > image_at, f'「{label}」還在圖上面'
 
 
 def test_cards_share_row_heights():
-    """同一橫排的按鈕與縮圖切齊。見 docs/spec/checker.md「縮圖 → 卡片順序」。"""
+    """同一橫排的縮圖與按鈕切齊。見 docs/spec/checker.md「縮圖 → 卡片順序」。"""
     card = _rule('.card')
     assert 'grid-template-rows:subgrid' in card, '卡片要向父格線借列高才會整排切齊'
     assert 'grid-row:span 3' in card, '三格：書名／按鈕／圖'
     assert 'margin-bottom' in card, '排距走 margin，row-gap 會被 subgrid 借成卡片內部空隙'
     assert 'row-gap:0' in _rule('main'), '父層列距要歸零，否則會漏進卡片裡'
+

@@ -236,11 +236,11 @@ input,select{background:var(--card);color:var(--ink);border:1px solid var(--line
  border-radius:6px;padding:6px 10px;font:inherit}
 main{padding:18px 20px;display:grid;column-gap:14px;row-gap:0;
  grid-template-columns:repeat(auto-fill,minmax(var(--cw),1fr))}
-/* 卡片切成三格 subgrid（書名／按鈕／圖），三格的列高向父格線借：
-   同一橫排的卡片因此共用同一組列高，書名長的那張只會把整排的按鈕一起往下推，
-   不會只推歪自己那一張——按鈕與圖片橫看過去永遠在同一個高度。
+/* 卡片切成三格 subgrid（書名／圖／按鈕），三格的列高向父格線借：
+   同一橫排的卡片因此共用同一組列高，書名長的那張只會把整排的圖與按鈕一起往下推，
+   不會只推歪自己那一張——圖片與按鈕橫看過去永遠在同一個高度。
    排距改用卡片自己的 margin-bottom：父層的 row-gap 會被 subgrid 借走，
-   變成卡片內部書名／按鈕／圖之間的空隙。 */
+   變成卡片內部書名／圖／按鈕之間的空隙。 */
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
  overflow:hidden;display:grid;grid-row:span 3;grid-template-rows:subgrid;
  margin-bottom:14px}
@@ -264,6 +264,8 @@ main{padding:18px 20px;display:grid;column-gap:14px;row-gap:0;
 .tag{font-size:11.5px;border:1px solid var(--line);border-radius:4px;padding:1px 6px;color:var(--dim)}
 .match{font-size:12px;color:var(--dim);border-left:3px solid var(--accent);
  padding-left:8px;word-break:break-all}
+/* 按鈕貼著縮圖下緣（見 docs/spec/checker.md「卡片順序」）：判斷「已下載／忽略」
+   看的就是封面，決定與依據要在同一個視線落點上。 */
 .acts{display:flex;gap:6px;padding:10px 12px;border-top:1px solid var(--line);flex-wrap:wrap}
 button.act{flex:1;min-width:74px;border:1px solid var(--line);background:transparent;
  color:var(--ink);border-radius:6px;padding:6px 8px;cursor:pointer;font:inherit;font-size:13px}
@@ -335,20 +337,20 @@ function card(i){
     ? `<div class="meta">缺少版本：${esc(i.missing_markers.map(m => m.replace(/^lang:/, "")).join("、"))}</div>` : "";
   const match = i.matched_local
     ? `<div class="match">本機：${esc(i.matched_local)}</div>` : "";
-  // 順序是「書名 → 按鈕 → 圖」：書名與按鈕高度固定，放在上面時每張卡的它們都對齊，
-  // 掃過一整列就找得到要按的那顆；圖高度隨原圖比例變動，只有擺最後才不會把下面的東西推歪。
+  // 順序是「書名 → 圖 → 按鈕」：判斷「已下載／忽略」看的就是封面，決定與依據要在
+  // 同一個視線落點上。三格 subgrid 讓整排的圖與按鈕仍然切齊（見 .card 的註解）。
   return `<article class="card" id="g${esc(i.gid)}">
     <div class="body">
       <div class="title">${esc(i.title_jpn || i.title)}</div>
       <div class="meta">${esc(i.entity_name||"")} · ${esc(i.category||"")} · ${esc(i.pages||"?")}頁 · ${date}</div>
       <div class="tagrow">${tags}</div>${miss}${match}
     </div>
+    <img loading="lazy" src="/thumb/${esc(i.gid)}?t=${encodeURIComponent(T)}" alt="">
     <div class="acts">
       <button class="act" onclick="decide('${esc(i.gid)}','downloaded',${i.entity_id||"null"})">已下載</button>
       <button class="act" onclick="decide('${esc(i.gid)}','ignored',${i.entity_id||"null"})">忽略</button>
       <button class="act" onclick="window.open('${esc(i.url)}','_blank','noopener')">開啟</button>
     </div>
-    <img loading="lazy" src="/thumb/${esc(i.gid)}?t=${encodeURIComponent(T)}" alt="">
     </article>`;
 }
 
