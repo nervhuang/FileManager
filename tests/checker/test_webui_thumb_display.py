@@ -76,3 +76,27 @@ def test_cards_share_row_heights():
     assert 'margin-bottom' in card, '排距走 margin，row-gap 會被 subgrid 借成卡片內部空隙'
     assert 'row-gap:0' in _rule('main'), '父層列距要歸零，否則會漏進卡片裡'
 
+
+def test_card_frame_uses_a_contrasting_colour():
+    """外框要看得出來是外框。見 docs/spec/checker.md「縮圖 → 卡片外框」。
+
+    一整片同色卡片鋪滿畫面時，低對比的邊界會讓相鄰兩張看起來像同一張。
+    實際觀感標 [手動]，這裡只擋住「又被改回 --line」。
+    """
+    rule = _rule('.card')
+    assert 'border:2px solid var(--frame)' in rule, '外框要用對比色且要夠粗'
+    assert 'solid var(--line)' not in rule, '外框不得退回低對比的分隔線色'
+
+
+def test_card_frame_colour_is_defined_for_both_schemes():
+    """深色模式沒定義的話會沿用淺色那組，深底配深藍框等於沒有框。"""
+    page = _page()
+    light, dark = page.split('@media(prefers-color-scheme:dark)', 1)
+    assert '--frame:' in light, '淺色沒定義 --frame'
+    assert '--frame:' in dark, '深色沒定義 --frame'
+
+
+def test_inside_the_card_stays_low_contrast():
+    """內部分隔線維持 --line：內外都用對比色的話，外框就不再是外框。"""
+    for selector in ('.card img', '.acts'):
+        assert 'var(--line)' in _rule(selector), f'{selector} 的分隔線不該搶戲'

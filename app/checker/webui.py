@@ -219,8 +219,9 @@ _PAGE = """<!doctype html>
 <title>更新檢查器</title>
 <style>
 :root{--bg:#f6f7f9;--card:#fff;--ink:#1c1f23;--dim:#6b7280;--line:#e3e6ea;--accent:#2f66d0;
- --cw:420px}
-@media(prefers-color-scheme:dark){:root{--bg:#16181c;--card:#1f2228;--ink:#e8eaed;--dim:#9aa1ab;--line:#31353c;--accent:#7aa8dc}}
+ --frame:#2f66d0;--cw:420px}
+@media(prefers-color-scheme:dark){:root{--bg:#16181c;--card:#1f2228;--ink:#e8eaed;--dim:#9aa1ab;--line:#31353c;--accent:#7aa8dc;
+ --frame:#7aa8dc}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
  font:15px/1.55 "Segoe UI","Microsoft JhengHei",system-ui,sans-serif}
@@ -241,7 +242,10 @@ main{padding:18px 20px;display:grid;column-gap:14px;row-gap:0;
    不會只推歪自己那一張——圖片與按鈕橫看過去永遠在同一個高度。
    排距改用卡片自己的 margin-bottom：父層的 row-gap 會被 subgrid 借走，
    變成卡片內部書名／圖／按鈕之間的空隙。 */
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+/* 外框用對比色 --frame（不是 --line）並加粗到 2px：一整片同色卡片鋪滿畫面時，
+   低對比的邊界會讓相鄰兩張看起來像同一張，按鈕與縮圖分不清屬於誰。
+   卡片內部的分隔線維持 --line 的低對比，外框才顯得出來是外框。 */
+.card{background:var(--card);border:2px solid var(--frame);border-radius:10px;
  overflow:hidden;display:grid;grid-row:span 3;grid-template-rows:subgrid;
  margin-bottom:14px}
 @supports not (grid-template-rows:subgrid){
