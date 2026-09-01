@@ -59,7 +59,7 @@ body.single{--texth:168px;--actsh:56px}
 /* 欄寬就是封面寬（--cardw），整排置中。用 1fr 均分的話卡片會比封面寬一截，
    封面左右各留一條灰帶——那條帶子看起來像卡片的一部分，卻什麼也沒說。 */
 body.single main{grid-template-columns:repeat(var(--cols),var(--cardw));
- justify-content:center;align-content:start;
+ justify-content:center;align-content:start;overflow-x:hidden;
  padding-top:0;padding-bottom:0;scroll-snap-type:y mandatory}
 body.single .card{display:flex;flex-direction:column;grid-row:auto;
  height:var(--rowh);margin-bottom:0;scroll-snap-align:start;scroll-snap-stop:always}
@@ -292,7 +292,13 @@ addEventListener("resize", () => {
   if(!document.body.classList.contains("single")) return;
   const idx = rowH ? Math.round(main.scrollTop / rowH) : 0;   // 先記住現在是第幾排
   measureRow();
-  main.scrollTo({top: idx * rowH});                           // 縮放視窗不該停在半排
+  // 量兩次：縮窄的那一瞬間舊卡片還太寬，水平捲軸冒出來會把 clientHeight 壓掉
+  // 15px，量完之後版面才更新、捲軸又消失——一排於是永遠差那 15px。
+  // （overflow-x:hidden 已經擋掉捲軸；這一次補量順便收掉其他暫時狀態。）
+  requestAnimationFrame(() => {
+    measureRow();
+    main.scrollTo({top: idx * rowH});                         // 縮放視窗不該停在半排
+  });
 });
 
 // 點縮圖放到滿版：站方給的原圖只有 250px 寬，牆上再大也有限，

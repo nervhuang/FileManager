@@ -52,6 +52,19 @@ def test_row_height_is_remeasured_on_every_draw():
     assert 'measureRow()' in draw
 
 
+def test_resize_cannot_measure_a_transient_scrollbar():
+    """改視窗大小時，量到的高度不得帶著上一輪版面的暫時捲軸。
+
+    實測（headless Edge ＋ CDP，1920×1080 → 1600×700）：捲動區 554、卡片 539。
+    差的 15px 就是水平捲軸——縮窄的瞬間舊卡片還太寬、捲軸冒出來把 clientHeight
+    壓掉一截，量完之後版面才更新、捲軸又消失。一排於是永遠差 15px。
+    """
+    page = _page()
+    assert 'overflow-x:hidden' in _rule('body.single main'), '橫向永遠不該出現捲軸'
+    resize = page[page.index('addEventListener("resize"'):]
+    assert 'requestAnimationFrame' in resize, '版面更新後要再量一次'
+
+
 def test_scroll_snaps_to_one_row_at_a_time():
     assert 'scroll-snap-type:y mandatory' in _rule('body.single main')
     card = _rule('body.single .card')
