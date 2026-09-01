@@ -8,9 +8,12 @@
 @media(prefers-color-scheme:dark){:root{--bg:#16181c;--card:#1f2228;--ink:#e8eaed;--dim:#9aa1ab;--line:#31353c;--accent:#7aa8dc;
  --frame:#7aa8dc}}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);
+/* 捲動的是 main，不是整頁：單排模式要「一排＝一個捲動區高度」，
+   而捲動區的高度得先是一個確定的值。表頭因此不再需要 sticky，它本來就不動了。 */
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);display:flex;flex-direction:column;
  font:15px/1.55 "Segoe UI","Microsoft JhengHei",system-ui,sans-serif}
-header{position:sticky;top:0;z-index:10;background:var(--bg);
+header{flex:none;background:var(--bg);
  border-bottom:1px solid var(--line);padding:12px 20px}
 h1{margin:0 0 10px;font-size:19px}
 .tabs{display:flex;gap:8px;flex-wrap:wrap}
@@ -20,7 +23,8 @@ h1{margin:0 0 10px;font-size:19px}
 .filters{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 input,select{background:var(--card);color:var(--ink);border:1px solid var(--line);
  border-radius:6px;padding:6px 10px;font:inherit}
-main{padding:18px 20px;display:grid;column-gap:14px;row-gap:0;
+main{flex:1;min-height:0;overflow-y:auto;
+ padding:18px 20px;display:grid;column-gap:14px;row-gap:0;
  grid-template-columns:repeat(auto-fill,minmax(var(--cw),1fr))}
 /* 卡片切成三格 subgrid（書名／圖／按鈕），三格的列高向父格線借：
    同一橫排的卡片因此共用同一組列高，書名長的那張只會把整排的圖與按鈕一起往下推，
@@ -42,6 +46,34 @@ main{padding:18px 20px;display:grid;column-gap:14px;row-gap:0;
    缺圖時後端回的是 1×1 佔位 GIF，沒有這個框它會被撐成一個正方形大洞。 */
 .card img{width:100%;aspect-ratio:250/350;object-fit:contain;align-self:start;
  background:var(--line);display:block;cursor:zoom-in;border-top:1px solid var(--line)}
+/* ── 單排模式（body.single，預設）─────────────────────────────────────
+   一排剛好填滿捲動區：卡片高度＝捲動區高度，第 N 排的起點就是 N×高度，
+   scroll-snap 對齊到卡片起點於是等於對齊到排。捲一次只走一排——單靠 snap
+   擋不住，觸控板一甩會翻過好幾排，snap 只決定最後停在哪，所以 wheel 由 JS 攔。
+   subgrid 在這裡換成 flex：卡片高度被視窗鎖死、文字區與按鈕列都是固定高度，
+   整排的縮圖與按鈕本來就切齊，不必再向父格線借列高。
+   文字區固定高度並限行數（書名 2 行、其餘各 1 行）：文字高度一浮動，同一頁的
+   縮圖就各自高矮不一，而且「每排放得下幾張」也算不出來。代價是沒有「本機：」
+   或「缺少版本：」的卡片會空掉那兩行——換來的是整頁對齊與可預測的封面大小。 */
+body.single{--texth:168px;--actsh:56px}
+/* 欄寬就是封面寬（--cardw），整排置中。用 1fr 均分的話卡片會比封面寬一截，
+   封面左右各留一條灰帶——那條帶子看起來像卡片的一部分，卻什麼也沒說。 */
+body.single main{grid-template-columns:repeat(var(--cols),var(--cardw));
+ justify-content:center;align-content:start;
+ padding-top:0;padding-bottom:0;scroll-snap-type:y mandatory}
+body.single .card{display:flex;flex-direction:column;grid-row:auto;
+ height:var(--rowh);margin-bottom:0;scroll-snap-align:start;scroll-snap-stop:always}
+body.single .body{height:var(--texth);overflow:hidden}
+body.single .acts{height:var(--actsh);align-items:center}
+/* 高度由剩下的空間決定，寬度在 JS 那邊用 5:7 反推，object-fit:contain 照舊：
+   封面仍然不得裁切（見 docs/spec/checker.md「顯示尺寸」）。 */
+body.single .card img{flex:1;min-height:0;aspect-ratio:auto;align-self:stretch}
+body.single .title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+body.single .meta,body.single .match{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+body.single .tagrow{flex-wrap:nowrap;overflow:hidden}
+/* 縮圖大小是「牆」才有的概念：單排的尺寸全自動，選單留在畫面上只會被反覆點。 */
+body.single #cw{display:none}
 #lb{position:fixed;inset:0;z-index:50;display:none;align-items:center;justify-content:center;
  background:rgba(0,0,0,.85);cursor:zoom-out}
 #lb.on{display:flex}
@@ -68,6 +100,10 @@ a{color:var(--accent)}
   <div class="filters">
     <input id="q" placeholder="搜尋標題或作者…" size="26">
     <select id="cat"><option value="">全部分類</option></select>
+    <select id="layout" title="版面">
+      <option value="single">單排</option>
+      <option value="wall">縮圖牆</option>
+    </select>
     <select id="cw" title="縮圖大小">
       <option value="260">小圖</option>
       <option value="340">中圖</option>
@@ -83,6 +119,7 @@ a{color:var(--accent)}
 const T = "__TOKEN__";
 let DATA = {items:[], counts:{}, order:[], labels:{}};
 let tab = "new";
+const main = document.getElementById("grid");
 
 const esc = s => String(s==null?"":s).replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -114,8 +151,14 @@ function draw(){
     && (!q || ((i.title_jpn||"")+(i.title||"")+(i.entity_name||"")).toLowerCase().includes(q)));
 
   document.getElementById("shown").textContent = `顯示 ${rows.length} 筆`;
-  document.getElementById("grid").innerHTML = rows.length ? rows.map(card).join("")
+  main.innerHTML = rows.length ? rows.map(card).join("")
     : '<div class="empty">這一區沒有項目。</div>';
+  // 每次重畫都重量一次捲動區：分頁按鈕與分類選單是資料進來才生出來的，
+  // 初次量到的表頭比最後矮一截，卡片會比捲動區高出那一截，一排就不再是一排。
+  if(document.body.classList.contains("single")) measureRow();
+  // 換分頁、改搜尋、換版面之後留在第幾排毫無意義，一律回到第一排。
+  main.scrollTop = 0;
+  watchThumbs();
 }
 
 function card(i){
@@ -134,7 +177,7 @@ function card(i){
       <div class="meta">${esc(i.entity_name||"")} · ${esc(i.category||"")} · ${esc(i.pages||"?")}頁 · ${date}</div>
       <div class="tagrow">${tags}</div>${miss}${match}
     </div>
-    <img loading="lazy" src="/thumb/${esc(i.gid)}?t=${encodeURIComponent(T)}" alt="">
+    <img alt="" data-src="/thumb/${esc(i.gid)}?t=${encodeURIComponent(T)}">
     <div class="acts">
       <button class="act" onclick="decide('${esc(i.gid)}','downloaded',${i.entity_id||"null"})">已下載</button>
       <button class="act" onclick="decide('${esc(i.gid)}','ignored',${i.entity_id||"null"})">忽略</button>
@@ -154,6 +197,74 @@ async function decide(gid, state, entity_id){
   drawTabs(); draw();
 }
 
+// 縮圖仍然是捲到才下載（開頁不會一次打幾百個請求），但範圍往下多留一個視窗高：
+// 單排模式一次跳一排，等跳過去才開始載會看到一整排空格慢慢被換掉。
+// 總請求數不變，只是提早；0.5 秒節流與 429 停手都在後端，這裡不會變得更沒禮貌。
+let thumbWatcher = null;
+function watchThumbs(){
+  if(thumbWatcher) thumbWatcher.disconnect();
+  thumbWatcher = new IntersectionObserver(entries => {
+    for(const en of entries){
+      if(!en.isIntersecting) continue;
+      const img = en.target;
+      if(img.dataset.src){ img.src = img.dataset.src; delete img.dataset.src; }
+      thumbWatcher.unobserve(img);
+    }
+  }, {root: main, rootMargin: "100% 0px"});
+  main.querySelectorAll("img[data-src]").forEach(img => thumbWatcher.observe(img));
+}
+
+// 版面：單排（一排填滿視窗、一次捲一排）或縮圖牆（多排）。預設單排。
+// 與縮圖大小一樣，這是看的人當下的偏好，記在瀏覽器就好，不進 config.ini。
+const layoutSel = document.getElementById("layout");
+let rowH = 0;
+
+function measureRow(){
+  // 一排＝捲動區的高度。卡片高度設成同一個值，第 N 排的起點才會剛好是 N×高度。
+  const h = main.clientHeight;
+  const css = getComputedStyle(document.body);
+  const reserve = parseFloat(css.getPropertyValue("--texth"))
+                + parseFloat(css.getPropertyValue("--actsh")) + 4;   // +4：卡片上下外框
+  const imgH = Math.max(120, h - reserve);
+  // 封面是 5:7 的直式圖：高度被視窗鎖死之後，寬度只能由高度反推。
+  // 一排最多 6 張——矮而寬的視窗（例如 2560×700）不設上限會排出一整列
+  // 小到判斷不了的郵票；夾在 6 張以內，「一排一定塞得進視窗」才永遠成立。
+  const cardW = imgH * 5 / 7;
+  const cols = Math.min(6, Math.max(1,
+    Math.floor((main.clientWidth - 40 + 14) / (cardW + 14))));
+  rowH = h;
+  document.documentElement.style.setProperty("--rowh", h + "px");
+  document.documentElement.style.setProperty("--cols", cols);
+  // 視窗太窄連一張都放不下時，讓卡片縮到放得下為止。
+  document.documentElement.style.setProperty(
+    "--cardw", Math.min(cardW, main.clientWidth - 40) + "px");
+}
+
+function applyLayout(){
+  const single = layoutSel.value === "single";
+  document.body.classList.toggle("single", single);
+  try{ localStorage.setItem("checker_layout", layoutSel.value); }catch(e){}
+  if(single) measureRow();
+}
+
+let sliding = false;
+function slide(dir){
+  const max = main.scrollHeight - main.clientHeight;
+  const top = Math.max(0, Math.min(max, (Math.round(main.scrollTop / rowH) + dir) * rowH));
+  if(Math.abs(top - main.scrollTop) < 1) return;
+  sliding = true;
+  main.scrollTo({top, behavior: "smooth"});
+  // 平滑捲動期間進來的事件一律丟掉，否則觸控板的慣性會一路翻下去。
+  setTimeout(() => { sliding = false; }, 420);
+}
+
+main.addEventListener("wheel", e => {
+  if(!document.body.classList.contains("single")) return;
+  e.preventDefault();
+  if(sliding || !e.deltaY) return;
+  slide(e.deltaY > 0 ? 1 : -1);
+}, {passive:false});
+
 // 縮圖大小是看的人的偏好，不是這一輪掃描的狀態，記在瀏覽器就好，不進 config.ini。
 const cwSel = document.getElementById("cw");
 function applyWidth(){
@@ -167,17 +278,48 @@ try{
 applyWidth();
 cwSel.onchange = applyWidth;
 
+try{
+  const savedLayout = localStorage.getItem("checker_layout");
+  if(savedLayout === "wall" || savedLayout === "single") layoutSel.value = savedLayout;
+}catch(e){}
+applyLayout();
+layoutSel.onchange = () => { applyLayout(); draw(); };
+
+addEventListener("resize", () => {
+  if(!document.body.classList.contains("single")) return;
+  const idx = rowH ? Math.round(main.scrollTop / rowH) : 0;   // 先記住現在是第幾排
+  measureRow();
+  main.scrollTo({top: idx * rowH});                           // 縮放視窗不該停在半排
+});
+
 // 點縮圖放到滿版：站方給的原圖只有 250px 寬，牆上再大也有限，
 // 要看清楚封面就得有一個佔滿視窗的檢視。
 const lb = document.getElementById("lb");
-document.getElementById("grid").addEventListener("click", e => {
+main.addEventListener("click", e => {
   if(e.target.tagName !== "IMG") return;
-  lb.querySelector("img").src = e.target.src;
+  const src = e.target.currentSrc || e.target.src;   // 還沒輪到下載的圖沒有 src
+  if(!src) return;
+  lb.querySelector("img").src = src;
   lb.classList.add("on");
 });
 lb.onclick = () => lb.classList.remove("on");
+
+// 鍵盤也要能一次走一排：只改滾輪的話，按一下 ↓ 只滑幾十 px 再被 snap 彈回來。
+const STEP = {ArrowDown:1, PageDown:1, ArrowUp:-1, PageUp:-1};
 document.addEventListener("keydown", e => {
-  if(e.key === "Escape") lb.classList.remove("on");
+  if(e.key === "Escape"){ lb.classList.remove("on"); return; }
+  if(!document.body.classList.contains("single") || lb.classList.contains("on")) return;
+  const tag = (e.target.tagName || "").toLowerCase();
+  if(tag === "input" || tag === "select") return;   // 搜尋框裡的方向鍵是編輯游標
+  if(e.key === "Home" || e.key === "End"){
+    e.preventDefault();
+    main.scrollTo({top: e.key === "Home" ? 0 : main.scrollHeight, behavior:"smooth"});
+    return;
+  }
+  const dir = STEP[e.key];
+  if(!dir) return;
+  e.preventDefault();
+  if(!sliding) slide(dir);
 });
 
 document.getElementById("q").oninput = draw;

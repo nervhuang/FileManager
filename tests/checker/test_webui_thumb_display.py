@@ -55,7 +55,7 @@ def test_card_order_is_title_then_image_then_buttons():
     """
     page = _page()
     card = page[page.index('<article class="card"'):page.index('</article>')]
-    assert (card.index('class="title"') < card.index('<img loading="lazy"')
+    assert (card.index('class="title"') < card.index('<img alt="" data-src=')
             < card.index('class="acts"')), '按鈕要排在縮圖下方'
 
 
@@ -63,7 +63,7 @@ def test_all_three_buttons_sit_below_the_image():
     """三顆都要在圖下面——只搬走其中一兩顆比原樣更糟。"""
     page = _page()
     card = page[page.index('<article class="card"'):page.index('</article>')]
-    image_at = card.index('<img loading="lazy"')
+    image_at = card.index('<img alt="" data-src=')
     for label in ('已下載', '忽略', '開啟'):
         assert card.index(label) > image_at, f'「{label}」還在圖上面'
 
