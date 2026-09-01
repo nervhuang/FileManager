@@ -260,6 +260,9 @@ function slide(dir){
 
 main.addEventListener("wheel", e => {
   if(!document.body.classList.contains("single")) return;
+  // Ctrl＋滾輪是瀏覽器的縮放，原封不動讓給它：頁面自己沒有縮放，
+  // 一起吃掉等於把整個功能弄消失。縮放後的重新丈量交給 resize。
+  if(e.ctrlKey || e.metaKey) return;
   e.preventDefault();
   if(sliding || !e.deltaY) return;
   slide(e.deltaY > 0 ? 1 : -1);

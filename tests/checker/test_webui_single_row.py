@@ -64,6 +64,18 @@ def test_scroll_snaps_to_one_row_at_a_time():
     assert 'if(sliding' in page, '平滑捲動期間的事件要丟掉，否則慣性會一路翻下去'
 
 
+def test_ctrl_wheel_is_left_to_the_browser():
+    """Ctrl＋滾輪是瀏覽器的縮放，不是換排。
+
+    單排模式的 wheel 攔截原本無條件 preventDefault，把縮放也一起吃掉了——
+    頁面自己沒有縮放功能，吃掉等於整個功能消失。
+    """
+    page = _page()
+    wheel = page[page.index('main.addEventListener("wheel"'):page.index('// 縮圖大小是看的人')]
+    assert 'e.ctrlKey' in wheel, 'Ctrl＋滾輪要原封不動交給瀏覽器'
+    assert wheel.index('e.ctrlKey') < wheel.index('e.preventDefault()'),         '要在 preventDefault 之前就讓路'
+
+
 def test_keyboard_walks_by_rows():
     page = _page()
     assert 'const STEP = {ArrowDown:1, PageDown:1, ArrowUp:-1, PageUp:-1};' in page
