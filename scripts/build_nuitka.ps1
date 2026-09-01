@@ -28,6 +28,7 @@ python -m nuitka `
     --windows-console-mode=disable `
     --windows-icon-from-ico=icon.ico `
     --include-data-file=config.ini=config.ini `
+    --include-data-file=app/checker/page.html=app/checker/page.html `
     --include-data-dir=resources/icons=resources/icons `
     --output-dir=build_nuitka `
     --output-filename=FileManager.exe `

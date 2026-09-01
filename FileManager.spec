@@ -8,7 +8,9 @@ a = Analysis(
     # 的 config.ini（見 app/paths.py 的 runtime_root 與 bundle_root 之別），因此
     # 打包進來的那份永遠不會被讀到，只會把開發機的搜尋歷史與私人路徑一起發佈出去。
     # 首次啟動時沒有 config.ini 是正常的，程式會以內建預設值執行並在關閉時寫出。
-    datas=[('icon.ico', '.')],
+    # 更新檢查器的 Web UI 頁面模板是資源檔，必須跟著模組走進 app/checker/：
+    # 漏收的話程式照常啟動，直到按下「詳細清單」才炸。
+    datas=[('icon.ico', '.'), ('app/checker/page.html', 'app/checker')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

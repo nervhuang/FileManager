@@ -250,6 +250,10 @@ cookie 放 `runtime_root()/exhentai.txt`（與 `config.ini`、`authors.db` 同�
 `app/checker/webui.py`。面板雙擊項目或按工具列的「詳細清單」即以系統預設瀏覽器開啟。
 伺服器由 `CheckerPanel` 持有，與主視窗同生共死。
 
+頁面模板是資源檔 `app/checker/page.html`（HTML／CSS／JS 全部在裡面），`webui.py` 只剩伺服器。
+模板必須被三份打包設定收進去（`scripts/build_nuitka.ps1`、`BUILD.md`、`FileManager.spec`）：
+漏收的話程式照常啟動，直到有人按下「詳細清單」才炸，所以執行期找不到就直接拋例外、不做降級備援。
+
 四區塊分頁、縮圖牆、標題與作者搜尋、分類篩選器（分類不在後端過濾，寫死規則容易誤殺），
 每張卡片可直接標記「已下載」「忽略」或開啟站上頁面。「疑似已有」的卡片會並排顯示
 對到的本機檔名——那正是判斷的依據。
