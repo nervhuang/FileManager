@@ -58,6 +58,8 @@ CREATE INDEX IF NOT EXISTS ix_checker_findings_entity
   ON checker_findings(entity_id);
 CREATE INDEX IF NOT EXISTS ix_checker_findings_verdict
   ON checker_findings(verdict);
+CREATE INDEX IF NOT EXISTS ix_checker_findings_work
+  ON checker_findings(entity_id, core);
 """
 
 _POSTED_FORMAT = '%Y-%m-%d %H:%M'
@@ -177,6 +179,22 @@ def reconcile_downloads(conn, entity_id=None):
     return confirmed
 
 
+# 決定套用到整部作品，不是只有那一個 gid。
+#
+# 站上同一本書會被重複上傳，也會有多語版本，每一次上傳都是不同的 gid
+# （`scanner.aggregate()` 就是為此存在）。決定只認 gid 的話，使用者按過「忽略」
+# 的書會在下一次掃描抓到另一次上傳時原封不動再冒出來——實測 3300 張卡片裡有
+# 149 張是這樣來的，而且它們永遠按不掉：每按一次只擋住那一個 gid。
+#
+# 作品的身分是 `(entity_id, core)`，與 `aggregate()` 的分組鍵同源。`core` 為空
+# 時退回只認 gid——否則所有解析不出核心標題的項目會被當成同一部作品互相消掉。
+_UNDECIDED = """NOT EXISTS (
+      SELECT 1 FROM checker_findings g
+      JOIN checker_decisions d ON d.gid = g.gid
+      WHERE g.gid = f.gid
+         OR (f.core <> '' AND g.core = f.core AND g.entity_id IS f.entity_id))"""
+
+
 # ── 比對結果 ────────────────────────────────────────────────────────────
 
 def save_findings(conn, entity_id, items):
@@ -278,12 +296,15 @@ def reset_scan_data(conn):
 
 
 def load_findings(conn, *, verdicts=None, entity_id=None):
-    """讀回比對結果，已套用使用者決定（忽略與已下載待驗都不再出現）。"""
-    sql = ('SELECT f.*, e.name AS entity_name, e.type AS entity_type, d.state AS decision '
+    """讀回比對結果，已套用使用者決定（忽略與已下載待驗都不再出現）。
+
+    決定以作品為單位生效，見 `_UNDECIDED`：同一部作品的其他上傳與其他語言版本
+    一併不再出現，否則按過的書會被下一次掃描原封不動送回來。
+    """
+    sql = ('SELECT f.*, e.name AS entity_name, e.type AS entity_type '
            'FROM checker_findings f '
            'LEFT JOIN entities e ON e.id = f.entity_id '
-           'LEFT JOIN checker_decisions d ON d.gid = f.gid '
-           'WHERE d.state IS NULL')
+           'WHERE ' + _UNDECIDED)
     params = []
     if verdicts:
         sql += ' AND f.verdict IN (%s)' % ','.join('?' * len(verdicts))
@@ -304,11 +325,10 @@ def load_findings(conn, *, verdicts=None, entity_id=None):
 
 
 def counts(conn):
-    """四區塊計數，已排除使用者已處理的項目。"""
+    """四區塊計數，已排除使用者已處理的項目（同 `load_findings` 以作品為單位）。"""
     rows = conn.execute(
         'SELECT f.verdict, COUNT(*) AS n FROM checker_findings f '
-        'LEFT JOIN checker_decisions d ON d.gid = f.gid '
-        'WHERE d.state IS NULL GROUP BY f.verdict')
+        'WHERE ' + _UNDECIDED + ' GROUP BY f.verdict')
     result = {matcher.VERDICT_NEW: 0, matcher.VERDICT_UPGRADE: 0,
               matcher.VERDICT_MAYBE: 0, matcher.VERDICT_HAVE: 0,
               matcher.VERDICT_SUPPRESSED: 0}
