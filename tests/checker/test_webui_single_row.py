@@ -48,7 +48,7 @@ def test_row_height_is_remeasured_on_every_draw():
     實測（headless Edge ＋ CDP）抓到過：捲動區 837、卡片 871。
     """
     page = _page()
-    draw = page[page.index('function draw(){'):page.index('function card(i)')]
+    draw = page[page.index('function draw(keep){'):page.index('function card(i)')]
     assert 'measureRow()' in draw
 
 
@@ -129,4 +129,19 @@ def test_size_selector_belongs_to_wall_mode_only():
 
 
 def test_view_resets_to_the_first_row():
-    assert 'main.scrollTop = 0;' in _page(), '換分頁／搜尋／版面後回到第一排'
+    page = _page()
+    assert 'const at = keep ? main.scrollTop : 0;' in page,         '換分頁／搜尋／版面後回到第一排'
+    assert 'main.scrollTop = at;' in page
+    for call in ('drawTabs(); draw();', 'applyLayout(); draw();'):
+        assert call in page, '換分頁／版面走的是不保留位置的那條路'
+
+
+def test_a_decision_stays_where_you_were():
+    """按「已下載／忽略」之後不得跳回最前面。
+
+    卡片是從 DATA.items 拿掉再整段重畫的，重畫預設回到第一排——正在看第 20 排
+    的人按一下就被送回開頭，下一本要重捲一次。判定這條路要保留捲動位置。
+    """
+    page = _page()
+    decide = page[page.index('async function decide('):page.index('let thumbWatcher')]
+    assert 'draw(true)' in decide, '判定後重畫要保留捲動位置'

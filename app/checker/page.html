@@ -143,7 +143,10 @@ function drawTabs(){
     cats.map(c => `<option${c===keep?" selected":""}>${esc(c)}</option>`).join("");
 }
 
-function draw(){
+// keep=true：判定完之後重畫。刪掉一張卡不該把人送回第一排——正在看第 20 排的人
+// 按「已下載」，畫面應該還在第 20 排。換分頁／搜尋／版面才是回到最前面。
+function draw(keep){
+  const at = keep ? main.scrollTop : 0;
   const q = document.getElementById("q").value.trim().toLowerCase();
   const cat = document.getElementById("cat").value;
   const rows = DATA.items.filter(i => i.verdict === tab
@@ -156,8 +159,10 @@ function draw(){
   // 每次重畫都重量一次捲動區：分頁按鈕與分類選單是資料進來才生出來的，
   // 初次量到的表頭比最後矮一截，卡片會比捲動區高出那一截，一排就不再是一排。
   if(document.body.classList.contains("single")) measureRow();
-  // 換分頁、改搜尋、換版面之後留在第幾排毫無意義，一律回到第一排。
-  main.scrollTop = 0;
+  // 換分頁、改搜尋、換版面之後留在第幾排毫無意義，一律回到第一排；
+  // 判定則留在原位。最後一排整排消失時瀏覽器自己會夾到新的底部，
+  // 而每排等高，夾到的位置仍然是一排的起點。
+  main.scrollTop = at;
   watchThumbs();
 }
 
@@ -194,7 +199,7 @@ async function decide(gid, state, entity_id){
   if(!res.ok){ alert("失敗：" + (res.error||"")); return; }
   DATA.items = DATA.items.filter(i => i.gid !== gid);
   DATA.counts = res.counts;
-  drawTabs(); draw();
+  drawTabs(); draw(true);
 }
 
 // 縮圖仍然是捲到才下載（開頁不會一次打幾百個請求），但範圍往下多留一個視窗高：
