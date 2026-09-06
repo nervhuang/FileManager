@@ -13,7 +13,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QDir, Qt, QSize, QFileInfo, QEvent, QTimer, QFileSystemWatcher, QItemSelectionModel, QMimeData, QUrl
 from PyQt5.QtGui import QKeySequence, QIcon, QFont
 
-from . import crashlog, font_scaling, gui_bridge, icons, paths, settings
+from . import (crashlog, font_dialog, font_family, font_scaling, gui_bridge,
+               icons, paths, settings)
 from .search import query as search_query, results as search_results
 from .search.exclude_dialog import ExcludeSettingsDialog
 from .authors import icons as authors_icons
@@ -1244,6 +1245,8 @@ class FileManager(QMainWindow):
         self.action_checker_limits = option_menu.addAction("更新檢查筆數(&C)…")
         self.action_checker_limits.triggered.connect(
             lambda: checker_limits_dialog.open_dialog(self))
+        self.action_font_settings = option_menu.addAction("字型(&F)…")
+        self.action_font_settings.triggered.connect(lambda: font_dialog.open_dialog(self))
 
     def _new_tab(self):
         """依目前操作焦點，在對應面板最左邊新增一個空白分頁。
@@ -1726,7 +1729,8 @@ class FileManager(QMainWindow):
             self.setWindowState(self.windowState() | Qt.WindowFullScreen)
 
         font_scaling.apply_to_window(
-            self, cfg.get_int('General', 'font_size', 10, minimum=6, maximum=72))
+            self, cfg.get_int('General', 'font_size', 10, minimum=6, maximum=72),
+            font_family.load(cfg))
         self.update_status_bar()
 
         # 排除設定須在還原頁籤觸發搜尋之前就位，過濾才會生效

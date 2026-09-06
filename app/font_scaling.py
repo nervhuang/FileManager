@@ -11,19 +11,23 @@
 """
 
 from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import QWIDGETSIZE_MAX, QToolBar, QWidget
+from PyQt5.QtWidgets import QWIDGETSIZE_MAX, QApplication, QToolBar, QWidget
 
 MIN_POINT_SIZE = 6      # 也是 Ctrl+- 縮到底的下限
 MAX_POINT_SIZE = 72     # Ctrl+= 放到底的上限
 
 
-def apply(root, old_base, new_base):
+def apply(root, old_base, new_base, family=None):
     """把 `root` 及其所有子 widget 的字級從 `old_base` 換算到 `new_base`。
+
+    `family` 不是 None 時，同一趟遞迴順便把字型種類換成它（SHL-18b）。
+    種類與級數沒有理由各走一條路徑：先量完再套、不動 `QApplication.setFont`、
+    stylesheet 阻斷傳播，這些理由對兩者一字不改地成立。
 
     回傳實際被改動的 widget 數量，供測試與除錯用。
 
-    以 point 為單位。用 pixel 指定字型的 widget（`pointSize()` 回 -1）跳過：
-    那是另一套單位，硬換算只會把它弄壞。
+    級數以 point 為單位。用 pixel 指定字型的 widget（`pointSize()` 回 -1）不換
+    級數：那是另一套單位，硬換算只會把它弄壞——但種類照換，那與單位無關。
     """
     delta = new_base - old_base
 
@@ -39,17 +43,23 @@ def apply(root, old_base, new_base):
     for widget in [root] + root.findChildren(QWidget):
         font = widget.font()
         size = font.pointSize()
-        if size > 0:
+        if size > 0 or family:
             snapshot.append((widget, font, size))
 
     for widget, font, size in snapshot:
-        widget.setFont(_resized(font, size + delta))
+        widget.setFont(_restyled(font, size + delta, family))
     return len(snapshot)
 
 
-def _resized(font, point_size):
+def _restyled(font, point_size, family):
     new_font = QFont(font)
-    new_font.setPointSize(max(MIN_POINT_SIZE, point_size))
+    if point_size > 0:
+        new_font.setPointSize(max(MIN_POINT_SIZE, point_size))
+    # 刻意指定等寬的 widget 不換種類（SHL-18c）：更新檢查器的執行紀錄靠欄位
+    # 對齊才讀得快，換成比例字型就對不齊。判準是 styleHint 而不是列舉「哪幾個
+    # widget 不要換」——列舉法在這個專案已經失效過兩次（SHL-3）。
+    if family and font.styleHint() != QFont.Monospace:
+        new_font.setFamily(family)
     return new_font
 
 
@@ -72,8 +82,18 @@ def step(window, delta):
     window.update_status_bar()
 
 
-def apply_to_window(window, new_size):
-    """把字級套用到整個主視窗，含遞迴蓋不到的那些收尾。
+def system_default_family():
+    """系統預設的字型種類。
+
+    `QApplication` 的字型永遠是它——遞迴刻意不動它（SHL-3b），所以那份字型
+    始終是程式啟動時系統給的那一套，正好就是「還原成系統預設」要回到的地方。
+    """
+    app = QApplication.instance()
+    return app.font().family() if app is not None else ''
+
+
+def apply_to_window(window, new_size, family=None):
+    """把字級（與字型種類）套用到整個主視窗，含遞迴蓋不到的那些收尾。
 
     這段編排原本是 `FileManager._apply_font_size` 的內容。它不屬於外殼：外殼只
     建立面板、接訊號、管版面，而「字型怎麼套」是橫切關注點，和 `apply()` 是同
@@ -84,9 +104,12 @@ def apply_to_window(window, new_size):
     """
     # 必須先取：遞迴一跑，listView 的字級就變了。
     old_size = current_size(window)
-    if new_size == old_size:
+    if family is not None:
+        # 空字串是「還原成系統預設」，那是一個實際的字型名字，不是「不要動」。
+        family = family or system_default_family()
+    elif new_size == old_size:
         return
-    apply(window, old_size, new_size)
+    apply(window, old_size, new_size, family)
     # 工具列高度是釘死的，不重算就會把放大後的按鈕文字裁掉。
     sync_toolbar_heights(window)
 

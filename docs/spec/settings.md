@@ -41,7 +41,12 @@
 | 鍵 | 型別 | 說明 |
 |---|---|---|
 | `font_size` | int | 應用程式字型級數，見 [ui-shell.md](ui-shell.md) |
+| `font_family` | str | 應用程式字型種類，空字串＝系統預設，見 [ui-shell.md](ui-shell.md) 的 SHL-18 |
 | `search_history` | JSON 陣列 | 搜尋歷史，還原時最新的排在最上 |
+
+**SET-16** `font_family` 由 `app/font_family.py` **自己讀寫**（與 SET-15 同一套作法）：
+對話框改的是一份即讀即存的 `ConfigStore`，主視窗只在啟動時讀它。字型是隨時可能在
+對話框裡改、卻要立刻進檔案的設定，掛在主視窗的 `save_config` 上就得等到關程式才落地。
 
 ### `[Layout]`
 
