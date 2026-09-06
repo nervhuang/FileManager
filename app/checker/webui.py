@@ -32,6 +32,18 @@ VERDICT_LABEL = {
 }
 
 
+def safe_gid(raw):
+    """把網址裡的 gid 消毒成「查得到、也能當檔名」的樣子。
+
+    gid 會被拿去查資料庫、也會變成縮圖快取的檔名，所以只留英數、底線與連字號：
+    句點、斜線、反斜線一律去掉，跳脫目錄與改副檔名都不可能。
+
+    原本的寫法是「只留數字」——那是 exhentai gid 全為數字的年代。第二個來源的
+    `wn-377256` 會被它洗成 `377256`，查不到那筆（站方剛好有同號畫廊時還會張冠李戴）。
+    """
+    return ''.join(ch for ch in (raw or '') if ch.isascii() and (ch.isalnum() or ch in '_-'))
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = 'FileManagerChecker/1.0'
 
@@ -130,7 +142,7 @@ class _Handler(BaseHTTPRequestHandler):
                 'order': list(VERDICT_ORDER), 'labels': VERDICT_LABEL}
 
     def _thumb(self, gid):
-        gid = ''.join(ch for ch in gid if ch.isdigit())
+        gid = safe_gid(gid)
         if not gid:
             self._send(404, 'text/plain', '404')
             return
