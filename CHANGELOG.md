@@ -1,6 +1,10 @@
 # 變更紀錄
 
 ## 2026-09-06
+- 修正 wnacg 的「首次掃描」是拿 exhentai 的狀態判斷的
+  - 399 位作者早就在 exhentai 掃過，對它們而言是增量掃描；但 wnacg 是全新的，那些人在這邊仍然是首次。用錯狀態的結果是第一輪每位都多翻一整頁——443 位就是多 15 分鐘
+  - 兩個來源各自判斷首次與否，各自用自己的分頁基準
+
 - pre-commit 與 CI 加上 pyflakes
   - 這個專案到處是 `try/except Exception`，把錯誤收斂成畫面上一行字——好處是單一實體失敗不會打死整輪，代價是 `NameError` 也被吞掉，測試一路綠燈照樣上 release（今天的 `closing`）
   - 一併清掉既有的 16 個未使用 import／變數。其中兩個值得記：`keyPressEvent` 的 `global global_keywords` 是多餘的（那裡只讀不寫），而 crash.log 的檔案物件改由 `crashlog` 自己留參考——它必須在整個行程期間活著，放在呼叫端看起來就像一行沒人用的賦值，遲早被誰順手刪掉

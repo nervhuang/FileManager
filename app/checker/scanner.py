@@ -184,8 +184,12 @@ def scan_entity(entity, fetch, local_lookup, *, last_scan_at=None,
         })
 
     if wnacg_fetch is not None:
+        # 「首次」是每個來源各自的事：399 位作者早就在 exhentai 掃過，但 wnacg
+        # 是全新的，那些人在這邊仍然是首次，該用首次筆數建立基準。拿另一個站的
+        # 狀態決定這裡抓幾筆，第一輪每位都會多翻一整頁（443 位＝多 15 分鐘）。
         _add_wnacg_items(result, entity, wnacg_fetch, local_items, threshold,
-                         wanted=wanted, since=wnacg_since)
+                         wanted=(first_run_limit if wnacg_since is None else max_items),
+                         since=wnacg_since)
 
     result['works'] = aggregate(result['items'])
     return result

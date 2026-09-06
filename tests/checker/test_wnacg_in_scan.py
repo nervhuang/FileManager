@@ -97,3 +97,30 @@ def test_the_newest_wnacg_time_is_recorded_for_the_next_scan():
     # 第一筆是最新的（站上依建立時間新→舊）。
     assert result['wnacg_posted'] == result['items'][0]['posted']
     assert result['wnacg_posted']
+
+
+def test_each_source_decides_its_own_first_run():
+    """「首次掃描取樣筆數」對 wnacg 要看 wnacg 自己掃過沒有，不是看 exhentai。
+
+    399 位作者已經在 exhentai 掃過，對它們而言 `last_scan_at` 有值＝增量掃描；
+    但 wnacg 是全新的，那 443 位都該用「首次掃描筆數」建立基準。拿 exhentai 的
+    狀態去決定 wnacg 抓幾筆，第一輪會多抓一整頁——443 位就是多 15 分鐘。
+    """
+    import datetime
+
+    pages = []
+
+    def wn_fetch(url):
+        pages.append(url)
+        return _wn_page(*[f'第{i}本' for i in range(wnacg.PAGE_SIZE)])
+
+    scanner.scan_entity(
+        {'id': 1, 'name': '某作者', 'type': 'author', 'english_name': 'X'},
+        _NoExhentai(), lambda e: [],
+        last_scan_at=datetime.datetime(2026, 1, 1),   # exhentai 早就掃過了
+        wnacg_since=None,                              # 但 wnacg 沒有
+        first_run_limit=25, max_items=100,
+        wnacg_fetch=wn_fetch)
+
+    # 25 筆＝2 頁（一頁 24）。若誤用 max_items=100 會變成 5 頁。
+    assert len(pages) == 2, f'應該只翻 2 頁，實際 {len(pages)}'
