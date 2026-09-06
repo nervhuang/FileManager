@@ -13,7 +13,7 @@ import time
 from contextlib import closing
 
 from PyQt5.QtCore import QSize, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QFontMetrics
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolBar, QToolButton,
     QTreeWidget, QTreeWidgetItem, QFrame, QAbstractItemView,
@@ -132,7 +132,7 @@ class CheckerPanel(QWidget):
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat('待命')
         self.progress_bar.setTextVisible(True)
-        self.progress_bar.setFixedHeight(18)
+        self._sync_progress_height()
         vbox.addWidget(self.progress_bar)
 
         self.log_view = QPlainTextEdit()
@@ -142,8 +142,33 @@ class CheckerPanel(QWidget):
         self.log_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         vbox.addWidget(self.log_view, 1)
 
-        box.setMinimumHeight(110)
+        self._log_box = box
+        self._sync_log_box_height()
         return box
+
+    def _sync_log_box_height(self):
+        """紀錄區的最小高度也隨字型重算：標題列 ＋ 進度條 ＋ 至少兩行紀錄。
+
+        原本釘死在 110px。字型一放大，分割器就把這一格壓到標題疊在進度條上、
+        紀錄只剩半行——與進度條同一個坑，只是要算的是整格而不是一條。
+        """
+        title = QFontMetrics(self.log_title_label.font()).height()
+        log_line = QFontMetrics(self.log_view.font()).height()
+        # 兩行紀錄是下限，不是預設：分割器仍然可以把這一格拉大。10pt 時算出來
+        # 約 106px，與原本釘死的 110 幾乎一樣——放大字型才看得出差別。
+        self._log_box.setMinimumHeight(
+            max(110, title + self._sync_progress_height() + log_line * 2 + 26))
+
+    def _sync_progress_height(self):
+        """進度條高度隨字型重算，不釘死。
+
+        原本是 `setFixedHeight(18)`。條裡面寫著「待命」「掃描中 12/443」這些字，
+        18pt 時一行字就要 30px，釘死的高度會把它裁掉一半——工具列踩過同一個坑
+        （ui-shell.md 的 SHL-10a）。下限維持 18px，小字型時外觀不變。
+        """
+        height = max(18, QFontMetrics(self.progress_bar.font()).height() + 8)
+        self.progress_bar.setFixedHeight(height)
+        return height
 
     def _button(self, icon, tooltip, handler):
         btn = QToolButton(self)
@@ -198,6 +223,8 @@ class CheckerPanel(QWidget):
         for widget in (self.log_title_label, self.elapsed_label,
                        self.clear_log_button, self.progress_bar):
             widget.setFont(base)
+        # 條裡的文字與整格的最小高度都跟著字型長大，釘死的尺寸會把內容裁掉。
+        self._sync_log_box_height()
 
         # 計數列是這個面板的標題，比內文大一級。
         self.counts_label.setFont(QFont(family, size + 1))
