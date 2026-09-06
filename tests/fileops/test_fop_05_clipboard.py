@@ -6,7 +6,6 @@
 
 純函式，不需要 QApplication。
 """
-import os
 
 import pytest
 

@@ -6,7 +6,7 @@ from PyQt5.QtCore import Qt, QItemSelection, QItemSelectionModel, QMimeData, QUr
 from PyQt5.QtGui import QDrag
 
 from .fileops import drag_menu, drag_preview, shell as shell_ops
-from .fileops.selection import ManualDragGuardMixin, NameColumnSelectionMixin
+from .fileops.selection import NameColumnSelectionMixin
 
 
 class _ShellDropMixin:
@@ -171,7 +171,7 @@ class SearchListView(_ShellDropMixin, NameColumnSelectionMixin, QTreeView):
         wnd = self.window()
         if wnd is not None and hasattr(wnd, "_search_drag_button"):
             wnd._search_drag_button = self._press_button
-        result_action = drag.exec_(supportedActions, Qt.CopyAction)
+        drag.exec_(supportedActions, Qt.CopyAction)
         if wnd is not None and hasattr(wnd, "_search_drag_button"):
             wnd._search_drag_button = Qt.NoButton
         if dragged_paths:
@@ -212,7 +212,7 @@ class SearchListView(_ShellDropMixin, NameColumnSelectionMixin, QTreeView):
                 wnd = self.window()
                 if wnd is not None and hasattr(wnd, "_search_drag_button"):
                     wnd._search_drag_button = Qt.RightButton
-                result_action = drag.exec_(Qt.CopyAction | Qt.MoveAction | Qt.LinkAction, Qt.CopyAction)
+                drag.exec_(Qt.CopyAction | Qt.MoveAction | Qt.LinkAction, Qt.CopyAction)
                 self._note_manual_drag_finished()
                 if wnd is not None and hasattr(wnd, "_search_drag_button"):
                     wnd._search_drag_button = Qt.NoButton
@@ -465,7 +465,6 @@ class FileListView(_ShellDropMixin, NameColumnSelectionMixin, QTreeView):
                 and (event.pos() - self._press_pos).manhattanLength() >= QApplication.startDragDistance()):
             mime = self._build_drag_mime_data()
             if mime is not None and mime.hasUrls():
-                dragged_paths = [url.toLocalFile() for url in mime.urls()]
                 drag = QDrag(self)
                 drag.setMimeData(mime)
                 wnd = self.window()

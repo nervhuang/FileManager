@@ -13,6 +13,11 @@ import traceback
 
 from .paths import runtime_root
 
+# log 檔必須在整個行程期間保持開啟，faulthandler 才能在崩潰當下寫入。參考放這裡
+# 而不是要求呼叫端抱著：那看起來就像一行沒人用的賦值，遲早被誰順手刪掉——
+# 「這個值必須活著」的保證，該由需要它的模組自己給。
+_log_file = None
+
 
 def install():
     """安裝崩潰記錄器：把原生崩潰（存取違規）、Qt 致命訊息與未捕捉的 Python
@@ -23,9 +28,10 @@ def install():
     import faulthandler
     from datetime import datetime as _dt
 
+    global _log_file
     log_path = os.path.join(runtime_root(), 'crash.log')
     try:
-        log_file = open(log_path, 'a', buffering=1, encoding='utf-8')
+        log_file = _log_file = open(log_path, 'a', buffering=1, encoding='utf-8')
     except Exception:
         return None
 

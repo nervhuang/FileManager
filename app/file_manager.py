@@ -5,17 +5,17 @@ import traceback
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QFileSystemModel, QWidget,
-    QHBoxLayout, QVBoxLayout, QAction, QMessageBox,
+    QVBoxLayout, QAction, QMessageBox,
     QSplitter, QSizePolicy, QFileIconProvider,
     QAbstractItemView, QMenu, QComboBox,
     QDialog, QActionGroup, QShortcut, QFrame,
 )
 from PyQt5.QtCore import QDir, Qt, QSize, QFileInfo, QEvent, QTimer, QFileSystemWatcher, QItemSelectionModel, QMimeData, QUrl
-from PyQt5.QtGui import QKeySequence, QIcon, QFont
+from PyQt5.QtGui import QKeySequence, QIcon
 
 from . import (crashlog, font_dialog, font_family, font_scaling, gui_bridge,
                icons, paths, settings)
-from .search import query as search_query, results as search_results
+from .search import query as search_query
 from .search.exclude_dialog import ExcludeSettingsDialog
 from .authors import icons as authors_icons
 from .authors.panel import AuthorsPanel
@@ -447,7 +447,7 @@ class FileManager(QMainWindow):
                 QMessageBox.warning(self, "錯誤", f"無法開啟檔案: {e}")
 
     def keyPressEvent(self, e):
-        global ref_s, ref_e, global_keywords
+        global ref_s, ref_e          # global_keywords 在這裡只讀不寫
 
         if e.modifiers() & Qt.ControlModifier:
             if e.key() == Qt.Key.Key_C:
@@ -1883,8 +1883,7 @@ class FileManager(QMainWindow):
 
 
 def main():
-    # 保持參考避免被 GC；log 檔需在整個行程期間開啟供 faulthandler 寫入。
-    _crash_log = crashlog.install()  # noqa: F841
+    crashlog.install()      # 參考由 crashlog 自己留著（見該模組的 _log_file）
     app = QApplication(sys.argv)
     icon_path = os.path.join(_bundle_root(), 'icon.ico')
     if os.path.exists(icon_path):

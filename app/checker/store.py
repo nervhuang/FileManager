@@ -12,7 +12,6 @@
 
 import datetime
 import json
-from contextlib import closing
 
 from . import matcher, wnacg
 

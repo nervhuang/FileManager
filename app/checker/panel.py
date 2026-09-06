@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
     QProgressBar, QPlainTextEdit, QSplitter, QSizePolicy, QMessageBox,
 )
 
-from . import fetcher, matcher, scanner, store, webui
+from . import fetcher, matcher, store, webui
 from .scan_worker import ScanWorker
 from .icons import (make_checker_icon, make_detail_icon, make_reset_icon,
                     make_stop_icon)

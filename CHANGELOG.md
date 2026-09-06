@@ -1,6 +1,10 @@
 # 變更紀錄
 
 ## 2026-09-06
+- pre-commit 與 CI 加上 pyflakes
+  - 這個專案到處是 `try/except Exception`，把錯誤收斂成畫面上一行字——好處是單一實體失敗不會打死整輪，代價是 `NameError` 也被吞掉，測試一路綠燈照樣上 release（今天的 `closing`）
+  - 一併清掉既有的 16 個未使用 import／變數。其中兩個值得記：`keyPressEvent` 的 `global global_keywords` 是多餘的（那裡只讀不寫），而 crash.log 的檔案物件改由 `crashlog` 自己留參考——它必須在整個行程期間活著，放在呼叫端看起來就像一行沒人用的賦值，遲早被誰順手刪掉
+
 - 修正更新檢查器面板顯示「讀取結果失敗：name 'closing' is not defined」
   - 上一版把 `ScanWorker` 拆進 `scan_worker.py` 時，`from contextlib import closing` 一併被刪掉，但面板自己還有三處在用
   - 三處都包在 `try/except Exception` 裡，所以症狀不是崩潰，而是計數列變成一行錯誤訊息——測試裡沒有任何東西會踩到它

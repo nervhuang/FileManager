@@ -146,7 +146,6 @@ def make_layout_icon(orientation, active=False, size=64):
     p = QPainter(pix)
     p.setRenderHint(QPainter.Antialiasing)
     width = size.width()
-    height = size.height()
 
     shadow_color = QColor(0, 0, 0, 28)
     edge_dark = QColor("#6b6b6b")

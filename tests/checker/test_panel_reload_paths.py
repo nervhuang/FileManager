@@ -39,7 +39,7 @@ def test_every_database_helper_of_the_panel_is_callable(panel):
     import app.checker.panel as module
 
     missing = []
-    for name in ('closing', 'store', 'scanner', 'fetcher', 'webui', 'ScanWorker'):
+    for name in ('closing', 'store', 'fetcher', 'matcher', 'webui', 'ScanWorker'):
         if not hasattr(module, name):
             missing.append(name)
     assert not missing, f'panel.py 少了這些名字：{missing}'

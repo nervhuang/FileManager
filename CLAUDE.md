@@ -155,8 +155,14 @@ windows runner 是 cp1252。兩者都印不出這個專案的中文訊息，會�
 
 ## 把關
 
-- **pre-commit**（`git config core.hooksPath .githooks`）：行數上限 + 規格覆蓋 + 純邏輯測試
-- **CI**（`.github/workflows/test.yml`，windows-latest）：行數上限 + 規格覆蓋 + 全部測試
+- **pre-commit**（`git config core.hooksPath .githooks`）：行數上限 + pyflakes + 規格覆蓋 + 純邏輯測試
+- **CI**（`.github/workflows/test.yml`，windows-latest）：行數上限 + pyflakes + 規格覆蓋 + 全部測試
+
+**pyflakes 擋的是「名字不存在」。** 這個專案到處是 `try/except Exception` 把錯誤收斂成
+畫面上一行字——好處是單一實體失敗不會打死整輪，代價是 `NameError` 也被吞掉。
+拆檔案時把 `from contextlib import closing` 一併刪掉，三處還在用它，症狀卻只是
+更新檢查器的計數列變成「讀取結果失敗」，582 個測試照樣全綠、照樣上了 release。
+`python -m pyflakes app scripts tests main.py` 一秒就抓得到。
 
 `--no-verify` 只是延後，CI 仍然會擋。
 

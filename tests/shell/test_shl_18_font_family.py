@@ -6,7 +6,7 @@
 長相不驗：字型好不好看、有沒有缺字，offscreen 量不到，標在 SHL-18d [手動]。
 """
 import pytest
-from PyQt5.QtGui import QFont, QFontDatabase
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from app import font_family, font_scaling

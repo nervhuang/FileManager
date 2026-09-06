@@ -1,4 +1,4 @@
-from win32com.shell import shell, shellcon
+from win32com.shell import shell
 import pythoncom
 
 pythoncom.CoInitialize()

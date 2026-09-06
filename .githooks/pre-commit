@@ -24,6 +24,9 @@ export PYTHONIOENCODING=utf-8
 echo "pre-commit: 行數上限"
 "$PY" scripts/check_line_limits.py
 
+echo "pre-commit: 未定義與未使用的名字"
+"$PY" -m pyflakes app scripts tests main.py
+
 echo "pre-commit: 規格覆蓋"
 "$PY" scripts/check_spec_coverage.py > /dev/null
 

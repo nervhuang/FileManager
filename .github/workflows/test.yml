@@ -33,6 +33,11 @@ jobs:
       - name: 行數上限檢查
         run: python scripts/check_line_limits.py
 
+      # 刪 import 沒刪乾淨、名字打錯：這類錯誤在這個專案會被 try/except 吞成
+      # 畫面上一行字，測試一路綠燈也照樣上 release（2026-09-06 的 closing）。
+      - name: 未定義與未使用的名字
+        run: python -m pyflakes app scripts tests main.py
+
       - name: 規格覆蓋檢查
         run: python scripts/check_spec_coverage.py
 

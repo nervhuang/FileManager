@@ -103,7 +103,7 @@ def main():
             shrunk.append(f'  {path}：{allowed} → {n}')
 
     if shrunk:
-        print(f'以下檔案已比基準線短，跑 --update 把基準線降下來：')
+        print('以下檔案已比基準線短，跑 --update 把基準線降下來：')
         print('\n'.join(shrunk))
         print()
 
