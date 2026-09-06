@@ -18,6 +18,7 @@ import re
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .. import paths
@@ -110,6 +111,12 @@ def content_type(path):
     return _CONTENT_TYPE.get(os.path.splitext(path)[1].lower(), 'image/jpeg')
 
 
+def _is_site_host(url):
+    """這個網址是不是站方自己的主機（縮圖 CDN 也算）。"""
+    host = (urllib.parse.urlsplit(url).hostname or '').lower()
+    return host == 'exhentai.org' or host.endswith('.exhentai.org')
+
+
 def fetch(gid, url, cookie_header=None, timeout=20.0):
     """取得縮圖的本機路徑；沒有就下載。失敗回 None（頁面自己顯示佔位圖）。
 
@@ -131,9 +138,14 @@ def fetch(gid, url, cookie_header=None, timeout=20.0):
     if not _acquire_slot():
         return None
 
-    headers = {'User-Agent': _UA, 'Referer': 'https://exhentai.org/'}
-    if cookie_header:
-        headers['Cookie'] = cookie_header
+    # cookie 與 Referer 只給站方自己的主機。縮圖網址是資料，指到哪裡就送到哪裡
+    # 的話，第二個來源（wnacg 的縮圖在 t4.qy0.ru）會拿到一條 exhentai 的登入
+    # 憑證——那是「不外洩憑證」這條邊界（docs/spec/checker.md）最容易破的地方。
+    headers = {'User-Agent': _UA}
+    if _is_site_host(url):
+        headers['Referer'] = 'https://exhentai.org/'
+        if cookie_header:
+            headers['Cookie'] = cookie_header
     try:
         request = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(request, timeout=timeout) as response:

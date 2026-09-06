@@ -326,6 +326,7 @@ cookie 放 `runtime_root()/exhentai.txt`（與 `config.ini`、`authors.db` 同�
 | 不對外開放 | 只綁 `127.0.0.1`，埠號由系統指派（`port 0`，寫死會被佔用而啟動失敗）|
 | 存取控制 | 每個請求都要帶對 token，否則 403。token 每次啟動重新產生 |
 | 不外洩憑證 | 頁面與 API 永不輸出 cookie 值；**存取紀錄整個關掉**，因為網址帶著 token |
+| 憑證只給站方 | 縮圖下載的 cookie 與 Referer **只在主機是 `*.exhentai.org` 時才帶**。縮圖網址是資料，指到哪裡就送到哪裡的話，第二個來源的縮圖主機會拿到一條登入憑證 |
 | 不連外部主機 | HTML／CSS／JS 全部內嵌，並以 CSP 把瀏覽器一併鎖住 |
 
 ## 縮圖
