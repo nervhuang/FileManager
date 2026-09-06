@@ -10,6 +10,7 @@
 """
 
 import time
+from contextlib import closing
 
 from PyQt5.QtCore import QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont

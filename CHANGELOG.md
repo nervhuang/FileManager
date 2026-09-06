@@ -1,6 +1,11 @@
 # 變更紀錄
 
 ## 2026-09-06
+- 修正更新檢查器面板顯示「讀取結果失敗：name 'closing' is not defined」
+  - 上一版把 `ScanWorker` 拆進 `scan_worker.py` 時，`from contextlib import closing` 一併被刪掉，但面板自己還有三處在用
+  - 三處都包在 `try/except Exception` 裡，所以症狀不是崩潰，而是計數列變成一行錯誤訊息——測試裡沒有任何東西會踩到它
+  - 補一支測試直接呼叫 `refresh()`，並檢查面板用到的全域名字都還在
+
 - 更新檢查器新增第二個來源：wnacg（紳士漫畫）
   - 那個站沒有 `artist:`／`group:` tag，也沒有定義過英文名稱，所以一律拿作者的日文名稱跑關鍵字搜尋；不需要登入
   - 每一位作者都查，不是只查 exhentai 找不到的那幾位——漢化版通常只在 wnacg 有。整輪多約 15 分鐘（443 次請求、2 秒間隔）
