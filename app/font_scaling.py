@@ -63,6 +63,17 @@ def _restyled(font, point_size, family):
     return new_font
 
 
+def inherit(dialog, parent):
+    """讓對話框沿用開啟它的 widget 的字型（AUT-14）。
+
+    Qt 的字型傳遞在頂層視窗邊界就停了：對話框即使有 parent，也只會拿到應用程式
+    預設字型，不會跟著使用者 Ctrl+= 調整過的大小走。遞迴（`apply`）也走不到它，
+    因為它還沒被建立——所以每個對話框都得在自己的建構子裡叫這一支。
+    """
+    if parent is not None:
+        dialog.setFont(parent.font())
+
+
 def current_size(window):
     """目前的基準字級。以檔案清單的字型為準——它是最大的一塊內容區。
 

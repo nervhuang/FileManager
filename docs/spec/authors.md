@@ -6,10 +6,13 @@
 |---|---|---|
 | `db.py` | 否 | `authors.db` 的結構、查詢與異動日誌 |
 | `names.py` | 否 | 「團體 (作者)」貼上拆分 |
-| `panel.py` | 是 | 面板、樹、新增／編輯與最近變更對話框 |
+| `labels.py` | 否 | 類型的顯示字串（面板與兩個對話框共用）|
+| `panel.py` | 是 | 面板與樹 |
+| `edit_dialog.py` | 是 | 新增／編輯單一作者或團體 |
+| `changes_dialog.py` | 是 | 最近變更與還原 |
 | `icons.py` | 是 | 面板工具列的自繪圖示 |
 
-不依賴 Qt 的那兩個是服務層：Hermes MCP server 與 CLI 兩個進程也讀寫 `authors.db`。
+不依賴 Qt 的那三個是服務層：Hermes MCP server 與 CLI 兩個進程也讀寫 `authors.db`。
 
 ---
 
@@ -120,7 +123,7 @@ Qt 在頂層視窗邊界停止字型傳播，對話框必須自己套用，不�
 
 ## 尚未完成的部分
 
-- `panel.py` 586 行，離 600 行上限只剩十幾行，仍然一個檔案裝著面板、樹、兩個對話框。
-  下一次要往這裡加東西之前，先把對話框（`EntityEditDialog` 與 `RecentChangesDialog`）
-  分出去。
+- 面板已拆成四個檔案：`panel.py`（358 行，面板與樹）、`edit_dialog.py`、
+  `changes_dialog.py`、`labels.py`。共用的字型繼承（AUT-14）改用
+  `font_scaling.inherit()`，那是橫切關注點，不該由某一個對話框收留。
 - 對外只發 `search_requested(str)` 訊號，不得直接呼叫搜尋域或主視窗。這條目前成立。

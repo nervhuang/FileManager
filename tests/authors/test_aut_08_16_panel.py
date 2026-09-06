@@ -7,7 +7,8 @@ import pytest
 from PyQt5.QtWidgets import QToolBar
 
 from app.authors import db as authors_db
-from app.authors.panel import AuthorsPanel, EntityEditDialog
+from app.authors.edit_dialog import EntityEditDialog
+from app.authors.panel import AuthorsPanel
 
 pytestmark = pytest.mark.gui
 
