@@ -48,7 +48,7 @@ def _font_sizes(window):
 
 
 def test_shl_04_every_widget_tracks_the_font_size(main_window, qapp):
-    base = main_window._current_font_size()
+    base = font_scaling.current_size(main_window)
     before = _font_sizes(main_window)
     assert before, "沒有量到任何 widget，測試本身可能失效了"
 
@@ -90,7 +90,7 @@ def test_shl_02_menu_status_and_toolbars_follow_the_font(main_window, qapp):
     named = {name: w for name, w in named.items() if w is not None}
 
     before = {name: w.font().pointSize() for name, w in named.items()}
-    font_scaling.apply_to_window(main_window, main_window._current_font_size() + STEP)
+    font_scaling.apply_to_window(main_window, font_scaling.current_size(main_window) + STEP)
     qapp.processEvents()
 
     wrong = {
@@ -124,7 +124,7 @@ def test_shl_01_font_scaling_is_reversible(main_window, qapp):
         named[f'工具列#{index}'] = toolbar
     named = {name: w for name, w in named.items() if w is not None}
 
-    base = main_window._current_font_size()
+    base = font_scaling.current_size(main_window)
     before = {name: w.font().pointSize() for name, w in named.items()}
 
     for target in (base + 9, base, 6, base, 40, base):
@@ -147,7 +147,7 @@ def test_shl_10_toolbar_height_grows_with_the_font(main_window, qapp, step):
     """
     from PyQt5.QtWidgets import QToolBar
 
-    font_scaling.apply_to_window(main_window, main_window._current_font_size() + step)
+    font_scaling.apply_to_window(main_window, font_scaling.current_size(main_window) + step)
     qapp.processEvents()
 
     clipped = {}

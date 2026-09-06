@@ -19,23 +19,23 @@ pytestmark = pytest.mark.gui
 # ── SHL-1：字級範圍 6–72，每次 1pt，狀態列顯示 ──────────────────────────
 
 def test_shl_1_increase_and_decrease_move_one_point(main_window, qapp):
-    base = main_window._current_font_size()
-    main_window.on_font_increase()
-    assert main_window._current_font_size() == base + 1
-    main_window.on_font_decrease()
-    assert main_window._current_font_size() == base
+    base = font_scaling.current_size(main_window)
+    font_scaling.step(main_window, +1)
+    assert font_scaling.current_size(main_window) == base + 1
+    font_scaling.step(main_window, -1)
+    assert font_scaling.current_size(main_window) == base
 
 
 def test_shl_1_stops_at_the_upper_bound(main_window, qapp):
     font_scaling.apply_to_window(main_window, 72)
-    main_window.on_font_increase()
-    assert main_window._current_font_size() == 72
+    font_scaling.step(main_window, +1)
+    assert font_scaling.current_size(main_window) == 72
 
 
 def test_shl_1_stops_at_the_lower_bound(main_window, qapp):
     font_scaling.apply_to_window(main_window, 6)
-    main_window.on_font_decrease()
-    assert main_window._current_font_size() == 6
+    font_scaling.step(main_window, -1)
+    assert font_scaling.current_size(main_window) == 6
 
 
 def test_shl_1_status_bar_shows_the_current_size(main_window, qapp):
@@ -48,7 +48,7 @@ def test_shl_1_status_bar_shows_the_current_size(main_window, qapp):
 def test_shl_1_status_bar_follows_the_shortcut_actions(main_window, qapp):
     """按 Ctrl+= 之後狀態列要跟著改，不能停在舊數字。"""
     font_scaling.apply_to_window(main_window, 12)
-    main_window.on_font_increase()
+    font_scaling.step(main_window, +1)
     qapp.processEvents()
     assert '13' in main_window.statusBar().currentMessage()
 

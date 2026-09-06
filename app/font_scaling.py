@@ -13,8 +13,8 @@
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QWIDGETSIZE_MAX, QToolBar, QWidget
 
-# 與 FileManager.on_font_decrease 的下限一致。
-MIN_POINT_SIZE = 6
+MIN_POINT_SIZE = 6      # 也是 Ctrl+- 縮到底的下限
+MAX_POINT_SIZE = 72     # Ctrl+= 放到底的上限
 
 
 def apply(root, old_base, new_base):
@@ -53,6 +53,25 @@ def _resized(font, point_size):
     return new_font
 
 
+def current_size(window):
+    """目前的基準字級。以檔案清單的字型為準——它是最大的一塊內容區。
+
+    以 point 為單位；讀到 -1（用 pixel 指定）時回 10，那是程式的預設級數。
+    """
+    font = window.listView.font()
+    return font.pointSize() if font.pointSize() > 0 else 10
+
+
+def step(window, delta):
+    """Ctrl+= / Ctrl+- 的一階，夾在 6–72pt（SHL-1）。
+
+    上下限是字型政策，不是外殼的事：外殼只負責把快捷鍵接到這裡。
+    """
+    new_size = min(max(current_size(window) + delta, MIN_POINT_SIZE), MAX_POINT_SIZE)
+    apply_to_window(window, new_size)
+    window.update_status_bar()
+
+
 def apply_to_window(window, new_size):
     """把字級套用到整個主視窗，含遞迴蓋不到的那些收尾。
 
@@ -64,7 +83,7 @@ def apply_to_window(window, new_size):
     只負責在正確的時機叫它們——順序有意義，見底下的註解。
     """
     # 必須先取：遞迴一跑，listView 的字級就變了。
-    old_size = window._current_font_size()
+    old_size = current_size(window)
     if new_size == old_size:
         return
     apply(window, old_size, new_size)

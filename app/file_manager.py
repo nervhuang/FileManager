@@ -126,7 +126,7 @@ class FileManager(QMainWindow):
             QKeySequence("Ctrl+Num++"),
         ])
         action_new.setToolTip("放大字型 (Ctrl +)")
-        action_new.triggered.connect(self.on_font_increase)
+        action_new.triggered.connect(lambda: font_scaling.step(self, +1))
 
         action_open = QAction("字型縮小", self)
         action_open.setShortcuts([
@@ -134,7 +134,7 @@ class FileManager(QMainWindow):
             QKeySequence("Ctrl+Num+-"),
         ])
         action_open.setToolTip("縮小字型 (Ctrl -)")
-        action_open.triggered.connect(self.on_font_decrease)
+        action_open.triggered.connect(lambda: font_scaling.step(self, -1))
         self.addAction(action_new)
         self.addAction(action_open)
 
@@ -462,11 +462,11 @@ class FileManager(QMainWindow):
                     e.accept()
                     return
             if e.key() in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
-                self.on_font_increase()
+                font_scaling.step(self, +1)
                 e.accept()
                 return
             if e.key() in (Qt.Key.Key_Minus, Qt.Key.Key_Underscore):
-                self.on_font_decrease()
+                font_scaling.step(self, -1)
                 e.accept()
                 return
 
@@ -590,11 +590,11 @@ class FileManager(QMainWindow):
             if event.modifiers() & Qt.ControlModifier:
                 delta_y = event.angleDelta().y()
                 if delta_y < 0:
-                    self.on_font_increase()
+                    font_scaling.step(self, +1)
                     event.accept()
                     return True
                 if delta_y > 0:
-                    self.on_font_decrease()
+                    font_scaling.step(self, -1)
                     event.accept()
                     return True
 
@@ -1645,27 +1645,11 @@ class FileManager(QMainWindow):
         self.fileListModel.setRootPath(dir_path)
         self.listView.setRootIndex(self.file_proxy.mapFromSource(self.fileListModel.index(dir_path)))
 
-    def on_font_increase(self):
-        # 放大字型，各增加 1pt（限制最大 72pt）
-        new_size = min(self._current_font_size() + 1, 72)
-        font_scaling.apply_to_window(self, new_size)
-        self.update_status_bar()
-
-    def on_font_decrease(self):
-        # 縮小字型，各減少 1pt（限制最小 6pt）
-        new_size = max(self._current_font_size() - 1, 6)
-        font_scaling.apply_to_window(self, new_size)
-        self.update_status_bar()
-
     def update_status_bar(self):
         # 更新狀態列以顯示目前字型大小
         status = self.statusBar()
         if status is not None:
-            status.showMessage(f"字型: {self._current_font_size()}pt")
-
-    def _current_font_size(self):
-        font = self.listView.font()
-        return font.pointSize() if font.pointSize() > 0 else 10
+            status.showMessage(f"字型: {font_scaling.current_size(self)}pt")
 
     # ---- 欄位顯示切換 -------------------------------------------------------
     def _column_views(self):
@@ -1827,7 +1811,7 @@ class FileManager(QMainWindow):
         history = [self.right_info_combo.itemText(i)
                    for i in range(self.right_info_combo.count())]
         cfg.set_json('General', 'search_history', history[:20])   # 最多留 20 筆
-        cfg.set('General', 'font_size', self._current_font_size())
+        cfg.set('General', 'font_size', font_scaling.current_size(self))
 
         cfg.set_bytes('Layout', 'window_geometry', self.saveGeometry().data())
         if self.isFullScreen():

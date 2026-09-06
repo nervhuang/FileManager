@@ -69,7 +69,7 @@ def test_set_5_first_launch_without_config_uses_defaults(home, make_window, qapp
     assert not (home / 'config.ini').exists()
 
     window = make_window()
-    assert window._current_font_size() == 10        # General/font_size 的 fallback
+    assert font_scaling.current_size(window) == 10        # General/font_size 的 fallback
     assert window._exclude_enabled is False
 
     _close(window, qapp)
@@ -115,7 +115,7 @@ mid_tabs_current = 很多
     window = make_window()     # 建得起來就是通過；建不起來會在這裡拋例外
     assert window.isVisible()
     # 壞掉的字級應退回 fallback，而不是套用垃圾值
-    assert 6 <= window._current_font_size() <= 72
+    assert 6 <= font_scaling.current_size(window) <= 72
 
 
 # ── 往返 ──────────────────────────────────────────────────────────────────
@@ -138,7 +138,7 @@ def test_set_config_round_trips_across_restarts(home, make_window, qapp):
     assert cfg.getboolean('Layout', 'checker_panel_visible') is True
 
     second = make_window()
-    assert second._current_font_size() == 17
+    assert font_scaling.current_size(second) == 17
     assert second._exclude_enabled is True
     assert second._exclude_dirs == ['D:\\NAS', 'E:\\暫存']
     assert second._authors_panel_visible is False
