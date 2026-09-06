@@ -12,7 +12,7 @@ import datetime
 import html
 import os
 
-from . import fetcher, limits as limits_settings, matcher, titles
+from . import fetcher, limits as limits_settings, matcher, titles, wnacg
 
 # 預設值住在 limits.py，因為使用者調得動它（選項 → 更新檢查筆數）。
 # 這兩個名字留著當函式預設值，呼叫端沒特別指定時行為與以前一致。
@@ -59,12 +59,18 @@ def everything_lookup(everything, exclude_norm=()):
 
 def scan_entity(entity, fetch, local_lookup, *, last_scan_at=None,
                 threshold=matcher.DEFAULT_THRESHOLD,
-                first_run_limit=FIRST_RUN_LIMIT, max_items=MAX_ITEMS):
+                first_run_limit=FIRST_RUN_LIMIT, max_items=MAX_ITEMS,
+                wnacg_fetch=None, wnacg_since=None):
     """掃描單一作者／團體，回傳該實體的完整比對結果。
 
     `last_scan_at` 為 None 代表首次掃描：只取 `first_run_limit` 筆建立基準，
     不追溯歷史。有值時往回取到發布時間早於它為止，最多 `max_items` 筆。
     兩個上限由使用者設定（見 limits.py），這裡只收數字。
+
+    `wnacg_fetch` 有給時，同一位作者也在 wnacg 跑一次關鍵字搜尋（見 wnacg.py），
+    結果併進同一份 items——使用者要的是「這本我有沒有」，不是「這本在哪個站」。
+    `wnacg_since` 是那邊自己的分頁基準（epoch），與 `last_scan_at` 各走各的：
+    兩個站的發布時間不同源，共用一個基準會讓 wnacg 第一次跑就只抓到最近幾天。
     """
     # 有 tag 就用 tag；沒有英文名稱的拿名字跑關鍵字搜尋（見 fetcher.query_for）。
     kind, value = fetcher.query_for(entity) or (None, None)
@@ -75,6 +81,7 @@ def scan_entity(entity, fetch, local_lookup, *, last_scan_at=None,
         'type': entity.get('type'), 'tag': tag, 'keyword': keyword,
         'items': [], 'works': [], 'error': None, 'skipped': None, 'truncated': False,
         'newest_posted': '', 'excluded': 0,
+        'wnacg_count': 0, 'wnacg_posted': None,
     }
     if kind is None:
         # 連名字都沒有才是真的無從查起。
@@ -120,10 +127,10 @@ def scan_entity(entity, fetch, local_lookup, *, last_scan_at=None,
     result['truncated'] = (not first_run and not reached_cutoff
                            and len(collected) >= wanted)
 
-    if not collected:
+    if not collected and wnacg_fetch is None:
         return result
 
-    metadata = fetch.fetch_metadata(collected)
+    metadata = fetch.fetch_metadata(collected) if collected else {}
 
     # ── 本機藏書 ────────────────────────────────────────────────────────
     local_items = [titles.parse(name, is_filename=True)
@@ -176,8 +183,53 @@ def scan_entity(entity, fetch, local_lookup, *, last_scan_at=None,
                               else (verdict['matched'] or {}).get('raw', '')),
         })
 
+    if wnacg_fetch is not None:
+        _add_wnacg_items(result, entity, wnacg_fetch, local_items, threshold,
+                         wanted=wanted, since=wnacg_since)
+
     result['works'] = aggregate(result['items'])
     return result
+
+
+def _add_wnacg_items(result, entity, wnacg_fetch, local_items, threshold, *,
+                     wanted, since):
+    """把 wnacg 的搜尋結果併進 `result`。
+
+    這個站沒有 tag、也沒有定義過英文名稱，一律拿**日文名稱**做關鍵字（wnacg.py）。
+    列表頁本身就帶了標題、頁數、時間與縮圖，不必再打一次 metadata。
+
+    標記只從標題解析：站上沒有 tag 可讀。來源標籤 `wnacg` 併進 markers 讓卡片
+    看得出來——它不在 `titles.PREFERRED_MARKERS` 裡，所以不會被當成「本機缺少
+    的版本」而假造出一筆版本升級。
+    """
+    name = (entity.get('name') or '').strip()
+    if not name:
+        return
+    rows = wnacg.search(wnacg_fetch, name, wanted=wanted, cutoff_epoch=since)
+    for row in rows:
+        parsed = titles.parse(row['title'])
+        parsed['markers'] = parsed['markers'] | {wnacg.MARKER}
+        verdict = matcher.classify(parsed, local_items, threshold)
+        if verdict['verdict'] == matcher.VERDICT_SUPPRESSED:
+            result['excluded'] += 1
+        result['items'].append({
+            'gid': row['gid'], 'token': '', 'url': row['url'],
+            'title': row['title'], 'title_jpn': row['title'],
+            'display_title': row['title'],
+            'core': parsed['core'],
+            'category': '', 'pages': row['pages'] or '',
+            'thumb': row['thumb'], 'posted': row['posted'] or '',
+            'markers': sorted(parsed['markers']),
+            'verdict': verdict['verdict'],
+            'score': round(verdict['score'], 4),
+            'missing_markers': verdict['missing_markers'],
+            'matched_local': ('' if verdict['verdict'] == matcher.VERDICT_NEW
+                              else (verdict['matched'] or {}).get('raw', '')),
+        })
+    result['wnacg_count'] = len(rows)
+    # 站上依建立時間新→舊，第一筆就是本輪最新的一筆。
+    if rows and rows[0]['posted']:
+        result['wnacg_posted'] = rows[0]['posted']
 
 
 # 聚合後決定整部作品該落在哪一格：越前面越優先顯示。
@@ -231,7 +283,7 @@ def aggregate(items):
 
 def scan_all(conn, entities, fetch, local_lookup, *,
              threshold=matcher.DEFAULT_THRESHOLD, progress=None, on_result=None,
-             limits=None):
+             limits=None, wnacg_fetch=None):
     """依序掃描多個實體並把結果寫進資料庫，回傳每個實體的結果。
 
     錯誤分兩級：單一實體的抓取或解析失敗只記在該實體上、繼續掃下一個；
@@ -266,7 +318,9 @@ def scan_all(conn, entities, fetch, local_lookup, *,
                                  last_scan_at=store.last_posted(conn, entity_id),
                                  threshold=threshold,
                                  first_run_limit=limits.first_run,
-                                 max_items=limits.max_items)
+                                 max_items=limits.max_items,
+                                 wnacg_fetch=wnacg_fetch,
+                                 wnacg_since=store.last_wnacg_posted(conn, entity_id))
         except fetcher.ScanAborted:
             # 中止類的錯誤（憑證失效、連續限流、連續連線失敗）往上拋。
             # 走下面那條「記在這位身上、換下一位」只會讓剩下的幾百位
@@ -295,7 +349,8 @@ def scan_all(conn, entities, fetch, local_lookup, *,
             store.reconcile_downloads(conn, entity_id)
             store.record_scan(conn, entity_id,
                               newest_posted=result['newest_posted'],
-                              truncated=result['truncated'])
+                              truncated=result['truncated'],
+                              wnacg_posted=result.get('wnacg_posted'))
         results.append(result)
         if on_result:
             on_result(index, len(entities), result)

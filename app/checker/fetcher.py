@@ -205,6 +205,17 @@ class Fetcher:
         return self._fetch_listing(
             SEARCH_URL.format(query=urllib.parse.quote(keyword, safe='')), after_gid)
 
+    def fetch_html(self, url, *, cookie=True):
+        """抓任意一頁 HTML，套用同一套節流、退避與取消判斷。
+
+        `cookie=False` 給不需要登入的來源用（wnacg）：**憑證只送給站方**，
+        網址指到哪裡就把 cookie 送到哪裡是最容易破的那條邊界。
+        """
+        headers = {'User-Agent': _UA, 'Accept': 'text/html,application/xhtml+xml'}
+        if cookie and self._cookie:
+            headers['Cookie'] = self._cookie
+        return self._open(urllib.request.Request(url, headers=headers))
+
     def _fetch_listing(self, url, after_gid=None):
         """抓一頁列表並解析出 [(gid, token, posted_text)]。
 
@@ -217,10 +228,7 @@ class Fetcher:
         """
         if after_gid:
             url += ('&' if '?' in url else '?') + f'next={after_gid}'
-        body = self._open(urllib.request.Request(url, headers={
-            'User-Agent': _UA, 'Cookie': self._cookie,
-            'Accept': 'text/html,application/xhtml+xml',
-        }))
+        body = self.fetch_html(url)
 
         posted = dict(_POSTED_RE.findall(body))
         seen, items = set(), []

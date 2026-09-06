@@ -146,3 +146,18 @@ def test_log_marks_the_entities_scanned_by_keyword(qapp, tmp_path, monkeypatch):
         assert panel.log_view.toPlainText().count('關鍵字搜尋') == 1
     finally:
         panel.close()
+
+
+@pytest.mark.gui
+def test_log_shows_how_many_the_second_source_found(qapp, tmp_path, monkeypatch):
+    """wnacg 改版把剖析弄壞時，症狀會是這個數字一路 0，而不是任何錯誤訊息。"""
+    monkeypatch.setenv('FILEMANAGER_HOME', str(tmp_path))
+    from app.checker.panel import CheckerPanel
+
+    panel = CheckerPanel()
+    try:
+        panel._on_entity_done(0, 1, {'name': 'X', 'tag': 'artist:x', 'works': [],
+                                     'excluded': 0, 'wnacg_count': 3})
+        assert 'wnacg 3' in panel.log_view.toPlainText()
+    finally:
+        panel.close()

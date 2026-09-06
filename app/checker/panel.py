@@ -1,19 +1,17 @@
-"""更新檢查器面板與背景掃描執行緒。
+"""更新檢查器面板。
 
 面板只放摘要：四區塊計數、新書清單與一小塊執行紀錄。要逐本判斷「這本我到底有
 沒有」時得看縮圖與並排的本機檔名，那是 Web UI 的工作（雙擊清單項目開啟）。
 
-掃描一輪全量約 25–35 分鐘，必須在背景執行緒跑，且隨時可停。所有可能拋出的
-邊界都在此收斂成訊號，不讓例外冒進 Qt 事件圈把主程式一起帶走。
+掃描本身跑在背景執行緒，見 scan_worker.py。
 
 執行紀錄不是裝飾：跑那麼久，狀態列只留得住最後一行，看不出跑到哪、哪幾位失敗、
 還要多久。進度條給完成度，紀錄區給逐項結果與失敗原因。
 """
 
 import time
-from contextlib import closing
 
-from PyQt5.QtCore import QSize, Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtCore import QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolBar, QToolButton,
@@ -22,6 +20,7 @@ from PyQt5.QtWidgets import (
 )
 
 from . import fetcher, matcher, scanner, store, webui
+from .scan_worker import ScanWorker
 from .icons import (make_checker_icon, make_detail_icon, make_reset_icon,
                     make_stop_icon)
 
@@ -33,58 +32,6 @@ VERDICT_LABEL = {
 }
 # 面板只顯示需要動作的兩類；已有與疑似留給 Web UI，否則清單會被淹沒。
 PANEL_VERDICTS = (matcher.VERDICT_NEW, matcher.VERDICT_UPGRADE)
-
-class ScanWorker(QThread):
-    """在背景執行緒跑一輪掃描。"""
-
-    progress = pyqtSignal(int, int, str)   # 索引、總數、目前實體名稱
-    entity_done = pyqtSignal(int, int, object)  # 索引、總數、該實體的結果 dict
-    done = pyqtSignal(dict)                # summarize() 的結果
-    failed = pyqtSignal(str)
-
-    def __init__(self, entity_type='', keyword='', limit=0, parent=None):
-        super().__init__(parent)
-        self._entity_type = entity_type
-        self._keyword = keyword
-        self._limit = limit
-        self._fetch = None
-
-    def cancel(self):
-        if self._fetch is not None:
-            self._fetch.cancelled = True
-
-    def run(self):
-        from ..authors import db as authors_db
-        from ..search.everything import EverythingSDK
-
-        try:
-            # EverythingSDK 在建構時會建立一個訊息視窗，而視窗的訊息佇列屬於
-            # 建立它的執行緒。必須在這裡（工作執行緒內）建立，若沿用主執行緒的
-            # 實例，query() 會安靜地逾時回傳空清單——比對會把整櫃藏書誤判成沒有。
-            everything = EverythingSDK()
-            if not everything.is_available():
-                self.failed.emit('Everything 沒有在執行，無法取得本機檔案清單。')
-                return
-
-            self._fetch = fetcher.Fetcher(fetcher.load_cookie_header())
-            lookup = scanner.everything_lookup(everything)
-
-            with closing(store.connect()) as conn:
-                entities = authors_db.list_entities(
-                    conn, type_=self._entity_type or None,
-                    keyword=self._keyword or None, limit=self._limit or None)
-                results = scanner.scan_all(
-                    conn, entities, self._fetch, lookup,
-                    progress=lambda i, total, e: self.progress.emit(
-                        i, total, e.get('name') or ''),
-                    on_result=lambda i, total, r: self.entity_done.emit(i, total, r))
-                self.done.emit(scanner.summarize(results))
-        except fetcher.CookieExpired as exc:
-            self.failed.emit(str(exc))
-        except fetcher.CheckerError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:            # 背景執行緒的例外沒人接就會靜默終止
-            self.failed.emit(f'掃描發生未預期的錯誤：{exc}')
 
 
 class CheckerPanel(QWidget):
@@ -443,6 +390,10 @@ class CheckerPanel(QWidget):
             # 這個名字。不標的話，多出來的筆數會被當成 tag 查詢的結果去信任。
             if result.get('keyword'):
                 tail += '（關鍵字搜尋）'
+            # 第二個來源查到幾筆也要看得見：某天 wnacg 改版把剖析弄壞時，
+            # 症狀會是這個數字一路 0，而不是任何錯誤訊息。
+            if result.get('wnacg_count'):
+                tail += f"（wnacg {result['wnacg_count']}）"
             if new_count or up_count:
                 bits = []
                 if new_count:

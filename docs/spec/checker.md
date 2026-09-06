@@ -113,6 +113,40 @@ api.e-hentai.org/api.php (method=gdata) ──► title / title_jpn / posted / t
 
 ---
 
+## 第二個來源：wnacg
+
+`app/checker/wnacg.py`（不依賴 Qt）。exhentai 靠 `artist:`／`group:` tag 查詢；
+wnacg 沒有這種東西，**它連英文名稱都沒定義過**，所以一律拿作者的**日文名稱**
+跑站上的關鍵字搜尋（`/search/?q=…&s=create_time_DESC`）。
+
+**範圍**：每一位作者／團體都查，不是只查 exhentai 找不到的那幾位——漢化版通常
+只在 wnacg 有，有 tag 的作者一樣值得掃。整輪因此多 443 次請求，以 2 秒間隔計
+約多 15 分鐘。
+
+**不需要登入**：沒有 cookie，這個模組完全不碰 `exhentai.txt`。縮圖在
+`t4.qy0.ru`，憑證不得跟著送出去（見「安全邊界」）。
+
+**省一趟**：列表頁本身就帶了標題、頁數、建立時間與縮圖，不必再打一次 metadata
+API。標記因此只能從標題解析——那個站沒有 tag 可讀。
+
+**識別碼加前綴 `wn-`**：`checker_findings` 的主鍵兩個來源共用，沒有前綴的話
+wnacg 的 377256 會蓋掉 exhentai 的 377256。網址由前綴還原，不另存一欄，
+兩份資料就不會有一天對不起來。
+
+**來源標籤**：`markers` 裡加一個 `wnacg`，卡片上與語言／品質標記併排。它不在
+`titles.PREFERRED_MARKERS` 裡，所以不會被當成「本機缺少的版本」而假造出一筆
+版本升級。
+
+**分頁基準各走各的**：`checker_state.wnacg_posted` 獨立於 `last_posted`。
+兩個站的發布時間不同源，共用一個基準會讓 wnacg 第一次跑就只抓到最近幾天，
+前面全部當成「已經掃過」。翻頁用 `&p=N`（實測一頁 24 筆，這個站的頁碼是有效的）。
+
+**剖析壞掉必須看得見**：掃描紀錄每一行標出 wnacg 查到幾筆。站方改版時症狀會是
+這個數字一路 0，而不是任何錯誤訊息——那正是這個專案最擅長的失效方式。
+另有一支測試餵實站抓下來的 HTML 片段（`tests/checker/test_wnacg_source.py`）。
+
+---
+
 ## 比對判定
 
 正規化步驟：去副檔名 → 去事件前綴 `(C77)` → 去社團／作者方括號 → 去作品系列括號
@@ -445,7 +479,9 @@ GIF，沒有這個框它會被撐成一個正方形大洞。
 
 ## 面板與主程式整合
 
-`app/checker/panel.py` 提供 `CheckerPanel`（摘要）與 `ScanWorker`（背景掃描執行緒）。
+`app/checker/panel.py` 提供 `CheckerPanel`（摘要）；背景掃描執行緒 `ScanWorker` 在
+`app/checker/scan_worker.py`——接上第二個來源後面板撞到 600 行上限時拆出來的，
+兩者之間只有四個訊號。
 
 進入點：中間檔案面板工具列上的書本＋放大鏡圖示，或「檢視 → 顯示更新檢查器」
 （Ctrl+Shift+U）。面板預設收起——它只有在剛掃描完才有東西可看，常駐佔寬度不划算。

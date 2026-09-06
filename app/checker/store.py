@@ -14,7 +14,7 @@ import datetime
 import json
 from contextlib import closing
 
-from . import matcher
+from . import matcher, wnacg
 
 STATE_IGNORED = 'ignored'        # 使用者明說不要，永遠不再出現
 STATE_DOWNLOADED = 'downloaded'  # 已下載待驗，等本機檔案出現後自動轉為已有
@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS checker_state (
   entity_id INTEGER PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE,
   last_scan_at TEXT NOT NULL,
   last_posted TEXT NOT NULL DEFAULT '',
+  wnacg_posted INTEGER,
   truncated INTEGER NOT NULL DEFAULT 0,
   error TEXT NOT NULL DEFAULT ''
 );
@@ -72,7 +73,20 @@ def _now():
 def ensure_schema(conn):
     """建立檢查器用的資料表。每次連線都可安全呼叫。"""
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     conn.commit()
+
+
+def _migrate(conn):
+    """把舊資料庫補到目前的欄位。`CREATE TABLE IF NOT EXISTS` 不會改既有的表。
+
+    第二個來源（wnacg）需要自己的分頁基準：兩個站的發布時間各走各的，共用一個
+    基準會讓 wnacg 第一次跑就只抓到最近幾天，前面全部當成「已經掃過」。
+    """
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(checker_state)')}
+    if 'wnacg_posted' in columns:
+        return
+    conn.execute('ALTER TABLE checker_state ADD COLUMN wnacg_posted INTEGER')
 
 
 def connect():
@@ -99,26 +113,43 @@ def last_posted(conn, entity_id):
         return None
 
 
-def record_scan(conn, entity_id, *, newest_posted='', truncated=False, error=''):
+def record_scan(conn, entity_id, *, newest_posted='', truncated=False, error='',
+                wnacg_posted=None):
     """記下這個實體剛掃完的狀態。
 
-    `newest_posted` 是本輪看到的最新一筆發布時間（tag 頁上的 'YYYY-MM-DD HH:MM'）。
+    `newest_posted` 是本輪看到的最新一筆發布時間（tag 頁上的 'YYYY-MM-DD HH:MM'），
+    `wnacg_posted` 是第二個來源的同一件事（epoch）。兩者各自獨立：一邊沒抓到東西
+    時只保留自己那一欄的原值，不會把另一邊的進度也一起洗掉。
+
     留空時保留原值——抓取失敗不該把進度往前推，否則下次會跳過這段沒掃到的區間。
     """
     existing = conn.execute(
-        'SELECT last_posted FROM checker_state WHERE entity_id = ?',
+        'SELECT last_posted, wnacg_posted FROM checker_state WHERE entity_id = ?',
         (entity_id,)).fetchone()
     keep = existing['last_posted'] if existing else ''
+    keep_wnacg = existing['wnacg_posted'] if existing else None
     conn.execute(
-        'INSERT INTO checker_state (entity_id, last_scan_at, last_posted, truncated, error) '
-        'VALUES (?, ?, ?, ?, ?) '
+        'INSERT INTO checker_state '
+        '(entity_id, last_scan_at, last_posted, wnacg_posted, truncated, error) '
+        'VALUES (?, ?, ?, ?, ?, ?) '
         'ON CONFLICT(entity_id) DO UPDATE SET '
         '  last_scan_at = excluded.last_scan_at,'
         '  last_posted = excluded.last_posted,'
+        '  wnacg_posted = excluded.wnacg_posted,'
         '  truncated = excluded.truncated,'
         '  error = excluded.error',
-        (entity_id, _now(), newest_posted or keep, 1 if truncated else 0, error or ''))
+        (entity_id, _now(), newest_posted or keep,
+         wnacg_posted if wnacg_posted else keep_wnacg,
+         1 if truncated else 0, error or ''))
     conn.commit()
+
+
+def last_wnacg_posted(conn, entity_id):
+    """上次在 wnacg 掃到的最新一筆時間（epoch）；沒掃過回 None。"""
+    row = conn.execute(
+        'SELECT wnacg_posted FROM checker_state WHERE entity_id = ?',
+        (entity_id,)).fetchone()
+    return row['wnacg_posted'] if row and row['wnacg_posted'] else None
 
 
 def scan_states(conn):
@@ -319,7 +350,10 @@ def load_findings(conn, *, verdicts=None, entity_id=None):
         item = dict(row)
         item['markers'] = json.loads(item['markers'] or '[]')
         item['missing_markers'] = json.loads(item['missing_markers'] or '[]')
-        item['url'] = f"https://exhentai.org/g/{item['gid']}/{item['token']}/"
+        # 網址由 gid 還原，不另存一欄：來源就寫在 gid 的前綴裡，
+        # 兩份資料就不會有一天對不起來。
+        item['url'] = (wnacg.url_for(item['gid']) if wnacg.is_wnacg(item['gid'])
+                       else f"https://exhentai.org/g/{item['gid']}/{item['token']}/")
         out.append(item)
     return out
 
