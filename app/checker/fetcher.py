@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 
 from .. import paths
+from ..authors.names import is_latin_name
 
 COOKIE_FILENAME = 'exhentai.txt'
 REQUIRED_COOKIES = ('ipb_member_id', 'ipb_pass_hash')
@@ -87,8 +88,20 @@ def load_cookie_header():
 
 
 def tag_for(entity):
-    """把 authors.db 的實體轉成 exhentai 的 tag。無 english_name 時回 None。"""
+    """把 authors.db 的實體轉成 exhentai 的 tag；查不到英文名字時回 None。
+
+    `english_name` 優先。沒填時，**名稱本身就是英文的就直接拿名字用**：實測
+    443 筆裡有 6 筆是 `MAFIC`、`blue soda`、`Panda Boxing` 這種名字，要求再填一次
+    一模一樣的英文只是白工，而在沒填之前它們每一輪都被記成 `no_english_name`
+    跳過——等於這幾位作者從功能上線以來一次也沒被掃過，畫面上卻只寫「略過」。
+
+    判準與作者面板的「僅顯示無英文名稱」共用同一支 `is_latin_name`（AUT-22c）：
+    一邊說「這筆不缺英文名」、另一邊卻照樣跳過不掃，那份盤點清單就在說謊。
+    """
     english = (entity.get('english_name') or '').strip()
+    if not english:
+        name = (entity.get('name') or '').strip()
+        english = name if is_latin_name(name) else ''
     if not english:
         return None
     namespace = 'group' if entity.get('type') == 'circle' else 'artist'

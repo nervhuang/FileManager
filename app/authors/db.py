@@ -13,6 +13,7 @@ import sqlite3
 from datetime import datetime
 
 from .. import paths
+from .names import is_latin_name
 
 AUTHOR = 'author'
 CIRCLE = 'circle'
@@ -154,8 +155,14 @@ def list_entities(conn, type_=None, keyword=None, include_deleted=False, limit=N
                   missing_english_only=False):
     """列出實體。keyword 會同時比對名稱、別名與英文名稱（子字串，不分大小寫）。
 
-    `missing_english_only` 只留下還沒填英文名稱的（AUT-22b）：`NULL` 與只有空白的
-    字串等價——手動輸入時打了一個空白就存成 ' '，那和沒填是同一件事。
+    `missing_english_only` 只留下**真的還缺**英文名稱的（AUT-22b、AUT-22c）：
+    `english_name` 為 `NULL` 或只有空白（手動輸入時多打一個空白，那和沒填是同一
+    件事），**而且名稱本身也不是英文**。名字本來就是 `MAFIC`、`blue soda` 的那些，
+    直接拿名字查就行，列進盤點清單只會讓人以為功能壞了。
+
+    第二段判準用 Python 而不是 SQL：`is_latin_name` 是與更新檢查器共用的同一份
+    判準（見 names.py），翻成 SQL 就變成兩份要一起維護的東西。四百多筆的清單，
+    多這一趟迴圈量不出差別。
     """
     sql = 'SELECT DISTINCT e.* FROM entities e LEFT JOIN aliases a ON a.entity_id = e.id WHERE 1=1'
     args = []
@@ -175,7 +182,10 @@ def list_entities(conn, type_=None, keyword=None, include_deleted=False, limit=N
     if limit:
         sql += ' LIMIT ?'
         args.append(int(limit))
-    return [_row_to_entity(conn, row) for row in conn.execute(sql, args)]
+    entities = [_row_to_entity(conn, row) for row in conn.execute(sql, args)]
+    if missing_english_only:
+        entities = [e for e in entities if not is_latin_name(e['name'])]
+    return entities
 
 
 def search_terms_for(entity):

@@ -27,7 +27,7 @@ Checker 單向依賴 FileManager（`authors_db`／`paths`／`everything_sdk`／`
 ## 資料流
 
 ```
-authors.db 的 427 個實體（有 english_name 者）
+authors.db 的實體（tag_for 查得出 tag 者）
   │
   ├─ artist:{english_name} 或 group:{english_name}
   ▼
@@ -56,8 +56,18 @@ api.e-hentai.org/api.php (method=gdata) ──► title / title_jpn / posted / t
 
 ## 掃描規則
 
-**範圍**：全部 427 個有 `english_name` 的實體，支援參數縮小（`--only`／`--top N`）。
-缺 `english_name` 的 6 位作者與 3 個團體跳過，並列在報告中提醒補齊，不自動猜測。
+**範圍**：`tag_for()` 查得出 tag 的實體，支援參數縮小（`--only`／`--top N`）。
+
+**tag 從哪來**：`english_name` 優先；沒填時，**名稱本身就是英文的直接拿名字用**
+（判準是 `authors.names.is_latin_name`，與作者面板的「僅顯示無英文名稱」共用同一份，
+見 [authors.md](authors.md) 的 AUT-22c）。實測 443 筆裡有 6 筆是 `MAFIC`、`blue soda`、
+`Panda Boxing` 這種名字，要求再填一次一模一樣的英文只是白工——而在沒填之前，
+它們每一輪都被記成 `no_english_name` 跳過，等於從功能上線以來一次也沒被掃過，
+畫面上卻只寫「略過」。
+
+**仍然跳過的**：名稱不是拉丁字母、又沒填 `english_name` 的（實測 11 筆），
+記為 `no_english_name` 並列在報告中提醒補齊。**不猜**：帶重音的拉丁字母
+（`Café`）也算沒填——寧可多問一句，不要默默送一個查不到的 tag 出去。
 
 **取幾筆**：首次掃描每個 tag 取最新 25 筆建立基準；之後取到「發布時間早於上次掃描時間」為止，
 上限 50 筆（2 頁）。翻到上限仍未追上者，標示「此作者可能有遺漏」，不靜默吞掉。
