@@ -72,13 +72,12 @@ def test_keyword_page_uses_the_site_search(monkeypatch):
 
     monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
     f = fetcher.Fetcher('cookie=1', delay=0, jitter=0, sleeper=lambda s: None)
-    f.fetch_search_page('低空MSコンボ', page=2)
+    f.fetch_search_page('低空MSコンボ')
 
     assert len(urls) == 1
     assert urls[0].startswith('https://exhentai.org/?f_search=')
-    # 名稱要被 URL 編碼，且分頁沿用與 tag 頁相同的 page 參數。
+    # 名稱要被 URL 編碼；翻頁見 test_listing_pagination.py。
     assert '%E4%BD%8E%E7%A9%BA' in urls[0]
-    assert 'page=2' in urls[0]
 
 
 # ── 掃描時真的走關鍵字這條路 ────────────────────────────────────────────
@@ -87,12 +86,12 @@ class _Fetch:
     def __init__(self):
         self.tag_calls, self.keyword_calls = [], []
 
-    def fetch_tag_page(self, tag, page=0):
-        self.tag_calls.append((tag, page))
+    def fetch_tag_page(self, tag, after_gid=None):
+        self.tag_calls.append((tag, after_gid))
         return []
 
-    def fetch_search_page(self, keyword, page=0):
-        self.keyword_calls.append((keyword, page))
+    def fetch_search_page(self, keyword, after_gid=None):
+        self.keyword_calls.append((keyword, after_gid))
         return []
 
     def fetch_metadata(self, pairs):

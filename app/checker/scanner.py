@@ -87,13 +87,16 @@ def scan_entity(entity, fetch, local_lookup, *, last_scan_at=None,
     # reached_cutoff 只回答「有沒有翻到頭」。首次掃描沒有上次掃描時間可追，
     # 但仍然要照 wanted 翻頁——以前這裡預設 True，等於首次掃描永遠只翻一頁，
     # 筆數寫死 25（＝一頁）時看不出來，一旦可調就會發現設 100 只拿到 25。
-    collected, reached_cutoff = [], False
+    # 翻頁用游標（上一頁最後一筆的 gid），不是頁碼：站方的 page= 已被無視，
+    # 帶頁碼只會一直拿到同一頁（見 Fetcher._fetch_listing）。
+    collected, reached_cutoff, after_gid = [], False, None
     for page in range((wanted + PAGE_SIZE - 1) // PAGE_SIZE):
-        rows = (fetch.fetch_tag_page(tag, page=page) if tag
-                else fetch.fetch_search_page(keyword, page=page))
+        rows = (fetch.fetch_tag_page(tag, after_gid=after_gid) if tag
+                else fetch.fetch_search_page(keyword, after_gid=after_gid))
         if not rows:
             reached_cutoff = True
             break
+        after_gid = rows[-1][0]
         # 列表頁依發布時間新→舊排序，第一頁第一筆就是本輪的最新一筆。
         # 記下它當作下次掃描的分頁基準——與站上時間同源，不受本機時區影響。
         if page == 0 and rows[0][2]:

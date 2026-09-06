@@ -191,28 +191,32 @@ class Fetcher:
 
     # ── 對外 ────────────────────────────────────────────────────────────
 
-    def fetch_tag_page(self, tag, page=0):
+    def fetch_tag_page(self, tag, after_gid=None):
         """抓一頁 tag 清單，回傳 [(gid, token, posted_text)]，依發布時間新→舊。"""
         return self._fetch_listing(
-            TAG_URL.format(tag=urllib.request.quote(tag, safe=':+')), page)
+            TAG_URL.format(tag=urllib.request.quote(tag, safe=':+')), after_gid)
 
-    def fetch_search_page(self, keyword, page=0):
+    def fetch_search_page(self, keyword, after_gid=None):
         """抓一頁關鍵字搜尋結果，格式與 tag 頁完全相同。
 
         `/tag/x` 本來就是 `?f_search=x` 的別名，兩者回的是同一種列表頁，
         所以解析與分頁沿用同一份（`_fetch_listing`）。
         """
         return self._fetch_listing(
-            SEARCH_URL.format(query=urllib.parse.quote(keyword, safe='')), page)
+            SEARCH_URL.format(query=urllib.parse.quote(keyword, safe='')), after_gid)
 
-    def _fetch_listing(self, url, page=0):
+    def _fetch_listing(self, url, after_gid=None):
         """抓一頁列表並解析出 [(gid, token, posted_text)]。
+
+        翻頁用 `next=<上一頁最後一筆 gid>`。**不是 `page=N`**：站方改版後列表頁
+        改用游標分頁，`page=` 被無視——實測 `?page=1` 與第一頁回的是完全相同的
+        25 筆（tag 與搜尋都一樣）。那不是「翻頁慢」，是翻頁從來沒發生過。
 
         exhentai 未登入時會回一張極小的 sad panda 圖片而非 HTTP 錯誤，
         因此以「頁面過短且沒有任何 gallery 連結」判定 cookie 失效。
         """
-        if page:
-            url += ('&' if '?' in url else '?') + f'page={page}'
+        if after_gid:
+            url += ('&' if '?' in url else '?') + f'next={after_gid}'
         body = self._open(urllib.request.Request(url, headers={
             'User-Agent': _UA, 'Cookie': self._cookie,
             'Accept': 'text/html,application/xhtml+xml',

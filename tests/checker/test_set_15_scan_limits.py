@@ -60,16 +60,20 @@ def test_save_clamps_before_writing(tmp_path):
 # ── 掃描真的照設定的筆數抓 ────────────────────────────────────────────────
 
 class _Fetch:
-    """只回頁面，不碰網路。每頁 25 筆，發布時間一路往回退。"""
+    """只回頁面，不碰網路。每頁 25 筆，發布時間一路往回退。
+
+    翻頁是游標式的（`after_gid`＝上一頁最後一筆的 gid），與站方一致；
+    `pages` 記下每一次拿到的游標，長度就是實際翻了幾頁。
+    """
 
     cancelled = False
 
     def __init__(self):
         self.pages = []
 
-    def fetch_tag_page(self, tag, page=0):
-        self.pages.append(page)
-        base = page * scanner.PAGE_SIZE
+    def fetch_tag_page(self, tag, after_gid=None):
+        self.pages.append(after_gid)
+        base = len(self.pages) * scanner.PAGE_SIZE
         return [(str(1000 + base + i), f'tok{base + i}', '2026-01-01 00:00')
                 for i in range(scanner.PAGE_SIZE)]
 
