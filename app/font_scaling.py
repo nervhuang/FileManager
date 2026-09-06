@@ -53,6 +53,49 @@ def _resized(font, point_size):
     return new_font
 
 
+def apply_to_window(window, new_size):
+    """把字級套用到整個主視窗，含遞迴蓋不到的那些收尾。
+
+    這段編排原本是 `FileManager._apply_font_size` 的內容。它不屬於外殼：外殼只
+    建立面板、接訊號、管版面，而「字型怎麼套」是橫切關注點，和 `apply()` 是同
+    一件事的兩半——分在兩個檔案時，每次改都得記得兩邊一起看。
+
+    會直接叫主視窗的私有版面同步方法（`_sync_*`）：那些是外殼自己的事，這裡
+    只負責在正確的時機叫它們——順序有意義，見底下的註解。
+    """
+    # 必須先取：遞迴一跑，listView 的字級就變了。
+    old_size = window._current_font_size()
+    if new_size == old_size:
+        return
+    apply(window, old_size, new_size)
+    # 工具列高度是釘死的，不重算就會把放大後的按鈕文字裁掉。
+    sync_toolbar_heights(window)
+
+    # 以下都是遞迴蓋不到的：設了 stylesheet 而阻斷傳播的、需要重繪的、
+    # 以及自己帶特殊規則的面板。必須在遞迴之後跑，才不會被遞迴蓋掉。
+    for tab_container in (window.mid_tab_bar, window.right_tab_bar):
+        tab_container.tab_bar.update()
+    window._sync_right_header_spacing()
+    window._sync_tab_bar_heights()
+
+    if getattr(window, 'path_bar', None) is not None:
+        # 位址列與其中的按鈕、編輯框各自設了 stylesheet，Qt 視其字型為已明確
+        # 指定，父層字型不再傳下去，必須由它自己逐一套用（見
+        # BreadcrumbBar.apply_font）。導覽後重建的麵包屑也要繼承。
+        window.path_bar.apply_font(QFont(window.path_bar.font().family(), new_size))
+        window.path_bar.set_path(window._current_dir())
+    # 這兩個面板的內部有刻意的相對差距（計數列大一級、執行紀錄等寬且小一級、
+    # 下限 8pt），由它們自己決定。
+    if getattr(window, 'authors_panel', None) is not None:
+        window.authors_panel.apply_font_size(new_size)
+    if getattr(window, 'checker_panel', None) is not None:
+        window.checker_panel.apply_font_size(new_size)
+
+    # 位址列高度隨字型改變，須在它更新後再算一次右側留白，否則右側頁籤列
+    # 會沿用舊高度而與左側錯開幾個像素。
+    window._sync_right_header_spacing()
+
+
 def sync_toolbar_heights(root):
     """把 `root` 底下所有工具列釘成同一個高度，依目前字型重算。回傳該高度。
 

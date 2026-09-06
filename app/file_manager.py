@@ -1646,42 +1646,8 @@ class FileManager(QMainWindow):
         self.listView.setRootIndex(self.file_proxy.mapFromSource(self.fileListModel.index(dir_path)))
 
     def _apply_font_size(self, new_size):
-        """把字級套用到整個應用程式。
-
-        遞迴走訪整棵 widget 樹，不是逐一列舉。列舉法必須有人記得維護，
-        作者面板與更新檢查器已經各漏過一次（見 app/font_scaling.py）。
-        """
-        # 必須先取：遞迴一跑，listView 的字級就變了。
-        old_size = self._current_font_size()
-        if new_size == old_size:
-            return
-        font_scaling.apply(self, old_size, new_size)
-        # 工具列高度是釘死的，不重算就會把放大後的按鈕文字裁掉。
-        font_scaling.sync_toolbar_heights(self)
-
-        # 以下都是遞迴蓋不到的：設了 stylesheet 而阻斷傳播的、需要重繪的、
-        # 以及自己帶特殊規則的面板。必須在遞迴之後跑，才不會被遞迴蓋掉。
-        for tab_container in (self.mid_tab_bar, self.right_tab_bar):
-            tab_container.tab_bar.update()
-        self._sync_right_header_spacing()
-        self._sync_tab_bar_heights()
-
-        if getattr(self, 'path_bar', None) is not None:
-            # 位址列與其中的按鈕、編輯框各自設了 stylesheet，Qt 視其字型為已明確
-            # 指定，父層字型不再傳下去，必須由它自己逐一套用（見
-            # BreadcrumbBar.apply_font）。導覽後重建的麵包屑也要繼承。
-            self.path_bar.apply_font(QFont(self.path_bar.font().family(), new_size))
-            self.path_bar.set_path(self._current_dir())
-        # 這兩個面板的內部有刻意的相對差距（計數列大一級、執行紀錄等寬且小一級、
-        # 下限 8pt），由它們自己決定。
-        if getattr(self, 'authors_panel', None) is not None:
-            self.authors_panel.apply_font_size(new_size)
-        if getattr(self, 'checker_panel', None) is not None:
-            self.checker_panel.apply_font_size(new_size)
-
-        # 位址列高度隨字型改變，須在它更新後再算一次右側留白，否則右側頁籤列
-        # 會沿用舊高度而與左側錯開幾個像素。
-        self._sync_right_header_spacing()
+        """把字級套用到整個應用程式。實作在 app/font_scaling.py。"""
+        font_scaling.apply_to_window(self, new_size)
 
     def on_font_increase(self):
         # 放大字型，各增加 1pt（限制最大 72pt）
