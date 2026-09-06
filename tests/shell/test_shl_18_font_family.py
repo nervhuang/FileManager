@@ -114,3 +114,25 @@ def test_shl_18_saved_family_is_restored_on_startup(qapp, tmp_path, monkeypatch)
     finally:
         window.close()
         qapp.processEvents()
+
+
+def test_shl_18_menu_action_saves_and_applies(main_window, qapp, monkeypatch):
+    """「選項 → 字型」按下確定：存進 config.ini，並立刻套用到整個應用程式。
+
+    這條線（選單 → 對話框 → 存檔 ＋ 套用）沒有測試守著的話，斷在哪一段都不會
+    有人發現——這個專案原本就是這樣默默掉功能的。
+    """
+    from app import font_dialog
+    from app.settings import ConfigStore
+
+    actions = [a for a in main_window.findChildren(type(main_window.action_font_settings))
+               if a.text().startswith('字型')]
+    assert actions, '「選項」選單裡要有「字型…」'
+
+    target = _some_installed_family(main_window.font().family())
+    monkeypatch.setattr(font_dialog.FontDialog, 'exec_',
+                        lambda self: (self.set_family(target), font_dialog.QDialog.Accepted)[1])
+
+    assert font_dialog.open_dialog(main_window) == target
+    assert main_window.listView.font().family() == target
+    assert font_family.load(ConfigStore.load()) == target
