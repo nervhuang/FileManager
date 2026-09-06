@@ -5,6 +5,8 @@
 圖示尺寸在 test_shl_11_toolbar_icon_sizes.py。這裡補其餘。
 """
 import pytest
+
+from app import font_scaling
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QAbstractButton, QToolBar, QToolButton
 
@@ -25,19 +27,19 @@ def test_shl_1_increase_and_decrease_move_one_point(main_window, qapp):
 
 
 def test_shl_1_stops_at_the_upper_bound(main_window, qapp):
-    main_window._apply_font_size(72)
+    font_scaling.apply_to_window(main_window, 72)
     main_window.on_font_increase()
     assert main_window._current_font_size() == 72
 
 
 def test_shl_1_stops_at_the_lower_bound(main_window, qapp):
-    main_window._apply_font_size(6)
+    font_scaling.apply_to_window(main_window, 6)
     main_window.on_font_decrease()
     assert main_window._current_font_size() == 6
 
 
 def test_shl_1_status_bar_shows_the_current_size(main_window, qapp):
-    main_window._apply_font_size(15)
+    font_scaling.apply_to_window(main_window, 15)
     main_window.update_status_bar()
     qapp.processEvents()
     assert '15' in main_window.statusBar().currentMessage()
@@ -45,7 +47,7 @@ def test_shl_1_status_bar_shows_the_current_size(main_window, qapp):
 
 def test_shl_1_status_bar_follows_the_shortcut_actions(main_window, qapp):
     """按 Ctrl+= 之後狀態列要跟著改，不能停在舊數字。"""
-    main_window._apply_font_size(12)
+    font_scaling.apply_to_window(main_window, 12)
     main_window.on_font_increase()
     qapp.processEvents()
     assert '13' in main_window.statusBar().currentMessage()

@@ -1645,20 +1645,16 @@ class FileManager(QMainWindow):
         self.fileListModel.setRootPath(dir_path)
         self.listView.setRootIndex(self.file_proxy.mapFromSource(self.fileListModel.index(dir_path)))
 
-    def _apply_font_size(self, new_size):
-        """把字級套用到整個應用程式。實作在 app/font_scaling.py。"""
-        font_scaling.apply_to_window(self, new_size)
-
     def on_font_increase(self):
         # 放大字型，各增加 1pt（限制最大 72pt）
         new_size = min(self._current_font_size() + 1, 72)
-        self._apply_font_size(new_size)
+        font_scaling.apply_to_window(self, new_size)
         self.update_status_bar()
 
     def on_font_decrease(self):
         # 縮小字型，各減少 1pt（限制最小 6pt）
         new_size = max(self._current_font_size() - 1, 6)
-        self._apply_font_size(new_size)
+        font_scaling.apply_to_window(self, new_size)
         self.update_status_bar()
 
     def update_status_bar(self):
@@ -1745,7 +1741,8 @@ class FileManager(QMainWindow):
         elif window_state == 'fullscreen':
             self.setWindowState(self.windowState() | Qt.WindowFullScreen)
 
-        self._apply_font_size(cfg.get_int('General', 'font_size', 10, minimum=6, maximum=72))
+        font_scaling.apply_to_window(
+            self, cfg.get_int('General', 'font_size', 10, minimum=6, maximum=72))
         self.update_status_bar()
 
         # 排除設定須在還原頁籤觸發搜尋之前就位，過濾才會生效

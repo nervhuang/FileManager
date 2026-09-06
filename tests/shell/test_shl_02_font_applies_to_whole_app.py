@@ -8,6 +8,8 @@
 的手寫白名單。作者面板漏過一次、更新檢查器是第二次補登記。第三次不該再靠人記得。
 """
 import pytest
+
+from app import font_scaling
 from PyQt5.QtWidgets import QWidget
 
 pytestmark = pytest.mark.gui
@@ -50,7 +52,7 @@ def test_shl_04_every_widget_tracks_the_font_size(main_window, qapp):
     before = _font_sizes(main_window)
     assert before, "沒有量到任何 widget，測試本身可能失效了"
 
-    main_window._apply_font_size(base + STEP)
+    font_scaling.apply_to_window(main_window, base + STEP)
     qapp.processEvents()
 
     stale = []
@@ -88,7 +90,7 @@ def test_shl_02_menu_status_and_toolbars_follow_the_font(main_window, qapp):
     named = {name: w for name, w in named.items() if w is not None}
 
     before = {name: w.font().pointSize() for name, w in named.items()}
-    main_window._apply_font_size(main_window._current_font_size() + STEP)
+    font_scaling.apply_to_window(main_window, main_window._current_font_size() + STEP)
     qapp.processEvents()
 
     wrong = {
@@ -126,7 +128,7 @@ def test_shl_01_font_scaling_is_reversible(main_window, qapp):
     before = {name: w.font().pointSize() for name, w in named.items()}
 
     for target in (base + 9, base, 6, base, 40, base):
-        main_window._apply_font_size(target)
+        font_scaling.apply_to_window(main_window, target)
         qapp.processEvents()
 
     after = {name: w.font().pointSize() for name, w in named.items()}
@@ -145,7 +147,7 @@ def test_shl_10_toolbar_height_grows_with_the_font(main_window, qapp, step):
     """
     from PyQt5.QtWidgets import QToolBar
 
-    main_window._apply_font_size(main_window._current_font_size() + step)
+    font_scaling.apply_to_window(main_window, main_window._current_font_size() + step)
     qapp.processEvents()
 
     clipped = {}

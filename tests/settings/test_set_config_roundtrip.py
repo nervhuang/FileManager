@@ -11,6 +11,8 @@ import configparser
 
 import pytest
 
+from app import font_scaling
+
 pytestmark = pytest.mark.gui
 
 
@@ -121,7 +123,7 @@ mid_tabs_current = 很多
 def test_set_config_round_trips_across_restarts(home, make_window, qapp):
     """改狀態 → 關閉 → 重開，狀態要回來。涵蓋字級、排除設定、面板寬度與顯隱。"""
     first = make_window()
-    first._apply_font_size(17)
+    font_scaling.apply_to_window(first, 17)
     first._exclude_enabled = True
     first._exclude_dirs = ['D:\\NAS', 'E:\\暫存']
     first._apply_exclude_settings()
