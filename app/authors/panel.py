@@ -280,6 +280,10 @@ class AuthorsPanel(QWidget):
         self.filter_edit.textChanged.connect(self.reload)
         layout.addWidget(self.filter_edit)
 
+        # 「僅顯示無英文名稱」檢視。刻意不寫進設定檔（AUT-24）：開機看到清單
+        # 默默少一半，第一個反應會是資料庫壞了，不是「喔我上次切過」。
+        self._missing_english_only = False
+
         self.tree = QTreeView(self)
         self.tree.setHeaderHidden(True)
         self.tree.setEditTriggers(QTreeView.NoEditTriggers)
@@ -382,17 +386,27 @@ class AuthorsPanel(QWidget):
         keyword = self.filter_edit.text().strip() or None
         expanded_before = self.model.rowCount() > 0
 
-        entities = authors_db.list_entities(self._conn, keyword=keyword)
+        entities = authors_db.list_entities(
+            self._conn, keyword=keyword,
+            missing_english_only=self._missing_english_only)
         circles = [e for e in entities if e['type'] == authors_db.CIRCLE]
         authors = [e for e in entities if e['type'] == authors_db.AUTHOR]
 
         self.model.clear()
         root = self.model.invisibleRootItem()
 
-        circle_group = self._make_group_item(f'團體（{len(circles)}）')
+        # 篩選開著時，團體底下的作者也各自判斷（AUT-22b）。`authors` 這時剛好
+        # 就是「沒填英文名的作者」那一份清單，用它的 id 過濾，不必為每個團體
+        # 再查一次資料庫。
+        listed_ids = ({a['id'] for a in authors} if self._missing_english_only
+                      else None)
+
+        circle_group = self._make_group_item(self._group_title('團體', len(circles)))
         for circle in circles:
             circle_item = self._make_entity_item(circle)
             for author in circle['linked']:
+                if listed_ids is not None and author['id'] not in listed_ids:
+                    continue
                 child = QStandardItem(author['name'])
                 child.setEditable(False)
                 child.setData(author['id'], ENTITY_ID_ROLE)
@@ -403,7 +417,7 @@ class AuthorsPanel(QWidget):
 
         # 作者一律全列（含已歸屬團體者），標題數字才與實際列出的筆數相符，
         # 也讓任何作者都能不展開團體就直接找到。已歸屬者同時出現在團體底下。
-        author_group = self._make_group_item(f'作者（{len(authors)}）')
+        author_group = self._make_group_item(self._group_title('作者', len(authors)))
         for author in authors:
             author_group.appendRow(self._make_entity_item(author))
         root.appendRow(author_group)
@@ -414,6 +428,12 @@ class AuthorsPanel(QWidget):
         else:
             self.tree.expandToDepth(0)
         self._update_toolbar_state()
+
+    def _group_title(self, label, count):
+        """群組標題。篩選開著時必須說出來（AUT-23）——少了這個提示，清單少一半
+        看起來就是資料掉了。"""
+        suffix = '，僅無英文' if self._missing_english_only else ''
+        return f'{label}（{count}{suffix}）'
 
     def _make_group_item(self, text):
         item = QStandardItem(text)
@@ -440,6 +460,19 @@ class AuthorsPanel(QWidget):
         item.setToolTip('\n'.join(tooltip))
         return item
 
+    # ── 檢視 ────────────────────────────────────────────────────────────
+
+    def missing_english_only(self):
+        return self._missing_english_only
+
+    def set_missing_english_only(self, value):
+        """切換「僅顯示無英文名稱」。整個面板一個狀態（AUT-22a）。"""
+        value = bool(value)
+        if value == self._missing_english_only:
+            return
+        self._missing_english_only = value
+        self.reload()
+
     def _selected_entity_id(self):
         index = self.tree.currentIndex()
         if not index.isValid():
@@ -458,12 +491,27 @@ class AuthorsPanel(QWidget):
             self.search_requested.emit(authors_db.search_terms_for(entity))
 
     def _show_context_menu(self, pos):
+        self._build_context_menu(pos).exec_(self.tree.viewport().mapToGlobal(pos))
+
+    def _build_context_menu(self, pos):
+        """組出 `pos` 位置的右鍵選單。分開一支是為了測得到選單內容——
+        `exec_()` 會卡住不返回，測試沒辦法在它跳出來之後再去讀。"""
         index = self.tree.indexAt(pos)
         if index.isValid():
             self.tree.setCurrentIndex(index)
         entity_id = self._selected_entity_id()
 
         menu = QMenu(self)
+        if self._is_group_index(index):
+            # 檢視切換掛在最上層節點上（AUT-22）：那裡是「這一整群」的位置，
+            # 而這個開關影響的正是一整群。
+            for text, value in (('全部', False), ('僅顯示無英文名稱', True)):
+                action = menu.addAction(text)
+                action.setCheckable(True)
+                action.setChecked(self._missing_english_only == value)
+                action.triggered.connect(
+                    lambda _checked, v=value: self.set_missing_english_only(v))
+            menu.addSeparator()
         menu.addAction('新增作者', lambda: self._add_entity(authors_db.AUTHOR))
         menu.addAction('新增團體', lambda: self._add_entity(authors_db.CIRCLE))
         if entity_id is not None:
@@ -473,7 +521,14 @@ class AuthorsPanel(QWidget):
             menu.addAction('刪除', self._delete_selected)
         menu.addSeparator()
         menu.addAction('最近變更…', self._open_changes)
-        menu.exec_(self.tree.viewport().mapToGlobal(pos))
+        return menu
+
+    def _is_group_index(self, index):
+        """是不是「團體」「作者」那兩個最上層節點。"""
+        if not index.isValid() or index.parent().isValid():
+            return False
+        item = self.model.itemFromIndex(index)
+        return item is not None and item.data(ENTITY_ID_ROLE) is None
 
     def _add_entity(self, type_):
         dialog = EntityEditDialog(self._conn, None, type_, self)

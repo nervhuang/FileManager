@@ -150,8 +150,13 @@ def find_entity(conn, name, type_):
     return _row_to_entity(conn, row) if row else None
 
 
-def list_entities(conn, type_=None, keyword=None, include_deleted=False, limit=None):
-    """列出實體。keyword 會同時比對名稱、別名與英文名稱（子字串，不分大小寫）。"""
+def list_entities(conn, type_=None, keyword=None, include_deleted=False, limit=None,
+                  missing_english_only=False):
+    """列出實體。keyword 會同時比對名稱、別名與英文名稱（子字串，不分大小寫）。
+
+    `missing_english_only` 只留下還沒填英文名稱的（AUT-22b）：`NULL` 與只有空白的
+    字串等價——手動輸入時打了一個空白就存成 ' '，那和沒填是同一件事。
+    """
     sql = 'SELECT DISTINCT e.* FROM entities e LEFT JOIN aliases a ON a.entity_id = e.id WHERE 1=1'
     args = []
     if not include_deleted:
@@ -164,6 +169,8 @@ def list_entities(conn, type_=None, keyword=None, include_deleted=False, limit=N
                  'OR e.english_name LIKE ? COLLATE NOCASE)')
         like = f'%{keyword}%'
         args.extend([like, like, like])
+    if missing_english_only:
+        sql += " AND (e.english_name IS NULL OR TRIM(e.english_name) = '')"
     sql += ' ORDER BY e.type, e.name'
     if limit:
         sql += ' LIMIT ?'
