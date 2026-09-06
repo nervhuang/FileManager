@@ -66,14 +66,18 @@ def scan_entity(entity, fetch, local_lookup, *, last_scan_at=None,
     不追溯歷史。有值時往回取到發布時間早於它為止，最多 `max_items` 筆。
     兩個上限由使用者設定（見 limits.py），這裡只收數字。
     """
-    tag = fetcher.tag_for(entity)
+    # 有 tag 就用 tag；沒有英文名稱的拿名字跑關鍵字搜尋（見 fetcher.query_for）。
+    kind, value = fetcher.query_for(entity) or (None, None)
+    tag = value if kind == 'tag' else None
+    keyword = value if kind == 'keyword' else None
     result = {
         'entity_id': entity.get('id'), 'name': entity.get('name'),
-        'type': entity.get('type'), 'tag': tag,
+        'type': entity.get('type'), 'tag': tag, 'keyword': keyword,
         'items': [], 'works': [], 'error': None, 'skipped': None, 'truncated': False,
         'newest_posted': '', 'excluded': 0,
     }
-    if not tag:
+    if kind is None:
+        # 連名字都沒有才是真的無從查起。
         result['skipped'] = 'no_english_name'
         return result
 
@@ -85,11 +89,12 @@ def scan_entity(entity, fetch, local_lookup, *, last_scan_at=None,
     # 筆數寫死 25（＝一頁）時看不出來，一旦可調就會發現設 100 只拿到 25。
     collected, reached_cutoff = [], False
     for page in range((wanted + PAGE_SIZE - 1) // PAGE_SIZE):
-        rows = fetch.fetch_tag_page(tag, page=page)
+        rows = (fetch.fetch_tag_page(tag, page=page) if tag
+                else fetch.fetch_search_page(keyword, page=page))
         if not rows:
             reached_cutoff = True
             break
-        # tag 頁依發布時間新→舊排序，第一頁第一筆就是本輪的最新一筆。
+        # 列表頁依發布時間新→舊排序，第一頁第一筆就是本輪的最新一筆。
         # 記下它當作下次掃描的分頁基準——與站上時間同源，不受本機時區影響。
         if page == 0 and rows[0][2]:
             result['newest_posted'] = rows[0][2]
@@ -267,6 +272,7 @@ def scan_all(conn, entities, fetch, local_lookup, *,
         except fetcher.CheckerError as exc:
             result = {'entity_id': entity_id, 'name': entity.get('name'),
                       'type': entity.get('type'), 'tag': fetcher.tag_for(entity),
+                      'keyword': None,
                       'items': [], 'works': [], 'skipped': None,
                       'truncated': False, 'newest_posted': '', 'excluded': 0,
                       'error': str(exc)}

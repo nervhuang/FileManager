@@ -15,6 +15,7 @@ import random
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .. import paths
@@ -24,6 +25,7 @@ COOKIE_FILENAME = 'exhentai.txt'
 REQUIRED_COOKIES = ('ipb_member_id', 'ipb_pass_hash')
 
 TAG_URL = 'https://exhentai.org/tag/{tag}'
+SEARCH_URL = 'https://exhentai.org/?f_search={query}'
 API_URL = 'https://api.e-hentai.org/api.php'
 API_BATCH = 25  # gdata 單次上限
 
@@ -108,6 +110,25 @@ def tag_for(entity):
     return f'{namespace}:{english.lower()}'
 
 
+def query_for(entity):
+    """回傳這個實體該怎麼查：`('tag', 'artist:x')` 或 `('keyword', '名稱')`。
+
+    站上不是每位作者都有 artist／group tag——部分作者根本沒被定義過英文名稱，
+    tag 查詢對他們永遠是空的。原本這種情況一律略過，等於這些人從來沒被檢查過。
+    改成拿名稱本身跑站上的關鍵字搜尋：日文名字在標題與 tag 裡都找得到。
+
+    關鍵字比 tag 鬆，可能撈到只是提到這個名字的作品——那是刻意的取捨：
+    多幾筆讓人自己判斷，好過整位作者從來不出現。掃描紀錄會標明是走哪一條。
+
+    連名字都沒有時回 None，那才是真的無從查起。
+    """
+    tag = tag_for(entity)
+    if tag:
+        return ('tag', tag)
+    name = (entity.get('name') or '').strip()
+    return ('keyword', name) if name else None
+
+
 class Fetcher:
     """帶速率控制與退避的抓取器。單執行緒使用，不可跨執行緒共用。"""
 
@@ -171,14 +192,27 @@ class Fetcher:
     # ── 對外 ────────────────────────────────────────────────────────────
 
     def fetch_tag_page(self, tag, page=0):
-        """抓一頁 tag 清單，回傳 [(gid, token, posted_text)]，依發布時間新→舊。
+        """抓一頁 tag 清單，回傳 [(gid, token, posted_text)]，依發布時間新→舊。"""
+        return self._fetch_listing(
+            TAG_URL.format(tag=urllib.request.quote(tag, safe=':+')), page)
+
+    def fetch_search_page(self, keyword, page=0):
+        """抓一頁關鍵字搜尋結果，格式與 tag 頁完全相同。
+
+        `/tag/x` 本來就是 `?f_search=x` 的別名，兩者回的是同一種列表頁，
+        所以解析與分頁沿用同一份（`_fetch_listing`）。
+        """
+        return self._fetch_listing(
+            SEARCH_URL.format(query=urllib.parse.quote(keyword, safe='')), page)
+
+    def _fetch_listing(self, url, page=0):
+        """抓一頁列表並解析出 [(gid, token, posted_text)]。
 
         exhentai 未登入時會回一張極小的 sad panda 圖片而非 HTTP 錯誤，
         因此以「頁面過短且沒有任何 gallery 連結」判定 cookie 失效。
         """
-        url = TAG_URL.format(tag=urllib.request.quote(tag, safe=':+'))
         if page:
-            url += f'?page={page}'
+            url += ('&' if '?' in url else '?') + f'page={page}'
         body = self._open(urllib.request.Request(url, headers={
             'User-Agent': _UA, 'Cookie': self._cookie,
             'Accept': 'text/html,application/xhtml+xml',

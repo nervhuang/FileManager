@@ -423,7 +423,8 @@ class CheckerPanel(QWidget):
             self._scan_errors += 1
             self.log(f'{prefix} ⚠ 失敗：{result["error"]}')
         elif result.get('skipped') == 'no_english_name':
-            self.log(f'{prefix} ── 略過：沒有填英文名稱')
+            # 沒有英文名稱的現在會走關鍵字搜尋，走到這裡代表連名字都是空的。
+            self.log(f'{prefix} ── 略過：查不出任何查詢字串')
         elif result.get('skipped'):
             self.log(f'{prefix} ── 略過：{result["skipped"]}')
         else:
@@ -438,6 +439,10 @@ class CheckerPanel(QWidget):
             # 症狀是每位作者都「無更新」，看不出原因。有「排除 25、新書 0」這種行
             # 才分得出是過濾器出事，還是真的沒新書。
             tail = f'（排除 {excluded}）' if excluded else ''
+            # 走關鍵字的那幾位要標出來：關鍵字比 tag 鬆，撈到的東西可能只是提到
+            # 這個名字。不標的話，多出來的筆數會被當成 tag 查詢的結果去信任。
+            if result.get('keyword'):
+                tail += '（關鍵字搜尋）'
             if new_count or up_count:
                 bits = []
                 if new_count:

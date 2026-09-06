@@ -29,7 +29,7 @@ Checker 單向依賴 FileManager（`authors_db`／`paths`／`everything_sdk`／`
 ```
 authors.db 的實體（tag_for 查得出 tag 者）
   │
-  ├─ artist:{english_name} 或 group:{english_name}
+  ├─ artist:{english_name} 或 group:{english_name}；沒有的話 ?f_search={名稱}
   ▼
 exhentai.org/tag/... ──► 抓 gid + token（每頁 25 筆，依發布時間新→舊）
   │
@@ -65,9 +65,16 @@ api.e-hentai.org/api.php (method=gdata) ──► title / title_jpn / posted / t
 它們每一輪都被記成 `no_english_name` 跳過，等於從功能上線以來一次也沒被掃過，
 畫面上卻只寫「略過」。
 
-**仍然跳過的**：名稱不是拉丁字母、又沒填 `english_name` 的（實測 11 筆），
-記為 `no_english_name` 並列在報告中提醒補齊。**不猜**：帶重音的拉丁字母
-（`Café`）也算沒填——寧可多問一句，不要默默送一個查不到的 tag 出去。
+**沒有 tag 的怎麼辦**：改用站上的**關鍵字搜尋**（`?f_search=<名稱>`），不再略過。
+站上不是每位作者都被定義過英文名稱，tag 查詢對他們永遠是空的——原本那 11 筆
+因此從功能上線以來一次也沒被檢查過。`/tag/x` 本來就是 `?f_search=x` 的別名，
+兩者回同一種列表頁，所以解析與分頁共用同一份（`Fetcher._fetch_listing`）。
+
+關鍵字比 tag 鬆，可能撈到只是提到這個名字的作品。這是刻意的取捨：多幾筆讓人
+自己判斷，好過整位作者從來不出現。**掃描紀錄必須標明走的是哪一條**（`（關鍵字搜尋）`），
+否則多出來的筆數會被當成 tag 查詢的結果去信任。
+
+**真正跳過的**只剩「連名字都是空字串」，仍記為 `no_english_name`。
 
 **取幾筆**：首次掃描每個 tag 取最新 25 筆建立基準；之後取到「發布時間早於上次掃描時間」為止，
 上限 50 筆（2 頁）。翻到上限仍未追上者，標示「此作者可能有遺漏」，不靜默吞掉。
