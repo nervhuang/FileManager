@@ -152,6 +152,10 @@ class BreadcrumbBar(QWidget):
     def _apply_crumb_font(self, btn):
         if self._crumb_font is not None:
             btn.setFont(self._crumb_font)
+            # QMenu 是彈出視窗，不從按鈕繼承字型（SHL-5a）。分頁列的「全部分頁」
+            # 選單踩過同一個坑，那裡也是明確 setFont（app/tabs/bar.py）。
+            if btn.menu() is not None:
+                btn.menu().setFont(self._crumb_font)
         return btn
 
     def focus_edit(self):
