@@ -7,6 +7,7 @@
 
 不碰網路：`urlopen` 由測試換掉。
 """
+import http.client
 import urllib.error
 import urllib.request
 
@@ -91,3 +92,24 @@ def test_rate_limit_still_backs_off_then_aborts(monkeypatch):
 def test_cookie_expired_aborts_the_run_too():
     """CookieExpired 是 ScanAborted 的一種：兩者都該中止整輪。"""
     assert issubclass(fetcher.CookieExpired, fetcher.ScanAborted)
+
+
+def test_incomplete_read_is_retried(monkeypatch):
+    """`IncompleteRead` 是 `http.client.HTTPException`，不是 `OSError`。
+
+    真實事故：跑到第 48／443 位時連線被中途切斷，`read()` 拋
+    `IncompleteRead(400 bytes read, ...)`，它不是 OSError，於是穿過退避、
+    穿過 scan_all，撞上「掃描發生未預期的錯誤」——與逾時那次一模一樣的失效方式。
+    """
+    error = http.client.IncompleteRead(b'0123456789', 4096)
+    instance, calls = _fetcher(monkeypatch, [error, 'ok'])
+    assert instance._open(urllib.request.Request('https://example.invalid/')) == 'ok'
+    assert len(calls) == 2
+
+
+def test_repeated_incomplete_reads_abort_the_whole_run(monkeypatch):
+    """連續 3 次同樣中止整輪，而且要是 ScanAborted。"""
+    outcomes = [http.client.IncompleteRead(b'0', 4096) for _ in range(3)]
+    instance, _calls = _fetcher(monkeypatch, outcomes)
+    with pytest.raises(fetcher.ScanAborted):
+        instance._open(urllib.request.Request('https://example.invalid/'))

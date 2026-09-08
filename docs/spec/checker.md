@@ -311,9 +311,13 @@ cookie 放 `runtime_root()/exhentai.txt`（與 `config.ini`、`authors.db` 同�
 
 - 請求間隔 4 秒，隨機抖動 ±1 秒
 - 遇 429／503 指數退避
-- **連線類錯誤（讀取逾時、連線重置、SSL 錯誤）走同一條退避重試路徑**。
-  它們都是 `OSError` 的子類，只接 `urllib.error.URLError` 會漏掉 `read()` 逾時
+- **連線類錯誤（讀取逾時、連線重置、SSL 錯誤、回應被中途切斷）走同一條退避重試路徑**。
+  多數是 `OSError` 的子類，只接 `urllib.error.URLError` 會漏掉 `read()` 逾時
   拋的 `TimeoutError`——實測跑到第 244／440 位時一次讀取逾時就報銷整輪 20 分鐘
+- **`http.client.HTTPException` 要與 `OSError` 一起接**。連線被中途切斷時 `read()`
+  拋的 `IncompleteRead` 繼承自它、不是 `OSError`，逃逸路徑與上一條一模一樣：
+  實測第 48／443 位時整輪死在「掃描發生未預期的錯誤：IncompleteRead(...)」。
+  縮圖下載（`thumbs.py`）同理，抓不到只該少一張圖
 - 連續 3 次失敗即中止整輪並回報
 - 中止後已掃部分照常保留，下次接著跑
 

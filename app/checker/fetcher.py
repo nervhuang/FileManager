@@ -9,6 +9,7 @@
 實際上抓到的是空清單，然後把整櫃藏書誤判成「站上沒有」。
 """
 
+import http.client
 import json
 import os
 import random
@@ -174,13 +175,17 @@ class Fetcher:
                 self._sleep(self._delay * (2 ** self._failures))
                 return self._open(request)
             raise CheckerError(f'請求失敗：HTTP {exc.code}')
-        except OSError as exc:
+        except (OSError, http.client.HTTPException) as exc:
             # 這裡接 OSError 而不是 URLError，是因為 `response.read()` 逾時拋的是
             # TimeoutError——它不是 URLError，只接 URLError 會讓它整個穿過退避、
             # 穿過 scan_all 的錯誤收斂，撞上工作執行緒最外層的「未預期的錯誤」。
             # 實測跑到第 244／440 位時一次讀取逾時就報銷整輪 20 分鐘。
             # URLError、TimeoutError、連線重置、SSL 錯誤都是 OSError 的子類，
             # 而且對它們的正確反應是同一個：退避重試。
+            #
+            # `http.client.HTTPException` 要另外列：連線被中途切斷時 `read()` 拋的
+            # IncompleteRead 繼承自它、**不是** OSError，於是走了與逾時完全相同的
+            # 逃逸路徑（實測第 48／443 位）。BadStatusLine 等殘缺回應也同類。
             self._failures += 1
             if self._failures >= self._max_failures:
                 raise ScanAborted(

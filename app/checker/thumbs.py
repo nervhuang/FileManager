@@ -13,6 +13,7 @@ cookie，本來就未必拿得到。
 的地方。節流器是模組層級的單一份，所有執行緒共用。
 """
 
+import http.client
 import os
 import re
 import threading
@@ -156,7 +157,10 @@ def fetch(gid, url, cookie_header=None, timeout=20.0):
         if exc.code in (429, 503):
             _start_cooldown()
         return None
-    except (OSError, ValueError):
+    except (OSError, ValueError, http.client.HTTPException):
+        # `http.client.HTTPException` 與抓取層同一個理由：連線被中途切斷時
+        # `read()` 拋的 IncompleteRead 不是 OSError。抓不到縮圖只該少一張圖，
+        # 不該把整個請求執行緒炸掉。
         return None
     if not data:
         return None
