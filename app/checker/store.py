@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS checker_decisions (
   state TEXT NOT NULL CHECK(state IN ('ignored','downloaded')),
   entity_id INTEGER REFERENCES entities(id) ON DELETE SET NULL,
   title TEXT NOT NULL DEFAULT '',
+  verdict TEXT NOT NULL DEFAULT '',
   decided_at TEXT NOT NULL
 );
 
@@ -79,13 +80,26 @@ def ensure_schema(conn):
 def _migrate(conn):
     """把舊資料庫補到目前的欄位。`CREATE TABLE IF NOT EXISTS` 不會改既有的表。
 
-    第二個來源（wnacg）需要自己的分頁基準：兩個站的發布時間各走各的，共用一個
-    基準會讓 wnacg 第一次跑就只抓到最近幾天，前面全部當成「已經掃過」。
+    `checker_state.wnacg_posted`：第二個來源需要自己的分頁基準，兩個站的發布時間
+    各走各的，共用一個基準會讓 wnacg 第一次跑就只抓到最近幾天，前面全部當成
+    「已經掃過」。
+
+    `checker_decisions.verdict`：按下按鈕當下的判定，`reconcile_downloads()` 拿它
+    分辨「判定變了」與「判定本來就是這樣」。舊資料補成空字串，等同「不知道」，
+    行為與加這欄之前一致。
+
+    逐項檢查、不共用一個 early return：兩次 migration 的條件各自獨立，
+    第一項已經補過的資料庫會在第二項被整個跳過。
     """
-    columns = {row[1] for row in conn.execute('PRAGMA table_info(checker_state)')}
-    if 'wnacg_posted' in columns:
-        return
-    conn.execute('ALTER TABLE checker_state ADD COLUMN wnacg_posted INTEGER')
+    state_columns = {row[1] for row in conn.execute('PRAGMA table_info(checker_state)')}
+    if 'wnacg_posted' not in state_columns:
+        conn.execute('ALTER TABLE checker_state ADD COLUMN wnacg_posted INTEGER')
+
+    decision_columns = {row[1]
+                        for row in conn.execute('PRAGMA table_info(checker_decisions)')}
+    if 'verdict' not in decision_columns:
+        conn.execute("ALTER TABLE checker_decisions ADD COLUMN "
+                     "verdict TEXT NOT NULL DEFAULT ''")
 
 
 def connect():
@@ -166,15 +180,23 @@ def decisions(conn):
 
 
 def set_decision(conn, gid, state, *, entity_id=None, title=''):
+    """記下使用者的決定，連同**按下當下的判定**一起存。
+
+    存判定是為了 `reconcile_downloads()`：轉正的條件是「判定變了」，
+    沒有這個基準就分不出「檔案剛落地」與「這本書本來就在版本升級那一格」。
+    """
     if state not in (STATE_IGNORED, STATE_DOWNLOADED):
         raise ValueError(f'未知的狀態：{state}')
+    row = conn.execute('SELECT verdict FROM checker_findings WHERE gid = ?',
+                       (str(gid),)).fetchone()
     conn.execute(
-        'INSERT INTO checker_decisions (gid, state, entity_id, title, decided_at) '
-        'VALUES (?, ?, ?, ?, ?) '
+        'INSERT INTO checker_decisions (gid, state, entity_id, title, verdict, decided_at) '
+        'VALUES (?, ?, ?, ?, ?, ?) '
         'ON CONFLICT(gid) DO UPDATE SET '
         '  state = excluded.state, entity_id = excluded.entity_id,'
-        '  title = excluded.title, decided_at = excluded.decided_at',
-        (str(gid), state, entity_id, title or '', _now()))
+        '  title = excluded.title, verdict = excluded.verdict,'
+        '  decided_at = excluded.decided_at',
+        (str(gid), state, entity_id, title or '', (row['verdict'] if row else ''), _now()))
     conn.commit()
 
 
@@ -192,10 +214,15 @@ def reconcile_downloads(conn, entity_id=None):
 
     直接查資料庫而非接收呼叫端的清單：`load_findings()` 會濾掉所有已有決定的項目，
     待驗中的 gid 正好都在被濾掉的那一批裡，接它的輸出會讓轉正永遠不發生。
+
+    **判準是「判定變了」，不是「判定是那兩種」。** 版本升級那一格的項目在按下
+    按鈕的當下就已經是 `upgrade`，只看判定值的話條件立刻成立，下一輪掃描就把
+    決定刪掉、那本書原封不動回到清單——按幾次都一樣。判定沒變就代表本機檔案
+    還是原來那些，什麼也沒落地。
     """
     sql = ('SELECT f.gid FROM checker_findings f '
            'JOIN checker_decisions d ON d.gid = f.gid '
-           'WHERE d.state = ? AND f.verdict IN (?, ?)')
+           'WHERE d.state = ? AND f.verdict IN (?, ?) AND f.verdict <> d.verdict')
     params = [STATE_DOWNLOADED, matcher.VERDICT_HAVE, matcher.VERDICT_UPGRADE]
     if entity_id is not None:
         sql += ' AND f.entity_id = ?'
