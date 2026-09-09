@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS checker_findings (
   pages INTEGER,
   thumb TEXT NOT NULL DEFAULT '',
   posted INTEGER,
+  attribution TEXT NOT NULL DEFAULT '',
   markers TEXT NOT NULL DEFAULT '[]',
   verdict TEXT NOT NULL,
   score REAL NOT NULL DEFAULT 0,
@@ -100,6 +101,41 @@ def _migrate(conn):
     if 'verdict' not in decision_columns:
         conn.execute("ALTER TABLE checker_decisions ADD COLUMN "
                      "verdict TEXT NOT NULL DEFAULT ''")
+
+    finding_columns = {row[1]
+                       for row in conn.execute('PRAGMA table_info(checker_findings)')}
+    if 'attribution' not in finding_columns:
+        conn.execute("ALTER TABLE checker_findings ADD COLUMN "
+                     "attribution TEXT NOT NULL DEFAULT ''")
+        _backfill_attribution(conn)
+    # 索引建在這裡而不是 `_SCHEMA`：`ensure_schema` 先跑 `_SCHEMA` 再跑這支，
+    # 舊資料庫在那個時間點還沒有 `attribution` 這一欄，索引會建不起來。
+    conn.execute('CREATE INDEX IF NOT EXISTS ix_checker_findings_attr '
+                 'ON checker_findings(core, attribution)')
+
+
+def _attribution(item):
+    """從標題算出掛名鍵。與 `refresh_verdicts()` 一樣以 `title_jpn` 優先。"""
+    from . import titles
+
+    text = item.get('title_jpn') or item.get('title') or ''
+    return titles.attribution_key(titles.parse(text))
+
+
+def _backfill_attribution(conn):
+    """把既有的比對結果補上掛名。
+
+    不補的話舊資料全是空字串，而「核心標題相同、掛名也相同」正是跨作者共用決定
+    的判準——一整批空字串會讓所有同名的舊資料互相認親。空字串本身是合法值
+    （商業誌沒有社團括號），所以不能靠「空的就跳過」繞開，必須真的算一次。
+    """
+    # 取欄位一律用索引：`sqlite3.Row` 沒有 `get()`，而連線的 `row_factory`
+    # 也不保證是 `Row`（`authors_db.connect()` 設了，別的呼叫端不一定）。
+    rows = conn.execute('SELECT gid, title, title_jpn FROM checker_findings').fetchall()
+    conn.executemany(
+        'UPDATE checker_findings SET attribution = ? WHERE gid = ?',
+        [(_attribution({'title': row[1], 'title_jpn': row[2]}), row[0])
+         for row in rows])
 
 
 def connect():
@@ -251,9 +287,20 @@ def reconcile_downloads(conn, entity_id=None):
 # 那邊按的忽略擋不住社團那一邊，同一本書再冒出來一次——實測 34 筆是這樣來的，
 # 其中 31 筆的兩個實體本來就相連（同一個人的兩個身分）。
 #
-# 不相連的作者仍然不共用：核心標題短起來只有幾個字（實測有 `zds`、`rgb`），
-# 不分作者的話忽略一本會連帶消掉別人的另一本。剩下那 3 筆是合志本，不同作者
-# 共用一個標題，那條路要另外處理，不能靠放寬這裡。
+# 第三句認的是**掛名**：核心標題與 `[社團 (作者)]` 都相同就是同一本書，不管掃到
+# 它的是誰。合志本與商業誌只能靠這個——`[フェチズムポケット (よろず)]` 在每一位
+# 參與作者底下都一模一樣，`COMIC ExE 69` 則是兩邊都沒有社團括號，而那些作者之間
+# 本來就沒有 links 關係。
+#
+# 不能改用「核心標題夠長就跨作者共用」：實測 `C108 おまけ本`（8 字）與 `fanbox`
+# （6 字）是不同作者各自的不同書，而合志本 `酒と愛液と男と女` 同樣是 8 字，
+# 長度分不開這兩類。掛名可以。
+#
+# 只有一種情形長度仍是唯一的線索：**兩邊的掛名都是空的**（商業誌沒有社團括號）。
+# 空掛名不構成「同一本」的證據，光靠核心標題相同就共用，會讓兩位作者各自那本
+# 短標題的書互相消掉（規格舉的 `zds`、`rgb` 就是這種）。因此空掛名另加長度門檻：
+# 實測空掛名而真的該合併的最短是 `コミックエグゼ69`（9 字），會誤傷的最長是
+# 3 字，門檻取 8。
 #
 # 為什麼分成兩個 NOT EXISTS 而不是在實體那一項加 OR：加 OR 之後
 # `ix_checker_findings_work(entity_id, core)` 就用不上了，每一列 f 都得掃過整張
@@ -273,7 +320,12 @@ _UNDECIDED = """NOT EXISTS (
        AND g.core = f.core
       JOIN checker_decisions d ON d.gid = g.gid
       WHERE f.core <> ''
-        AND (l.author_id = f.entity_id OR l.circle_id = f.entity_id))"""
+        AND (l.author_id = f.entity_id OR l.circle_id = f.entity_id))
+  AND NOT EXISTS (
+      SELECT 1 FROM checker_findings g
+      JOIN checker_decisions d ON d.gid = g.gid
+      WHERE f.core <> '' AND g.core = f.core AND g.attribution = f.attribution
+        AND (f.attribution <> '' OR length(f.core) >= 8))"""
 
 
 # ── 比對結果 ────────────────────────────────────────────────────────────
@@ -290,10 +342,12 @@ def save_findings(conn, entity_id, items):
     """
     conn.executemany(
         'INSERT OR REPLACE INTO checker_findings '
-        '(gid, entity_id, token, core, title, title_jpn, category, pages, thumb,'
+        '(gid, entity_id, token, core, attribution, title, title_jpn, category,'
+        ' pages, thumb,'
         ' posted, markers, verdict, score, missing_markers, matched_local, found_at) '
-        'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         [(str(i['gid']), entity_id, i.get('token', ''), i.get('core', ''),
+          _attribution(i),
           i.get('title', ''), i.get('title_jpn', ''), i.get('category', ''),
           int(i['pages']) if str(i.get('pages') or '').isdigit() else None,
           i.get('thumb', ''),
