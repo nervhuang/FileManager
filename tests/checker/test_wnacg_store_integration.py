@@ -20,6 +20,9 @@ def conn():
     con = sqlite3.connect(':memory:')
     con.row_factory = sqlite3.Row
     con.execute('CREATE TABLE entities (id INTEGER PRIMARY KEY, name TEXT, type TEXT)')
+    # `_UNDECIDED` 會查作者與社團的相連關係（同一個人的兩個身分共用決定）。
+    con.execute('CREATE TABLE links (author_id INTEGER, circle_id INTEGER,'
+                ' PRIMARY KEY (author_id, circle_id))')
     con.execute("INSERT INTO entities VALUES (1, '南浜よりこ', 'artist')")
     store.ensure_schema(con)
     yield con

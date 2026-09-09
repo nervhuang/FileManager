@@ -245,11 +245,35 @@ def reconcile_downloads(conn, entity_id=None):
 #
 # 作品的身分是 `(entity_id, core)`，與 `aggregate()` 的分組鍵同源。`core` 為空
 # 時退回只認 gid——否則所有解析不出核心標題的項目會被當成同一部作品互相消掉。
+#
+# 實體相同**或在 `links` 裡相連**都算同一個身分：同人誌同時掛作者 tag 與社團
+# tag，兩邊各是一次獨立的掃描、各自抓回不同的 gid，只認 entity_id 的話在作者
+# 那邊按的忽略擋不住社團那一邊，同一本書再冒出來一次——實測 34 筆是這樣來的，
+# 其中 31 筆的兩個實體本來就相連（同一個人的兩個身分）。
+#
+# 不相連的作者仍然不共用：核心標題短起來只有幾個字（實測有 `zds`、`rgb`），
+# 不分作者的話忽略一本會連帶消掉別人的另一本。剩下那 3 筆是合志本，不同作者
+# 共用一個標題，那條路要另外處理，不能靠放寬這裡。
+#
+# 為什麼分成兩個 NOT EXISTS 而不是在實體那一項加 OR：加 OR 之後
+# `ix_checker_findings_work(entity_id, core)` 就用不上了，每一列 f 都得掃過整張
+# findings 找 g（13000 × 13000）。實測 counts() 從 0.11 秒變成 114 秒。
+# 拆成兩句之後兩邊都還是等值查詢：第一句用 (f.entity_id, f.core) 直接命中索引，
+# 第二句先從 links 拿到對應的另一個身分，再拿它去命中同一個索引。
 _UNDECIDED = """NOT EXISTS (
       SELECT 1 FROM checker_findings g
       JOIN checker_decisions d ON d.gid = g.gid
       WHERE g.gid = f.gid
-         OR (f.core <> '' AND g.core = f.core AND g.entity_id IS f.entity_id))"""
+         OR (f.core <> '' AND g.core = f.core AND g.entity_id IS f.entity_id))
+  AND NOT EXISTS (
+      SELECT 1 FROM links l
+      JOIN checker_findings g
+        ON g.entity_id = CASE WHEN l.author_id = f.entity_id
+                              THEN l.circle_id ELSE l.author_id END
+       AND g.core = f.core
+      JOIN checker_decisions d ON d.gid = g.gid
+      WHERE f.core <> ''
+        AND (l.author_id = f.entity_id OR l.circle_id = f.entity_id))"""
 
 
 # ── 比對結果 ────────────────────────────────────────────────────────────
