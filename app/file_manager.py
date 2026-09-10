@@ -27,7 +27,7 @@ from .search import models as search_models
 from .search.models import SearchResultsModel, SearchSortProxyModel
 from .views import SearchListView, FileListView
 from . import columns, toolbar
-from .fileops import clipboard, drag_menu, rename, shell as shell_ops
+from .fileops import activate_ui, clipboard, drag_menu, rename, shell as shell_ops
 from .tabs import history
 from .tabs.bar import PathTabBar
 from .tabs.breadcrumb import BreadcrumbBar
@@ -437,14 +437,8 @@ class FileManager(QMainWindow):
 
 
     def on_listView_doubleClicked(self, index):
-        path = self.file_proxy.filePath(index)
-        if self.file_proxy.isDir(index):
-            self._navigate_to_path(path)
-        else:
-            try:
-                os.startfile(path)
-            except Exception as e:
-                QMessageBox.warning(self, "錯誤", f"無法開啟檔案: {e}")
+        activate_ui.activate_paths([self.file_proxy.filePath(index)],
+                                   self._navigate_to_path, self)
 
     def keyPressEvent(self, e):
         global ref_s, ref_e          # global_keywords 在這裡只讀不寫
@@ -480,6 +474,14 @@ class FileManager(QMainWindow):
         # Delete 鍵：刪除右側搜尋結果中選取的檔案
         if e.key() == Qt.Key.Key_Delete:
             if self._delete_selected_focused_items():
+                e.accept()
+                return
+
+        # Enter：開啟選取的項目，與雙擊同一套判定（FOP-26）
+        if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            view = self._focused_file_view()
+            if view is not None and activate_ui.activate_paths(
+                    self._get_selected_paths_for_view(view), self._navigate_to_path, self):
                 e.accept()
                 return
 
@@ -750,16 +752,8 @@ class FileManager(QMainWindow):
     def on_listView2_doubleClicked(self, index):
         source_index = self.search_proxy.mapToSource(index)
         name_index = self.search_model.index(source_index.row(), 0)
-        filepath = name_index.data(Qt.UserRole + 1)
-        if filepath and os.path.exists(filepath):
-            if os.path.isdir(filepath):
-                # 資料夾：在檔案面板開啟該目錄
-                self._navigate_to_path(filepath)
-            else:
-                try:
-                    os.startfile(filepath)
-                except Exception as e:
-                    QMessageBox.warning(self, "錯誤", f"無法開啟檔案: {e}")
+        activate_ui.activate_paths([name_index.data(Qt.UserRole + 1)],
+                                   self._navigate_to_path, self)
 
     def _get_selected_search_paths(self):
         """回傳 listView2 中所有選取列的完整路徑。"""
