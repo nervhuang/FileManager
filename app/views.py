@@ -6,6 +6,7 @@ from PyQt5.QtCore import Qt, QItemSelection, QItemSelectionModel, QMimeData, QUr
 from PyQt5.QtGui import QDrag
 
 from .fileops import drag_menu, drag_preview, shell as shell_ops
+from .fileops.inline_rename import SecondClickRenameMixin
 from .fileops.selection import NameColumnSelectionMixin
 
 
@@ -68,7 +69,7 @@ class _ShellDropMixin:
             QTimer.singleShot(600, wnd.refresh_mid_panel)
 
 
-class SearchListView(_ShellDropMixin, NameColumnSelectionMixin, QTreeView):
+class SearchListView(_ShellDropMixin, SecondClickRenameMixin, NameColumnSelectionMixin, QTreeView):
     """QTreeView 子類別，支援鍵盤創點定錨點的 Shift 區間選取和 Ctrl 切換選取。
     Shift+點擊從第一次按下的項目開始延伸，不會因後續 Shift+點擊而變更錨點。"""
 
@@ -437,7 +438,7 @@ class SearchListView(_ShellDropMixin, NameColumnSelectionMixin, QTreeView):
         return "move" if src_drive and src_drive == dst_drive else "copy"
 
 
-class FileListView(_ShellDropMixin, NameColumnSelectionMixin, QTreeView):
+class FileListView(_ShellDropMixin, SecondClickRenameMixin, NameColumnSelectionMixin, QTreeView):
     """QTreeView for the middle file panel with Shell right-click context menu and right-drag support."""
 
     def __init__(self, parent=None):

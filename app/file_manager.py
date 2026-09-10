@@ -166,12 +166,12 @@ class FileManager(QMainWindow):
         # 兩個面板的清單：中間是檔案，右邊是搜尋結果。右鍵選單都走原生 shell 選單。
         self.listView = FileListView(self)
         self.listView.setSortingEnabled(True)
-        self.listView.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.listView.setEditTriggers(QAbstractItemView.SelectedClicked)
         self.listView.setContextMenuPolicy(Qt.CustomContextMenu)
         self.listView.customContextMenuRequested.connect(self._show_file_context_menu)
         self.listView2 = SearchListView(self)
         self.listView2.setSortingEnabled(True)
-        self.listView2.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.listView2.setEditTriggers(QAbstractItemView.SelectedClicked)
         self.listView2.setContextMenuPolicy(Qt.CustomContextMenu)
         self.listView2.customContextMenuRequested.connect(self._show_search_context_menu)
 
